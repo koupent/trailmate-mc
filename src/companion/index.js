@@ -152,11 +152,14 @@ export async function startCompanion(agent, companionConfig = {}) {
                 await agent.reflexes?.tick?.({
                     movementHeld: !!ctx.movement?.isHeld,
                     isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
-                    owner: ctx.ownerEntity ?? null
+                    owner: ctx.ownerEntity ?? null,
+                    movement: ctx.movement
                 });
             } catch (err) {
                 console.error('[companion] reflexes error:', err);
             }
+        } else {
+            agent.reflexes?.resetCombat?.();
         }
         try {
             await dialogue.maybeSpeak();

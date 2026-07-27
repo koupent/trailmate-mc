@@ -162,6 +162,21 @@ docker compose up -d --build
 - `locales/ja.json` … 独り言・コマンド返答（英語を足すなら `locales/en.json`）
 - `services/viaproxy/viaproxy.yml` … **実際の Minecraft サーバー**（`target-address`）
 
+### 戦闘
+
+`config.json` の `companion.reflexes` 配下:
+
+| キー | 意味 | 既定 |
+|---|---|---|
+| `self_defense` | 近くの敵と自動で戦う | `true` |
+| `hostile_range` | 敵を検知する距離（ブロック） | `8` |
+| `combat_lost_grace_ms` | 敵が一時的に隠れても戦闘を維持する時間 | `2500` |
+| `retreat_health` | 撤退を始める体力 | `8` |
+| `resume_health` | 戦闘を再開できる体力 | `14` |
+| `retreat_distance` | 持ち主が不在時に敵から離れる距離 | `6` |
+
+戦闘中は敵への接近を優先し、追従経路との切り替わりを防ぎます。低体力時は持ち主の近くへ撤退し、持ち主が見つからない場合は敵と反対方向へ退きます。また、遠距離攻撃を行う敵には距離を詰め、起爆中のクリーパーからは盾がなければ離れます。
+
 ### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し・作業退避
 
 `config.json` の `companion` 配下:

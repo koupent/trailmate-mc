@@ -55,6 +55,13 @@ export class FollowMode extends Mode {
 
         ctx.movement.tickHoldWatchdog();
 
+        // Combat and retreat own pathfinder/looking until the threat is resolved.
+        if (ctx.agent.reflexes?.isControllingMovement) {
+            const owner = ctx.ownerEntity;
+            if (owner) this._rememberOwner(ctx, owner);
+            return;
+        }
+
         if (!ctx.ownerName) {
             this._clearLastKnown();
             await this._searchOwner(ctx);

@@ -1,6 +1,6 @@
 import { Vec3 } from 'vec3';
 import type { Bot } from 'mineflayer';
-import { getNearestEntityWhere, isHostile } from '../world/entities.js';
+import { chooseCombatTarget, isHostile } from '../world/entities.js';
 import { hasLineOfSight } from '../world/lineOfSight.js';
 import type { ReflexConfig } from '../config.js';
 import {
@@ -12,9 +12,34 @@ import {
 } from './torchPlacement.js';
 
 type DefendOwner = {
-  position: { offset: (x: number, y: number, z: number) => any };
+  position: {
+    x: number;
+    y: number;
+    z: number;
+    offset: (x: number, y: number, z: number) => any;
+  };
   height?: number;
 } | null | undefined;
+
+type CombatMovement = {
+  followEntity: (entity: any, range: number) => boolean;
+  goToward: (position: { x: number; y: number; z: number }, range?: number) => boolean;
+};
+
+const TARGET_RANGE_BUFFER = 2;
+const OWNER_RETREAT_RANGE = 2;
+const RETREAT_GOAL_RANGE = 1.5;
+const DEFAULT_FOLLOW_RANGE = 2.5;
+const RANGED_FOLLOW_RANGE = 1.5;
+const CREEPER_FOLLOW_RANGE = 3;
+const RANGED_HOSTILES = new Set([
+  'skeleton',
+  'stray',
+  'bogged',
+  'pillager',
+  'witch',
+  'blaze'
+]);
 
 /**
  * Lightweight survival reflexes (replaces Mindcraft modes.js subset).
@@ -22,6 +47,9 @@ type DefendOwner = {
 export class Reflexes {
   private lastTorchAt = 0;
   private fighting = false;
+  private currentTarget: any | null = null;
+  private lastTargetSeenAt = 0;
+  private retreating = false;
 
   constructor(
     private readonly bot: Bot,
@@ -33,16 +61,36 @@ export class Reflexes {
     movementHeld: boolean;
     isIdleish: boolean;
     owner?: DefendOwner;
+    movement?: CombatMovement;
   }): Promise<void> {
     if (this.config.self_preservation) {
       this.preserve();
     }
     if (this.config.self_defense && !opts.movementHeld) {
-      await this.defend(opts.owner);
+      await this.defend(opts.owner, opts.movement);
+    } else {
+      this.resetCombat();
     }
-    if (this.config.torch_placing && opts.isIdleish && !opts.movementHeld) {
+    if (
+      this.config.torch_placing
+      && opts.isIdleish
+      && !opts.movementHeld
+      && !this.isControllingMovement
+    ) {
       await this.maybeTorch();
     }
+  }
+
+  get isControllingMovement(): boolean {
+    return this.retreating || this.currentTarget != null || this.bot.pvp?.target != null;
+  }
+
+  /** Cancel sticky combat state when a higher-priority interrupt takes over. */
+  resetCombat(): void {
+    this.bot.pvp?.forceStop?.();
+    this.currentTarget = null;
+    this.lastTargetSeenAt = 0;
+    this.retreating = false;
   }
 
   private preserve(): void {
@@ -65,25 +113,60 @@ export class Reflexes {
     }
   }
 
-  private async defend(owner?: DefendOwner): Promise<void> {
+  private async defend(owner?: DefendOwner, movement?: CombatMovement): Promise<void> {
     if (this.fighting) return;
 
-    // Owner is behind a door/wall: drop combat so Follow can reunite first.
-    if (owner && !hasLineOfSight(this.bot, owner)) {
-      await this.stopCombat();
+    const now = Date.now();
+    if (!this.currentTarget && this.isUsableTarget(this.bot.pvp?.target)) {
+      this.currentTarget = this.bot.pvp.target;
+      this.lastTargetSeenAt = now;
+    }
+
+    if (this.currentTarget) {
+      if (!this.isUsableTarget(this.currentTarget)) {
+        this.currentTarget = null;
+      } else if (hasLineOfSight(this.bot, this.currentTarget)) {
+        this.lastTargetSeenAt = now;
+      } else if (now - this.lastTargetSeenAt > this.config.combat_lost_grace_ms) {
+        this.currentTarget = null;
+      }
+    }
+
+    if (!this.currentTarget && !this.retreating) {
+      this.currentTarget = chooseCombatTarget(
+        this.bot,
+        owner,
+        this.config.hostile_range,
+        (entity) => hasLineOfSight(this.bot, entity)
+      );
+      if (this.currentTarget) this.lastTargetSeenAt = now;
+    }
+
+    if (this.shouldStartRetreat()) {
+      this.retreating = true;
+      this.bot.pvp?.forceStop?.();
+    } else if (this.retreating && this.bot.health >= this.config.resume_health) {
+      this.retreating = false;
+    }
+
+    if (this.retreating) {
+      this.retreat(owner, this.currentTarget, movement);
       return;
     }
 
-    const enemy = getNearestEntityWhere(
-      this.bot,
-      (e) => isHostile(e) && hasLineOfSight(this.bot, e),
-      this.config.hostile_range
-    );
+    const enemy = this.currentTarget;
     if (!enemy) {
       await this.stopCombat();
       return;
     }
 
+    if (this.shouldEvadeCreeper(enemy)) {
+      this.bot.pvp?.forceStop?.();
+      this.moveAwayFrom(enemy, movement);
+      return;
+    }
+
+    this.configureCombatRange(enemy);
     this.fighting = true;
     try {
       await this.bot.pvp.attack(enemy);
@@ -103,6 +186,75 @@ export class Reflexes {
       /* ignore */
     } finally {
       this.fighting = false;
+      this.currentTarget = null;
+      this.lastTargetSeenAt = 0;
+    }
+  }
+
+  private isUsableTarget(target: any): boolean {
+    if (!target || !isHostile(target) || !target.position || target.isValid === false) {
+      return false;
+    }
+    if (target.id != null && this.bot.entities && this.bot.entities[target.id] !== target) {
+      return false;
+    }
+    return this.bot.entity.position.distanceTo(target.position)
+      <= this.config.hostile_range + TARGET_RANGE_BUFFER;
+  }
+
+  private shouldStartRetreat(): boolean {
+    return !this.retreating
+      && this.currentTarget != null
+      && this.bot.health <= this.config.retreat_health;
+  }
+
+  private retreat(
+    owner: DefendOwner,
+    threat: any | null,
+    movement?: CombatMovement
+  ): void {
+    if (!movement) return;
+    if (owner) {
+      movement.followEntity(owner, OWNER_RETREAT_RANGE);
+      return;
+    }
+    if (threat) this.moveAwayFrom(threat, movement);
+  }
+
+  private moveAwayFrom(threat: any, movement?: CombatMovement): void {
+    if (!movement || !threat?.position) return;
+    const botPos = this.bot.entity.position;
+    let dx = botPos.x - threat.position.x;
+    let dz = botPos.z - threat.position.z;
+    const horizontalDistance = Math.hypot(dx, dz);
+    if (horizontalDistance < 0.1) {
+      dx = -Math.sin(this.bot.entity.yaw);
+      dz = -Math.cos(this.bot.entity.yaw);
+    } else {
+      dx /= horizontalDistance;
+      dz /= horizontalDistance;
+    }
+    movement.goToward({
+      x: botPos.x + dx * this.config.retreat_distance,
+      y: botPos.y,
+      z: botPos.z + dz * this.config.retreat_distance
+    }, RETREAT_GOAL_RANGE);
+  }
+
+  private shouldEvadeCreeper(enemy: any): boolean {
+    if (enemy.name !== 'creeper' || enemy.metadata?.[16] !== 1) return false;
+    const pvp = this.bot.pvp as any;
+    return typeof pvp?.hasShield !== 'function' || !pvp.hasShield();
+  }
+
+  private configureCombatRange(enemy: any): void {
+    if (!this.bot.pvp) return;
+    if (enemy.name === 'creeper') {
+      this.bot.pvp.followRange = CREEPER_FOLLOW_RANGE;
+    } else if (RANGED_HOSTILES.has(enemy.name)) {
+      this.bot.pvp.followRange = RANGED_FOLLOW_RANGE;
+    } else {
+      this.bot.pvp.followRange = DEFAULT_FOLLOW_RANGE;
     }
   }
 

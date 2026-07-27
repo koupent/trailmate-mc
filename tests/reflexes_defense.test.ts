@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Reflexes } from '../src/reflexes/Reflexes.js';
+import { FollowMode } from '../src/companion/modes/FollowMode.js';
 import { hasLineOfSight } from '../src/world/lineOfSight.js';
 import type { ReflexConfig } from '../src/config.js';
 
@@ -17,11 +18,15 @@ type Vec = {
 };
 
 type EntityStub = {
+  id: number;
   name: string;
   type: string;
   height: number;
   position: Vec;
+  metadata?: any[];
 };
+
+let nextEntityId = 1;
 
 function vec3(x: number, y: number, z: number): Vec {
   return {
@@ -55,6 +60,7 @@ function makeEntity(
   height = 1.8
 ): EntityStub {
   return {
+    id: nextEntityId++,
     name,
     type,
     height,
@@ -66,6 +72,8 @@ type BotOpts = {
   /** Entity names whose head ray is blocked (door/wall). */
   blockedNames?: string[];
   hostiles?: EntityStub[];
+  health?: number;
+  hasShield?: boolean;
 };
 
 function makeBot(opts: BotOpts = {}) {
@@ -74,10 +82,13 @@ function makeBot(opts: BotOpts = {}) {
   const botEntity = makeEntity('bot', 'player', 0, 64, 0);
   let attackTarget: EntityStub | null = null;
   let stopCount = 0;
+  let forceStopCount = 0;
   let attackCount = 0;
 
   const bot = {
     entity: botEntity,
+    entities: Object.fromEntries(hostiles.map((entity) => [entity.id, entity])),
+    health: opts.health ?? 20,
     world: {
       raycast(_from: Vec, _dir: unknown, _maxDist: number): { name: string } | null {
         return null;
@@ -90,6 +101,7 @@ function makeBot(opts: BotOpts = {}) {
     blockAt: () => ({ name: 'air' }),
     time: { timeOfDay: 1000 },
     pvp: {
+      followRange: 2,
       get target() {
         return attackTarget;
       },
@@ -100,9 +112,22 @@ function makeBot(opts: BotOpts = {}) {
       async stop() {
         stopCount += 1;
         attackTarget = null;
+      },
+      forceStop() {
+        forceStopCount += 1;
+        attackTarget = null;
+      },
+      hasShield() {
+        return opts.hasShield === true;
       }
     },
-    _stats: () => ({ attackCount, stopCount, attackTarget })
+    _stats: () => ({
+      attackCount,
+      stopCount,
+      forceStopCount,
+      attackTarget,
+      followRange: bot.pvp.followRange
+    })
   };
 
   // Replace raycast with aim-aware check: look at known tracked entities.
@@ -125,6 +150,10 @@ function makeBot(opts: BotOpts = {}) {
     bot: bot as typeof bot & { pathfinder?: { goal?: unknown } },
     track(...entities: EntityStub[]) {
       tracked.push(...entities);
+    },
+    setBlocked(name: string, value: boolean) {
+      if (value) blocked.add(name);
+      else blocked.delete(name);
     }
   };
 }
@@ -133,8 +162,28 @@ const CONFIG: ReflexConfig = {
   self_defense: true,
   self_preservation: false,
   torch_placing: false,
-  hostile_range: 8
+  hostile_range: 8,
+  combat_lost_grace_ms: 2500,
+  retreat_health: 8,
+  resume_health: 14,
+  retreat_distance: 6
 };
+
+function makeMovement() {
+  const followed: any[] = [];
+  const destinations: Array<{ x: number; y: number; z: number }> = [];
+  return {
+    followEntity(entity: any) {
+      followed.push(entity);
+      return true;
+    },
+    goToward(position: { x: number; y: number; z: number }) {
+      destinations.push(position);
+      return true;
+    },
+    _stats: () => ({ followed, destinations })
+  };
+}
 
 describe('hasLineOfSight', () => {
   it('returns true when raycast is clear', () => {
@@ -152,8 +201,8 @@ describe('hasLineOfSight', () => {
   });
 });
 
-describe('Reflexes.defend line-of-sight gates', () => {
-  it('stops combat when the owner moves behind a closed door', async () => {
+describe('Reflexes combat decisions', () => {
+  it('keeps fighting when the owner moves behind a closed door', async () => {
     const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
     const owner = makeEntity('Alice', 'player', 4, 64, 0);
     const { bot, track } = makeBot({
@@ -173,8 +222,8 @@ describe('Reflexes.defend line-of-sight gates', () => {
     });
 
     const stats = bot._stats();
-    assert.equal(stats.attackTarget, null);
-    assert.ok(stats.stopCount >= 1);
+    assert.equal(stats.attackTarget, zombie);
+    assert.equal(stats.stopCount, 0);
   });
 
   it('does not start a new fight against an enemy behind a closed door', async () => {
@@ -216,35 +265,6 @@ describe('Reflexes.defend line-of-sight gates', () => {
     assert.equal(stats.attackTarget, zombie);
   });
 
-  it('attacks again after the owner becomes visible outdoors', async () => {
-    const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
-    const owner = makeEntity('Alice', 'player', 1, 64, 0);
-
-    const blocked = makeBot({
-      blockedNames: ['Alice'],
-      hostiles: [zombie]
-    });
-    blocked.track(owner, zombie);
-    const blockedReflexes = new Reflexes(blocked.bot as any, CONFIG, 7);
-    await blocked.bot.pvp.attack(zombie);
-    await blockedReflexes.tick({
-      movementHeld: false,
-      isIdleish: true,
-      owner
-    });
-    assert.equal(blocked.bot._stats().attackTarget, null);
-
-    const open = makeBot({ hostiles: [zombie] });
-    open.track(owner, zombie);
-    const openReflexes = new Reflexes(open.bot as any, CONFIG, 7);
-    await openReflexes.tick({
-      movementHeld: false,
-      isIdleish: true,
-      owner
-    });
-    assert.equal(open.bot._stats().attackTarget, zombie);
-  });
-
   it('keeps self-defense when no owner is set and the enemy is visible', async () => {
     const zombie = makeEntity('zombie', 'hostile', 2, 64, 0);
     const { bot, track } = makeBot({ hostiles: [zombie] });
@@ -258,5 +278,152 @@ describe('Reflexes.defend line-of-sight gates', () => {
     });
 
     assert.equal(bot._stats().attackTarget, zombie);
+  });
+
+  it('keeps the current target during a short line-of-sight loss', async () => {
+    const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
+    const setup = makeBot({ hostiles: [zombie] });
+    setup.track(zombie);
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true });
+    setup.setBlocked('zombie', true);
+    await reflexes.tick({ movementHeld: false, isIdleish: true });
+
+    assert.equal(setup.bot._stats().attackTarget, zombie);
+    assert.equal(setup.bot._stats().stopCount, 0);
+  });
+
+  it('stops after the line-of-sight grace period expires', async () => {
+    const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
+    const setup = makeBot({ hostiles: [zombie] });
+    setup.track(zombie);
+    const reflexes = new Reflexes(
+      setup.bot as any,
+      { ...CONFIG, combat_lost_grace_ms: -1 },
+      7
+    );
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true });
+    setup.setBlocked('zombie', true);
+    await reflexes.tick({ movementHeld: false, isIdleish: true });
+
+    assert.equal(setup.bot._stats().attackTarget, null);
+    assert.ok(setup.bot._stats().stopCount >= 1);
+  });
+
+  it('keeps a sticky immediate threat instead of switching targets', async () => {
+    const immediate = makeEntity('zombie', 'hostile', 2, 64, 0);
+    const ownerThreat = makeEntity('skeleton', 'hostile', 5.5, 64, 0);
+    const owner = makeEntity('Alice', 'player', 6, 64, 0);
+    const setup = makeBot({ hostiles: [immediate, ownerThreat] });
+    setup.track(immediate, ownerThreat, owner);
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
+
+    assert.equal(setup.bot._stats().attackTarget, immediate);
+    assert.equal(setup.bot._stats().attackCount, 2);
+  });
+
+  it('prioritizes a threat near the owner when none is immediately adjacent', async () => {
+    const ownerThreat = makeEntity('skeleton', 'hostile', 5.5, 64, 0);
+    const other = makeEntity('zombie', 'hostile', 7, 64, 0);
+    const owner = makeEntity('Alice', 'player', 6, 64, 0);
+    const setup = makeBot({ hostiles: [other, ownerThreat] });
+    setup.track(other, ownerThreat, owner);
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
+
+    assert.equal(setup.bot._stats().attackTarget, ownerThreat);
+  });
+
+  it('retreats to the owner at low health and waits to recover', async () => {
+    const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
+    const owner = makeEntity('Alice', 'player', 5, 64, 0);
+    const setup = makeBot({ hostiles: [zombie], health: 6 });
+    setup.track(zombie, owner);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+    assert.deepEqual(movement._stats().followed, [owner]);
+    assert.equal(setup.bot._stats().attackCount, 0);
+
+    setup.bot.health = 10;
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+    assert.equal(setup.bot._stats().attackCount, 0);
+
+    setup.bot.health = 14;
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+    assert.equal(setup.bot._stats().attackTarget, zombie);
+  });
+
+  it('retreats away from the enemy when no owner is available', async () => {
+    const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
+    const setup = makeBot({ hostiles: [zombie], health: 6 });
+    setup.track(zombie);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
+
+    assert.equal(movement._stats().destinations.length, 1);
+    assert.ok(movement._stats().destinations[0].x < 0);
+  });
+
+  it('uses a closer pursuit range for ranged enemies', async () => {
+    const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
+    const setup = makeBot({ hostiles: [skeleton] });
+    setup.track(skeleton);
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true });
+
+    assert.equal(setup.bot._stats().followRange, 1.5);
+  });
+
+  it('backs away from an ignited creeper without a shield', async () => {
+    const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
+    creeper.metadata = [];
+    creeper.metadata[16] = 1;
+    const setup = makeBot({ hostiles: [creeper] });
+    setup.track(creeper);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
+
+    assert.equal(setup.bot._stats().attackCount, 0);
+    assert.equal(setup.bot._stats().forceStopCount, 1);
+    assert.equal(movement._stats().destinations.length, 1);
+  });
+});
+
+describe('FollowMode combat coordination', () => {
+  it('does not overwrite movement while combat controls it', async () => {
+    let followCount = 0;
+    const owner = makeEntity('Alice', 'player', 5, 64, 0);
+    const ctx = {
+      bot: { entity: makeEntity('bot', 'player', 0, 64, 0) },
+      config: { follow_distance: 3 },
+      ownerName: 'Alice',
+      ownerEntity: owner,
+      agent: { reflexes: { isControllingMovement: true } },
+      movement: {
+        isHeld: false,
+        tickHoldWatchdog() {},
+        followEntity() {
+          followCount += 1;
+        },
+        stop() {}
+      }
+    };
+
+    await new FollowMode().tick(ctx as any);
+
+    assert.equal(followCount, 0);
   });
 });

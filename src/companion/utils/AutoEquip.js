@@ -64,11 +64,20 @@ export class AutoEquip {
             if (bot.armorManager?.equipAll) {
                 await bot.armorManager.equipAll();
             }
+            await equipShield(bot);
             await equipHighestAttack(bot);
         } catch (err) {
             console.warn('[companion] AutoEquip failed:', err.message || err);
         }
     }
+}
+
+export async function equipShield(bot) {
+    if (bot.supportFeature?.('doesntHaveOffHandSlot')) return;
+    const offhandSlot = bot.getEquipmentDestSlot?.('off-hand') ?? 45;
+    if (bot.inventory.slots?.[offhandSlot]?.name === 'shield') return;
+    const shield = bot.inventory.items().find((item) => item.name === 'shield');
+    if (shield) await bot.equip(shield, 'off-hand');
 }
 
 async function equipHighestAttack(bot) {

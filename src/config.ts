@@ -25,6 +25,10 @@ export type ReflexConfig = {
   torch_placing: boolean;
   self_preservation: boolean;
   hostile_range: number;
+  combat_lost_grace_ms: number;
+  retreat_health: number;
+  resume_health: number;
+  retreat_distance: number;
 };
 
 export type DeathReturnConfig = {
@@ -134,7 +138,11 @@ const DEFAULT_COMPANION: CompanionConfig = {
     self_defense: true,
     torch_placing: true,
     self_preservation: true,
-    hostile_range: 8
+    hostile_range: 8,
+    combat_lost_grace_ms: 2500,
+    retreat_health: 8,
+    resume_health: 14,
+    retreat_distance: 6
   },
   chat: {
     enabled: true,

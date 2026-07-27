@@ -8,6 +8,9 @@ type BotLike = {
   entity: { position: Pos };
 };
 
+const IMMEDIATE_THREAT_RANGE = 3.5;
+const OWNER_THREAT_RANGE = 6;
+
 export function isHostile(mob: { type?: string; name?: string } | null | undefined): boolean {
   if (!mob || !mob.name) return false;
   return (mob.type === 'mob' || mob.type === 'hostile')
@@ -34,6 +37,56 @@ export function getNearestEntityWhere(
   return bot.nearestEntity(
     (entity) => predicate(entity) && bot.entity.position.distanceTo!(entity.position) < maxDistance
   );
+}
+
+/**
+ * Choose a visible hostile without relying on object iteration order.
+ * Immediate threats to the bot come first, then threats near the owner.
+ */
+export function chooseCombatTarget(
+  bot: BotLike,
+  owner: { position: Pos } | null | undefined,
+  maxDistance: number,
+  isVisible: (entity: any) => boolean
+): any | null {
+  const candidates = Object.values(bot.entities || {}).filter((entity) => {
+    if (!isHostile(entity) || !entity.position || !isVisible(entity)) return false;
+    return distanceBetween(bot.entity.position, entity.position) < maxDistance;
+  });
+
+  // Small test stubs and old protocol adapters may only expose nearestEntity.
+  if (candidates.length === 0) {
+    return getNearestEntityWhere(
+      bot,
+      (entity) => isHostile(entity) && isVisible(entity),
+      maxDistance
+    );
+  }
+
+  candidates.sort((a, b) => {
+    const aRank = threatRank(bot.entity.position, owner?.position, a.position);
+    const bRank = threatRank(bot.entity.position, owner?.position, b.position);
+    return aRank - bRank;
+  });
+  return candidates[0];
+}
+
+function threatRank(botPos: Pos, ownerPos: Pos | undefined, enemyPos: Pos): number {
+  const botDistance = distanceBetween(botPos, enemyPos);
+  if (botDistance <= IMMEDIATE_THREAT_RANGE) {
+    return botDistance;
+  }
+
+  const ownerDistance = ownerPos ? distanceBetween(ownerPos, enemyPos) : Infinity;
+  if (ownerDistance <= OWNER_THREAT_RANGE) {
+    return 100 + ownerDistance;
+  }
+  return 200 + botDistance;
+}
+
+function distanceBetween(a: Pos, b: Pos): number {
+  if (typeof a.distanceTo === 'function') return a.distanceTo(b);
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
 /**
