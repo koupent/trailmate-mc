@@ -44,7 +44,7 @@ const DEFAULT_CONFIG = {
         max_ms: 15000,
         quiet_ms: 1500,
         grace_ms: 2500,
-        owner_clearance: 3.5,
+        owner_clearance: 8,
         give_suppress_ms: 12000
     },
     chat: { ...DEFAULT_CHAT_CONFIG }

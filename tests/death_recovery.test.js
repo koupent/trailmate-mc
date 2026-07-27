@@ -489,7 +489,7 @@ describe('NearbyLootInterrupt', () => {
                 }
             },
             ownerEntity: opts.ownerPos ? { position: opts.ownerPos } : undefined,
-            config: { nearby_loot: { enabled: true, radius: 8, owner_clearance: 3.5 } },
+            config: { nearby_loot: { enabled: true, radius: 8, owner_clearance: 8 } },
             deathRecovery: { active: opts.deathActive === true, phase: 'travel' },
             graveLoot: { active: opts.graveActive === true },
             nearbyLoot: { active: false, suppressUntil: opts.suppressUntil ?? 0 }
@@ -518,10 +518,20 @@ describe('NearbyLootInterrupt', () => {
         })), false);
     });
 
+    it('shouldRun leaves scattered drops within expanded owner clearance', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            botPos: new Vec3(7, 64, 0),
+            itemPos: new Vec3(6, 64, 0),
+            ownerPos: new Vec3(0, 64, 0)
+        })), false);
+    });
+
     it('shouldRun is true when a drop is outside owner clearance', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
-            itemPos: new Vec3(6, 64, 0),
+            botPos: new Vec3(8, 64, 0),
+            itemPos: new Vec3(9, 64, 0),
             ownerPos: new Vec3(0, 64, 0)
         })), true);
     });
@@ -553,7 +563,6 @@ describe('NearbyLootInterrupt', () => {
     });
 
     it('pickupNearbyItems untilClear stops after quiet period with no items', async () => {
-        const approaches = [];
         const ctx = {
             bot: {
                 entity: { position: new Vec3(0, 64, 0) },
@@ -575,7 +584,6 @@ describe('NearbyLootInterrupt', () => {
         });
         const elapsed = Date.now() - started;
         assert.equal(attempts, 0);
-        assert.equal(approaches.length, 0);
         assert.ok(elapsed < 2000, `expected early clear, elapsed=${elapsed}`);
     });
 });
