@@ -1,6 +1,7 @@
 import { MovementController } from './movement/MovementController.js';
 import { StuckMonitor } from './movement/StuckMonitor.js';
 import { DoorTracker } from './movement/DoorTracker.js';
+import { createDeathRecoveryState } from './deathRecovery.js';
 
 /**
  * Shared context passed to modes and interrupts.
@@ -23,6 +24,14 @@ export class CompanionContext {
         });
         /** @type {string|null} locked follow target username */
         this.ownerName = null;
+        /** @type {import('./deathRecovery.js').DeathRecoveryState} */
+        this.deathRecovery = createDeathRecoveryState();
+        /** @type {{ active: boolean, targetKey: string|null }} */
+        this.graveLoot = { active: false, targetKey: null };
+        /** @type {{ active: boolean }} nearby ground-item scavenging */
+        this.nearbyLoot = { active: false };
+        /** When true, companion loop skips combat reflexes. */
+        this.holdReflexes = false;
     }
 
     get ownerEntity() {

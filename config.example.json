@@ -11,6 +11,23 @@
     "stuck_detect_seconds": 1.5,
     "tick_ms": 250,
     "torch_light_threshold": 0,
+    "death_return": {
+      "enabled": true,
+      "arrive_range": 3,
+      "timeout_ms": 90000
+    },
+    "own_grave": {
+      "enabled": true,
+      "scan_radius": 10,
+      "dig_range": 3.5
+    },
+    "nearby_loot": {
+      "enabled": true,
+      "radius": 8,
+      "max_ms": 15000,
+      "quiet_ms": 1500,
+      "grace_ms": 2500
+    },
     "reflexes": {
       "self_defense": true,
       "torch_placing": true,
