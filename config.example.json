@@ -1,0 +1,32 @@
+{
+  "minecraft_version": "1.21.6",
+  "language": "ja",
+  "chat_ingame": true,
+  "companion": {
+    "scan_radius": 48,
+    "fov_degrees": 120,
+    "follow_distance": 3,
+    "follow_min_distance": 2,
+    "owner_near_radius": 12,
+    "stuck_detect_seconds": 1.5,
+    "tick_ms": 250,
+    "torch_light_threshold": 0,
+    "reflexes": {
+      "self_defense": true,
+      "torch_placing": true,
+      "self_preservation": true,
+      "hostile_range": 8
+    },
+    "chat": {
+      "enabled": true,
+      "min_interval_ms": 90000,
+      "event_cooldown_ms": 300000,
+      "player_reply_cooldown_ms": 1500,
+      "spontaneous_chance": 0.7,
+      "idle_chance": 0.35,
+      "low_health": 8,
+      "stuck_seconds": 5,
+      "hostile_range": 12
+    }
+  }
+}

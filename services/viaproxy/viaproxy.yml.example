@@ -1,0 +1,22 @@
+# ViaProxy configuration file (example)
+# Copy to viaproxy.yml and adjust target-address for your Tailscale Minecraft host.
+# Account login tokens belong in saves.json (gitignored). Configure via:
+#   docker compose up -d viaproxy
+#   docker attach <viaproxy-container>
+
+bind-address: 0.0.0.0:25568
+target-address: your-minecraft-host.tailnet.ts.net:25565
+target-version: Auto Detect (1.7+ servers)
+connect-timeout: 8000
+proxy-online-mode: false
+auth-method: ACCOUNT
+minecraft-account-index: 0
+betacraft-auth: false
+backend-proxy-url: ''
+backend-haproxy: false
+client-haproxy: false
+bungeecord: false
+rewritechat: true
+
+# Optional advanced options use ViaProxy defaults when omitted.
+# See services/viaproxy/README.md and https://github.com/ViaVersion/ViaProxy

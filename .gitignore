@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.env
+config.json
+keys.json
+*.log
+.DS_Store
+.idea/
+.vscode/
+.cursor/
+
+# ViaProxy secrets and runtime
+services/viaproxy/viaproxy.yml
+services/viaproxy/saves.json
+services/viaproxy/jars/
+services/viaproxy/logs/
+services/viaproxy/plugins/
+services/viaproxy/ViaLoader/
+services/viaproxy/viabedrock/
+services/viaproxy/*.yml
+!services/viaproxy/viaproxy.yml.example

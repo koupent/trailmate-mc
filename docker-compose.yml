@@ -1,0 +1,43 @@
+services:
+  viaproxy:
+    image: ghcr.io/viaversion/viaproxy:latest
+    volumes:
+      - ./services/viaproxy:/app/run
+    ports:
+      - "25568:25568"
+    stdin_open: true
+    tty: true
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 25568"]
+      interval: 5s
+      timeout: 3s
+      retries: 18
+      start_period: 15s
+    restart: "no"
+
+  trailmate:
+    build: .
+    depends_on:
+      viaproxy:
+        condition: service_healthy
+    env_file:
+      - .env
+    environment:
+      MC_HOST: ${MC_HOST:-viaproxy}
+      MC_PORT: ${MC_PORT:-25568}
+      MC_AUTH: ${MC_AUTH:-offline}
+      BOT_NAME: ${BOT_NAME:-Trailmate}
+    volumes:
+      # Optional local override: uncomment after copying config.example.json -> config.json
+      # - ./config.json:/app/config.json:ro
+      - ./locales:/app/locales:ro
+      - ./src:/app/src:ro
+      - trailmate_auth:/root/.minecraft
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    stdin_open: true
+    tty: true
+    restart: "no"
+
+volumes:
+  trailmate_auth:
