@@ -32,25 +32,115 @@ Trailmate MC ──► ViaProxy ──► 同じサーバー
 
 ### 用意するもの
 
-- Docker Desktop
+- Windows の場合: Docker Desktop（起動済み）
 - 参加したい Minecraft Java サーバー（VPN 上でも可）
-- ViaProxy 用の Microsoft アカウント（オンラインサーバーの場合）
+- オンラインモードのサーバーなら、ViaProxy 用の Microsoft アカウント
 
-### セットアップ
+### Windowsでの初回セットアップ
+
+プログラミングに慣れていない方でも進められる手順です。
+
+#### 1. 設定ファイルを自動作成する
+
+1. Docker Desktopを起動し、起動完了まで待つ
+2. このリポジトリのフォルダーを開く
+3. `start.bat` をダブルクリックする
+4. 黒い画面に `ACTION REQUIRED` と表示されたら、何かキーを押して閉じる
+
+初回は設定ファイルを作成するために停止します。これはエラーではありません。
+
+#### 2. Minecraftサーバーの住所を設定する
+
+1. `services` → `viaproxy` フォルダーを開く
+2. 作成された `viaproxy.yml` をメモ帳などで開く
+3. `target-address:` で始まる行を探す
+4. その行を参加先サーバーの住所とポートに書き換え、保存する
+
+```yaml
+# 設定例
+target-address: your-server.example.com:25565
+```
+
+一般的なポート番号は `25565` です。接続先が分からない場合は、サーバー管理者に「サーバーアドレスとポート番号」を確認してください。
+
+#### 3. もう一度起動する
+
+`start.bat` をもう一度ダブルクリックします。
+
+- ボットがサーバーに現れた場合: **セットアップ完了**
+- Microsoftアカウントが必要という警告が表示され、ボットが現れない場合: 次の登録手順へ進む
+
+### Microsoftアカウントの登録
+
+#### この作業が必要か判断する方法
+
+次のどちらかに当てはまる場合だけ必要です。
+
+- サーバー管理者から「オンラインモードのサーバー」と案内されている
+- `start.bat` の最後に、Microsoftアカウントが必要という警告が表示された
+
+ボットがすでにサーバーへ参加できている場合、この作業は不要です。
+
+#### 登録手順
+
+1. リポジトリのフォルダーをエクスプローラーで開く
+2. 上部のアドレス欄に `powershell` と入力し、Enterを押す
+3. 開いた画面に次のコマンドを貼り付け、Enterを押す
+
+```bash
+docker attach trailmate-mc-viaproxy-1
+```
+
+4. 続けて次を入力し、Enterを押す
+
+```text
+account add microsoft
+```
+
+5. 表示されたURLをブラウザーで開く
+6. コードが表示されている場合は、そのコードを入力する
+7. **ボットとして使うMicrosoftアカウント**でログインし、完了表示を確認する
+8. PowerShellへ戻り、`Ctrl` を押しながら `P`、続けて `Ctrl` を押しながら `Q` を押す
+9. PowerShellが通常の入力待ちに戻ったら閉じる
+10. `restart.bat` をダブルクリックする
+11. Minecraftサーバーにボットが現れれば完了
+
+> **重要:** `Ctrl+C` は使わないでください。ViaProxy自体が停止することがあります。
+
+#### `account select 0` は必要？
+
+通常は必要ありません。
+
+- 初めて登録した1件目のアカウントには番号 `0` が付く
+- 初期設定の `minecraft-account-index: 0` が、そのアカウントを再起動時に使用する
+- そのため、1件だけ登録する通常の使い方では `account select 0` を実行しなくてもよい
+
+複数のアカウントを登録した場合だけ、使用する番号の変更が必要です。詳しくは [ViaProxyの詳細設定](services/viaproxy/README.md#複数のアカウントを登録した場合) を参照してください。
+
+> **注意:** ログイン情報は `services/viaproxy/saves.json` に保存されます。このファイルを他人に送ったり、Gitへコミットしたりしないでください。
+
+### macOS / Linuxでのセットアップ
+
+Windows用バッチは利用できないため、ターミナルで設定ファイルを作成します。
 
 ```bash
 cp .env.example .env
 cp config.example.json config.json
 cp services/viaproxy/viaproxy.yml.example services/viaproxy/viaproxy.yml
-```
-
-1. `viaproxy.yml` の `target-address` を実サーバーに変更
-2. ViaProxy にアカウントを登録（`docker compose up -d viaproxy` → `docker attach`）
-3. Windows なら `start.bat`、それ以外は:
-
-```bash
+# viaproxy.yml の target-address を編集してから起動
 docker compose up -d --build
 ```
+
+### Windows バッチ
+
+| ファイル | 用途 |
+|---|---|
+| `start.bat` | 設定の自動作成 → ViaProxy / Trailmate 起動 |
+| `stop.bat` | 停止 |
+| `restart.bat` | 停止してから起動 |
+| `status.bat` | コンテナ状態と直近ログ |
+
+> **注意:** `.bat` は Windows の `cmd.exe` 用です。改行は CRLF である必要があります（`.gitattributes` で固定）。
 
 ### チャットコマンド
 
@@ -68,8 +158,19 @@ docker compose up -d --build
 - `.env` … 接続先（ViaProxy）とボット名
 - `config.json` … 追従距離、実況クールダウン、reflexes など
 - `locales/ja.json` … 独り言・コマンド返答（英語を足すなら `locales/en.json`）
+- `services/viaproxy/viaproxy.yml` … **実際の Minecraft サーバー**（`target-address`）
 
 **秘密情報（`.env`、実 `viaproxy.yml`、`saves.json`）はコミットしないでください。**
+
+## うまく動かないとき
+
+1. `status.bat` でコンテナ状態を確認する
+2. Docker Desktop が起動しているか確認する
+3. `viaproxy.yml` の `target-address` がプレースホルダのままになっていないか確認する
+4. ViaProxy 初回だけ設定生成後に一度終了することがある → `target-address` を直して `start.bat` を再実行
+5. Trailmate がすぐ落ち、ViaProxy ログに `requires a valid authentication mode` と出る
+   → オンラインモードのサーバーです。上記の **Microsoft アカウント登録** を行い、`auth-method: ACCOUNT` のまま `restart.bat`
+6. `.bat` が意味不明なエラーで即終了する → 改行が LF になっている可能性。再クローンするか `.gitattributes` 適用後に `git add --renormalize "*.bat"`
 
 ## 開発
 

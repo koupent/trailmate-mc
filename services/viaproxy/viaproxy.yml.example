@@ -10,6 +10,8 @@ target-version: Auto Detect (1.7+ servers)
 connect-timeout: 8000
 proxy-online-mode: false
 auth-method: ACCOUNT
+# The first registered account is index 0. No 'account select' command is needed.
+# For multiple accounts, set this to the desired number shown by 'account list'.
 minecraft-account-index: 0
 betacraft-auth: false
 backend-proxy-url: ''
