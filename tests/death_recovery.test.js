@@ -468,34 +468,88 @@ describe('OwnGraveInterrupt gating', () => {
 });
 
 describe('NearbyLootInterrupt', () => {
-    it('shouldRun is true when ground items are within radius', () => {
-        const interrupt = new NearbyLootInterrupt();
-        const ctx = {
+    /**
+     * @param {Partial<{
+     *   botPos: import('vec3').Vec3,
+     *   itemPos: import('vec3').Vec3,
+     *   ownerPos: import('vec3').Vec3 | null,
+     *   deathActive: boolean,
+     *   graveActive: boolean,
+     *   suppressUntil: number
+     * }>} [opts]
+     */
+    function makeLootCtx(opts = {}) {
+        const botPos = opts.botPos || new Vec3(0, 64, 0);
+        const itemPos = opts.itemPos || new Vec3(3, 64, 0);
+        return {
             bot: {
-                entity: { position: new Vec3(0, 64, 0) },
+                entity: { position: botPos },
                 entities: {
-                    1: { name: 'item', position: new Vec3(3, 64, 0) }
+                    1: { name: 'item', position: itemPos }
                 }
             },
-            config: { nearby_loot: { enabled: true, radius: 8 } },
-            deathRecovery: { active: false }
+            ownerEntity: opts.ownerPos ? { position: opts.ownerPos } : undefined,
+            config: { nearby_loot: { enabled: true, radius: 8, owner_clearance: 3.5 } },
+            deathRecovery: { active: opts.deathActive === true, phase: 'travel' },
+            graveLoot: { active: opts.graveActive === true },
+            nearbyLoot: { active: false, suppressUntil: opts.suppressUntil ?? 0 }
         };
-        assert.equal(interrupt.shouldRun(ctx), true);
+    }
+
+    it('shouldRun is true when ground items are within radius', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx()), true);
     });
 
     it('shouldRun is true while death-return is traveling if ground items are near', () => {
         const interrupt = new NearbyLootInterrupt();
-        const ctx = {
-            bot: {
-                entity: { position: new Vec3(0, 64, 0) },
-                entities: {
-                    1: { name: 'item', position: new Vec3(2, 64, 0) }
-                }
-            },
-            config: { nearby_loot: { enabled: true, radius: 8 } },
-            deathRecovery: { active: true, phase: 'travel' }
-        };
-        assert.equal(interrupt.shouldRun(ctx), true);
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            itemPos: new Vec3(2, 64, 0),
+            deathActive: true
+        })), true);
+    });
+
+    it('shouldRun is false when drops are only within owner clearance', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            botPos: new Vec3(2, 64, 0),
+            itemPos: new Vec3(1, 64, 0),
+            ownerPos: new Vec3(0, 64, 0)
+        })), false);
+    });
+
+    it('shouldRun is true when a drop is outside owner clearance', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            itemPos: new Vec3(6, 64, 0),
+            ownerPos: new Vec3(0, 64, 0)
+        })), true);
+    });
+
+    it('shouldRun ignores owner clearance while deathRecovery is active', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            botPos: new Vec3(2, 64, 0),
+            itemPos: new Vec3(1, 64, 0),
+            ownerPos: new Vec3(0, 64, 0),
+            deathActive: true
+        })), true);
+    });
+
+    it('shouldRun is false while give-all suppressUntil is in the future', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            itemPos: new Vec3(6, 64, 0),
+            suppressUntil: Date.now() + 60_000
+        })), false);
+    });
+
+    it('shouldRun returns after suppressUntil expires', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            itemPos: new Vec3(6, 64, 0),
+            suppressUntil: Date.now() - 1
+        })), true);
     });
 
     it('pickupNearbyItems untilClear stops after quiet period with no items', async () => {

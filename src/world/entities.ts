@@ -38,11 +38,13 @@ export function getNearestEntityWhere(
 
 /**
  * Nearest dropped item entity within radius of `around` (defaults to bot).
+ * Optional `exclude` skips entities (e.g. drops still near the owner).
  */
 export function getNearestGroundItem(
   bot: BotLike,
   maxDistance = 16,
-  around?: Pos
+  around?: Pos,
+  exclude?: (entity: any) => boolean
 ): any | null {
   const origin = around || bot.entity?.position;
   if (!origin) return null;
@@ -57,7 +59,7 @@ export function getNearestGroundItem(
     return Math.hypot(dx, dy, dz);
   };
 
-  if (typeof bot.nearestEntity === 'function' && !around) {
+  if (typeof bot.nearestEntity === 'function' && !around && !exclude) {
     return bot.nearestEntity(
       (entity) => isGroundItem(entity) && bot.entity.position.distanceTo!(entity.position) < maxDistance
     );
@@ -67,6 +69,7 @@ export function getNearestGroundItem(
   let bestDist = maxDistance;
   for (const entity of Object.values(bot.entities || {})) {
     if (!isGroundItem(entity) || !entity.position) continue;
+    if (exclude?.(entity)) continue;
     const dist = distanceTo(entity.position);
     if (dist < bestDist) {
       best = entity;

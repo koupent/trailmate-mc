@@ -1,10 +1,11 @@
-import { countGroundItemsNear, pickupNearbyItems } from '../utils/pickupItems.js';
+import { countGroundItemsNear, isExcludedNearOwner, pickupNearbyItems } from '../utils/pickupItems.js';
 import { releaseHoldReflexesIfIdle } from '../deathRecovery.js';
 
 const DEFAULT_RADIUS = 8;
 const DEFAULT_MAX_MS = 15000;
 const DEFAULT_QUIET_MS = 1500;
 const DEFAULT_GRACE_MS = 2500;
+const DEFAULT_OWNER_CLEARANCE = 3.5;
 
 /**
  * Pick up ground-item entities near the bot.
@@ -22,9 +23,12 @@ export class NearbyLootInterrupt {
         const cfg = ctx.config?.nearby_loot;
         if (cfg?.enabled === false) return false;
         if (!ctx.bot?.entity) return false;
+        if (Date.now() < (ctx.nearbyLoot?.suppressUntil || 0)) return false;
 
         const radius = cfg?.radius ?? DEFAULT_RADIUS;
-        return countGroundItemsNear(ctx.bot, radius, ctx.bot.entity.position) > 0;
+        const ownerClearance = cfg?.owner_clearance ?? DEFAULT_OWNER_CLEARANCE;
+        const exclude = (entity) => isExcludedNearOwner(ctx, entity.position, ownerClearance);
+        return countGroundItemsNear(ctx.bot, radius, ctx.bot.entity.position, exclude) > 0;
     }
 
     /**
@@ -37,8 +41,9 @@ export class NearbyLootInterrupt {
         const maxMs = cfg.max_ms ?? DEFAULT_MAX_MS;
         const quietMs = cfg.quiet_ms ?? DEFAULT_QUIET_MS;
         const graceMs = cfg.grace_ms ?? DEFAULT_GRACE_MS;
+        const ownerClearance = cfg.owner_clearance ?? DEFAULT_OWNER_CLEARANCE;
 
-        ctx.nearbyLoot = ctx.nearbyLoot || { active: false };
+        ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
         ctx.nearbyLoot.active = true;
         ctx.holdReflexes = true;
 
@@ -54,7 +59,8 @@ export class NearbyLootInterrupt {
                 durationMs: maxMs,
                 untilClear: true,
                 quietMs,
-                graceMs
+                graceMs,
+                ownerClearance
             });
         } finally {
             ctx.nearbyLoot.active = false;
