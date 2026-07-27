@@ -1,4 +1,5 @@
 import Vec3 from 'vec3';
+import { isDoorPassableName } from '../blockProtection.js';
 
 /** Max reach used when reading what the owner is looking at. */
 const OWNER_LOOK_RANGE = 5;
@@ -10,6 +11,13 @@ const TRACK_TTL_MS = 20000;
 const APPROACH_DISTANCE = 2.25;
 /** Require this clearance past the door before closing. */
 const CLEAR_DISTANCE = 1.35;
+/** Avoid double-activate toggle (open then immediately close). */
+const OPEN_COOLDOWN_MS = 1200;
+/**
+ * Block state can lag behind our own activation, so a door we just toggled may
+ * still read as closed. Never touch the same door again inside this window.
+ */
+const REOPEN_GUARD_MS = 2500;
 
 /**
  * Wooden doors and fence gates the companion may close after passing through.
@@ -18,10 +26,7 @@ const CLEAR_DISTANCE = 1.35;
  * @returns {boolean}
  */
 export function isCloseablePassage(block) {
-    if (!block?.name) return false;
-    const name = block.name.toLowerCase();
-    if (name.includes('iron') || name.includes('trapdoor')) return false;
-    return name.includes('door') || name.includes('fence_gate');
+    return isDoorPassableName(block?.name);
 }
 
 /**
@@ -123,6 +128,10 @@ export class DoorTracker {
         /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, approachSide: -1|0|1|null, openedAt: number }[]} */
         this._tracked = [];
         this._closing = false;
+        this._opening = false;
+        this._openCooldownUntil = 0;
+        /** @type {Map<string, number>} door key -> last activation time */
+        this._recentOpens = new Map();
 
         this._onSwing = (entity) => this._handleSwing(entity);
         this._onBlockUpdate = (oldBlock, newBlock) => this._handleBlockUpdate(oldBlock, newBlock);
@@ -155,14 +164,18 @@ export class DoorTracker {
     }
 
     /**
-     * Expire stale entries and close doors the bot has finished passing through.
+     * Expire stale entries, open a closed door blocking the path, and close after passage.
      */
     async tick() {
         const now = Date.now();
         this._pending = this._pending.filter((p) => now - p.at <= SWING_MATCH_MS);
         this._tracked = this._tracked.filter((t) => now - t.openedAt <= TRACK_TTL_MS);
 
-        if (this._closing || this._tracked.length === 0) return;
+        if (this._closing) return;
+
+        await this.openBlockingDoorIfNeeded();
+
+        if (this._tracked.length === 0) return;
 
         const botPos = this.bot.entity?.position;
         if (!botPos) return;
@@ -184,6 +197,111 @@ export class DoorTracker {
     }
 
     /**
+     * Open one closed door between the bot and owner. Shared entry point for recovery.
+     * @returns {Promise<boolean>} true if an open was attempted
+     */
+    async openBlockingDoorIfNeeded() {
+        if (this._opening || this._closing) return false;
+        const now = Date.now();
+        if (now < this._openCooldownUntil) return false;
+
+        const botPos = this.bot.entity?.position;
+        const owner = this.getOwnerEntity();
+        if (!botPos || !owner?.position) return false;
+
+        for (const [key, at] of this._recentOpens) {
+            if (now - at > REOPEN_GUARD_MS) this._recentOpens.delete(key);
+        }
+
+        const door = this._findBlockingClosedDoor(botPos, owner.position);
+        if (!door) return false;
+
+        // Re-read right before activate to avoid toggling an already-open door.
+        const current = this._blockAt(door.position) || door;
+        if (!isCloseablePassage(current) || current._properties?.open === true) return false;
+
+        this._opening = true;
+        this._openCooldownUntil = now + OPEN_COOLDOWN_MS;
+        this._recentOpens.set(posKey(current.position), now);
+        try {
+            await this.bot.activateBlock(current);
+            return true;
+        } catch (err) {
+            console.warn('[companion] door open failed:', err?.message || err);
+            return false;
+        } finally {
+            this._opening = false;
+        }
+    }
+
+    /**
+     * @param {{ x: number, y: number, z: number }} botPos
+     * @param {{ x: number, y: number, z: number }} ownerPos
+     * @returns {import('prismarine-block').Block|null}
+     */
+    _findBlockingClosedDoor(botPos, ownerPos) {
+        const baseX = Math.floor(botPos.x);
+        const baseY = Math.floor(botPos.y);
+        const baseZ = Math.floor(botPos.z);
+        const towardX = ownerPos.x - botPos.x;
+        const towardZ = ownerPos.z - botPos.z;
+        const towardLen = Math.hypot(towardX, towardZ) || 1;
+        const ux = towardX / towardLen;
+        const uz = towardZ / towardLen;
+
+        /** @type {{ block: import('prismarine-block').Block, score: number }[]} */
+        const candidates = [];
+        for (let dx = -2; dx <= 2; dx++) {
+            for (let dz = -2; dz <= 2; dz++) {
+                if (dx === 0 && dz === 0) continue;
+                const block = this._blockAt({ x: baseX + dx, y: baseY, z: baseZ + dz });
+                if (!block || !isCloseablePassage(block)) continue;
+                if (block._properties?.open === true) continue;
+
+                // Prefer the lower half so activateBlock toggles the full door.
+                const lower = block._properties?.half === 'upper'
+                    ? this._blockAt({ x: block.position.x, y: block.position.y - 1, z: block.position.z })
+                    : block;
+                if (!lower || !isCloseablePassage(lower) || lower._properties?.open === true) continue;
+
+                const cx = lower.position.x + 0.5 - botPos.x;
+                const cz = lower.position.z + 0.5 - botPos.z;
+                const dist = Math.hypot(cx, cz);
+                if (dist > 2.6) continue;
+                const alignment = (cx * ux + cz * uz) / (dist || 1);
+                if (alignment < 0.15) continue;
+
+                if (this._openSkipReason(lower)) continue;
+
+                candidates.push({ block: lower, score: alignment * 2 - dist });
+            }
+        }
+
+        candidates.sort((a, b) => b.score - a.score);
+        return candidates[0]?.block || null;
+    }
+
+    /**
+     * Why this closed door must be left alone, or null when it may be opened.
+     * @param {import('prismarine-block').Block} door lower half
+     * @returns {'recently-toggled'|'other-leaf-open'|null}
+     */
+    _openSkipReason(door) {
+        const lastOpen = this._recentOpens.get(posKey(door.position));
+        if (lastOpen != null && Date.now() - lastOpen < REOPEN_GUARD_MS) return 'recently-toggled';
+
+        // Double doors: the leaf the owner already opened is the passage to use.
+        const pos = door.position;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const neighbour = this._blockAt({ x: pos.x + dx, y: pos.y, z: pos.z + dz });
+            if (isCloseablePassage(neighbour) && neighbour._properties?.open === true) {
+                return 'other-leaf-open';
+            }
+        }
+        return null;
+    }
+
+    /**
      * pathfinder opens doors via activateBlock; record closed passages we open.
      * @param {import('prismarine-block').Block} block
      * @param {...any} args
@@ -191,6 +309,9 @@ export class DoorTracker {
     _wrappedActivateBlock(block, ...args) {
         if (!this._closing) {
             this._noteBotOpened(block);
+        }
+        if (isCloseablePassage(block)) {
+            this._recentOpens.set(posKey(normalizeDoorPos(block)), Date.now());
         }
         return this._originalActivateBlock(block, ...args);
     }

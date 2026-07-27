@@ -1,17 +1,33 @@
 import { Mode } from '../Mode.js';
 import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
 
-/** Height difference that switches the bot into climbing mode. */
-const CLIMB_ENTER_DY = 0.6;
-/** Lower bound to leave climbing mode, so the goal does not flap on stairs. */
-const CLIMB_EXIT_DY = 0.35;
-/** Follow range used while climbing: loose ranges are satisfied below the owner. */
-const CLIMB_RANGE = 1;
+/**
+ * GoalFollow only measures straight-line distance, so a loose range counts as
+ * arrived through walls and floors. Keep it tight and stop from Follow instead.
+ */
+const FOLLOW_GOAL_RANGE = 1;
+/** Above this height gap the owner is on another floor: keep pathing. */
+const SAME_FLOOR_DY = 2;
 /** Stop and wait once within this distance of the last-known owner position. */
 const LAST_KNOWN_ARRIVE_RANGE = 3;
-/** Fallback when config omits follow_distance / follow_min_distance. */
+/** Fallback when config omits follow_distance. */
 const DEFAULT_FOLLOW_DISTANCE = 3;
-const DEFAULT_FOLLOW_MIN_DISTANCE = 2;
+
+/**
+ * Nothing solid between the two heads. Used to tell "next to the owner" from
+ * "next to the owner but outside the wall".
+ * @param {import('mineflayer').Bot} bot
+ * @param {import('prismarine-entity').Entity} owner
+ * @returns {boolean}
+ */
+function ownerInSight(bot, owner) {
+    const eye = bot.entity.position.offset(0, bot.entity.height * 0.9, 0);
+    const target = owner.position.offset(0, (owner.height ?? 1.8) * 0.9, 0);
+    const delta = target.minus(eye);
+    const dist = delta.norm();
+    if (dist < 0.1) return true;
+    return bot.world.raycast(eye, delta.scaled(1 / dist), dist) === null;
+}
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -26,7 +42,6 @@ export class FollowMode extends Mode {
             id: 'follow',
             description: 'Follow the owner closely and stay nearby'
         });
-        this._climbing = false;
         /** @type {{ x: number, y: number, z: number }|null} */
         this._lastOwnerPos = null;
         /** @type {string|null} */
@@ -36,7 +51,6 @@ export class FollowMode extends Mode {
     }
 
     async onEnter() {
-        this._climbing = false;
         this._waitingAtLastKnown = false;
     }
 
@@ -66,33 +80,26 @@ export class FollowMode extends Mode {
         this._waitingAtLastKnown = false;
 
         const followDistance = config.follow_distance ?? DEFAULT_FOLLOW_DISTANCE;
-        const minDistance = config.follow_min_distance ?? DEFAULT_FOLLOW_MIN_DISTANCE;
         const ownerDy = owner.position.y - bot.entity.position.y;
         const horizDist = Math.hypot(
             owner.position.x - bot.entity.position.x,
             owner.position.z - bot.entity.position.z
         );
 
-        this._climbing = this._climbing
-            ? Math.abs(ownerDy) > CLIMB_EXIT_DY
-            : Math.abs(ownerDy) > CLIMB_ENTER_DY;
-
         // Skip Follow only while a climb hold is still making progress.
         if (ctx.movement.isHeld) return;
 
-        // Already inside min distance: stop so pathfinder / recovery cannot push the owner.
-        if (horizDist < minDistance) {
+        // Close enough only counts when the owner is actually reachable from
+        // here — a wall between them means the bot is parked outside the room.
+        const nearOwner = horizDist < followDistance && Math.abs(ownerDy) < SAME_FLOOR_DY;
+        if (nearOwner && ownerInSight(bot, owner)) {
             ctx.movement.stop();
             return;
         }
 
-        // Climb catch-up only when still far; near the owner, prefer behind spacing.
-        if (this._climbing && horizDist > followDistance) {
-            ctx.movement.followEntity(owner, CLIMB_RANGE);
-            return;
-        }
-
-        ctx.movement.followEntityBehind(owner, followDistance, minDistance);
+        // Always path to the owner itself. A behind-anchor point lands inside
+        // walls in small rooms, which makes the bot loop outside the building.
+        ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE);
     }
 
     /**
