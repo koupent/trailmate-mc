@@ -1,6 +1,9 @@
 /**
  * Equip better armor/weapons when inventory changes (e.g. player gave gear).
  */
+
+import { tierOf } from './itemRetention.js';
+
 export class AutoEquip {
     /**
      * @param {import('../../agent.js').Agent} agent
@@ -66,26 +69,6 @@ export class AutoEquip {
             console.warn('[companion] AutoEquip failed:', err.message || err);
         }
     }
-}
-
-const TIER_SCORE = {
-    wood: 1,
-    wooden: 1,
-    leather: 1,
-    gold: 2,
-    golden: 2,
-    stone: 3,
-    chainmail: 3,
-    iron: 4,
-    diamond: 5,
-    netherite: 6
-};
-
-function tierOf(name) {
-    for (const [key, score] of Object.entries(TIER_SCORE)) {
-        if (name.includes(key)) return score;
-    }
-    return 0;
 }
 
 async function equipHighestAttack(bot) {

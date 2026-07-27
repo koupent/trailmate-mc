@@ -30,6 +30,8 @@ export class CompanionContext {
         this.graveLoot = { active: false, targetKey: null };
         /** @type {{ active: boolean, suppressUntil: number }} nearby ground-item scavenging */
         this.nearbyLoot = { active: false, suppressUntil: 0 };
+        /** @type {{ active: boolean }} periodic surplus item transfer to owner */
+        this.itemTransfer = { active: false };
         /** When true, companion loop skips combat reflexes. */
         this.holdReflexes = false;
     }

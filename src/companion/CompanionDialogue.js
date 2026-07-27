@@ -49,13 +49,21 @@ export class CompanionDialogue {
         return this.config.enabled !== false;
     }
 
+    get isActionBusy() {
+        return this._actionBusy;
+    }
+
+    _isItemTransferActive() {
+        return Boolean(this.agent.companion?.ctx?.itemTransfer?.active);
+    }
+
     /**
      * @param {string} username
      * @param {string} message
      */
     async handlePlayerMessage(username, message) {
         if (this.agent.shut_up) return false;
-        if (this._actionBusy) return false;
+        if (this._actionBusy || this._isItemTransferActive()) return false;
         const now = Date.now();
         if (now - this.lastPlayerChatAt < this.config.player_reply_cooldown_ms) return false;
 
@@ -74,7 +82,7 @@ export class CompanionDialogue {
     async maybeSpeak() {
         if (this.config.enabled === false) return;
         if (this.agent.shut_up) return;
-        if (this._actionBusy) return;
+        if (this._actionBusy || this._isItemTransferActive()) return;
 
         const snapshot = this._buildSnapshot();
         let event = detectSituationEvent(this._prev, snapshot, this.config);
