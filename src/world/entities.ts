@@ -15,11 +15,14 @@ export function isHostile(mob: { type?: string; name?: string } | null | undefin
     && mob.name !== 'snow_golem';
 }
 
-export function isGroundItem(entity: { name?: string; type?: string; objectType?: string } | null | undefined): boolean {
+export function isGroundItem(entity: { name?: string; type?: string; objectType?: string; displayName?: string } | null | undefined): boolean {
   if (!entity) return false;
   const name = String(entity.name || '').toLowerCase();
-  if (name === 'item' || name === 'item_entity') return true;
+  if (name === 'item' || name === 'item_entity' || name === 'item entity') return true;
   if (entity.type === 'object' && (entity.objectType === 'Item' || entity.objectType === 'item')) return true;
+  // Some proxies only expose displayName / generic object type.
+  const display = String(entity.displayName || '').toLowerCase();
+  if (display === 'item' || display === 'item entity') return true;
   return false;
 }
 

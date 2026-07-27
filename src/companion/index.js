@@ -5,6 +5,7 @@ import { FollowMode } from './modes/FollowMode.js';
 import { WaitMode } from './modes/WaitMode.js';
 import { OwnGraveInterrupt } from './interrupts/OwnGraveInterrupt.js';
 import { DeathReturnInterrupt } from './interrupts/DeathReturnInterrupt.js';
+import { NearbyLootInterrupt } from './interrupts/NearbyLootInterrupt.js';
 import { RecoveryInterrupt } from './interrupts/RecoveryInterrupt.js';
 import { AutoEquip } from './utils/AutoEquip.js';
 import { CompanionDialogue, DEFAULT_CHAT_CONFIG } from './CompanionDialogue.js';
@@ -30,16 +31,19 @@ const DEFAULT_CONFIG = {
     death_return: {
         enabled: true,
         arrive_range: 3,
-        loot_radius: 5,
-        loot_ms: 6000,
         timeout_ms: 90000
     },
     own_grave: {
         enabled: true,
         scan_radius: 10,
-        dig_range: 3.5,
-        loot_radius: 4,
-        loot_ms: 5000
+        dig_range: 3.5
+    },
+    nearby_loot: {
+        enabled: true,
+        radius: 8,
+        max_ms: 15000,
+        quiet_ms: 1500,
+        grace_ms: 2500
     },
     chat: { ...DEFAULT_CHAT_CONFIG }
 };
@@ -74,6 +78,10 @@ export async function startCompanion(agent, companionConfig = {}) {
         own_grave: {
             ...DEFAULT_CONFIG.own_grave,
             ...(companionConfig.own_grave || {})
+        },
+        nearby_loot: {
+            ...DEFAULT_CONFIG.nearby_loot,
+            ...(companionConfig.nearby_loot || {})
         }
     };
 
@@ -84,8 +92,9 @@ export async function startCompanion(agent, companionConfig = {}) {
     const worldState = new WorldState();
     const ctx = new CompanionContext(agent, worldState, config);
     const modes = createCompanionModes();
-    // Own grave first so death-site graves are broken before ground-loot travel finishes.
+    // Nearby loot before grave dig so scattered drops are not abandoned for the next grave.
     const interrupts = [
+        new NearbyLootInterrupt(),
         new OwnGraveInterrupt(),
         new DeathReturnInterrupt(),
         new RecoveryInterrupt()
@@ -106,7 +115,7 @@ export async function startCompanion(agent, companionConfig = {}) {
     await applyJumpHitboxFix(agent.bot);
     wireDeathRecovery(agent, ctx, config);
 
-    console.log('[companion] started (follow + wait + death-return + own-grave + recovery + auto-equip + dialogue)');
+    console.log('[companion] started (follow + wait + death-return + own-grave + nearby-loot + recovery + auto-equip + dialogue)');
 
     const loop = async () => {
         if (!agent.bot || agent.bot.entity == null) return;

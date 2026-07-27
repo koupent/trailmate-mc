@@ -1,14 +1,11 @@
-import { pickupNearbyItems } from '../utils/pickupItems.js';
 import { clearDeathReturn } from '../deathRecovery.js';
 
 const DEFAULT_ARRIVE_RANGE = 3;
-const DEFAULT_LOOT_RADIUS = 5;
 const DEFAULT_TIMEOUT_MS = 90000;
-const DEFAULT_LOOT_MS = 6000;
 
 /**
- * After respawn, walk back to the death coordinates and pick up nearby drops.
- * Independent from grave breaking (OwnGraveInterrupt handles graves nearby).
+ * After respawn, walk back to the death coordinates.
+ * Ground drops are collected by NearbyLootInterrupt once the bot is nearby.
  */
 export class DeathReturnInterrupt {
     constructor() {
@@ -32,8 +29,8 @@ export class DeathReturnInterrupt {
             return false;
         }
 
-        // Prefer own-grave looting when a grave is already being handled.
-        if (ctx.graveLoot?.active) return false;
+        // Prefer in-progress dig / loot over travel this tick.
+        if (ctx.graveLoot?.active || ctx.nearbyLoot?.active) return false;
 
         return true;
     }
@@ -46,9 +43,7 @@ export class DeathReturnInterrupt {
         const dr = ctx.deathRecovery;
         const cfg = ctx.config?.death_return || {};
         const arriveRange = cfg.arrive_range ?? DEFAULT_ARRIVE_RANGE;
-        const lootRadius = cfg.loot_radius ?? DEFAULT_LOOT_RADIUS;
         const timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
-        const lootMs = cfg.loot_ms ?? DEFAULT_LOOT_MS;
 
         ctx.holdReflexes = true;
         try {
@@ -70,27 +65,13 @@ export class DeathReturnInterrupt {
         }
 
         const dist = bot.entity.position.distanceTo(dr.deathPos);
-
-        if (dr.phase === 'travel') {
-            if (dist <= arriveRange) {
-                dr.phase = 'loot';
-                dr.arrivedAt = Date.now();
-                ctx.movement.stop();
-            } else {
-                ctx.movement.goToward(dr.deathPos, arriveRange);
-                return;
-            }
-        }
-
-        if (dr.phase === 'loot') {
-            await pickupNearbyItems(ctx, {
-                radius: lootRadius,
-                around: dr.deathPos,
-                durationMs: lootMs
-            });
-            dr.phase = 'done';
+        if (dist <= arriveRange) {
+            ctx.movement.stop();
             clearDeathReturn(ctx);
-            console.log('[companion] death return finished');
+            console.log('[companion] death return arrived');
+            return;
         }
+
+        ctx.movement.goToward(dr.deathPos, arriveRange);
     }
 }

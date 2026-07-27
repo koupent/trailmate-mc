@@ -14,16 +14,19 @@
     "death_return": {
       "enabled": true,
       "arrive_range": 3,
-      "loot_radius": 5,
-      "loot_ms": 6000,
       "timeout_ms": 90000
     },
     "own_grave": {
       "enabled": true,
       "scan_radius": 10,
-      "dig_range": 3.5,
-      "loot_radius": 4,
-      "loot_ms": 5000
+      "dig_range": 3.5
+    },
+    "nearby_loot": {
+      "enabled": true,
+      "radius": 8,
+      "max_ms": 15000,
+      "quiet_ms": 1500,
+      "grace_ms": 2500
     },
     "reflexes": {
       "self_defense": true,

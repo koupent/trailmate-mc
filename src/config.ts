@@ -30,8 +30,6 @@ export type ReflexConfig = {
 export type DeathReturnConfig = {
   enabled: boolean;
   arrive_range: number;
-  loot_radius: number;
-  loot_ms: number;
   timeout_ms: number;
 };
 
@@ -39,8 +37,14 @@ export type OwnGraveConfig = {
   enabled: boolean;
   scan_radius: number;
   dig_range: number;
-  loot_radius: number;
-  loot_ms: number;
+};
+
+export type NearbyLootConfig = {
+  enabled: boolean;
+  radius: number;
+  max_ms: number;
+  quiet_ms: number;
+  grace_ms: number;
 };
 
 export type CompanionConfig = {
@@ -54,6 +58,7 @@ export type CompanionConfig = {
   torch_light_threshold: number;
   death_return: DeathReturnConfig;
   own_grave: OwnGraveConfig;
+  nearby_loot: NearbyLootConfig;
   reflexes: ReflexConfig;
   chat: ChatConfig;
 };
@@ -81,16 +86,19 @@ const DEFAULT_COMPANION: CompanionConfig = {
   death_return: {
     enabled: true,
     arrive_range: 3,
-    loot_radius: 5,
-    loot_ms: 6000,
     timeout_ms: 90000
   },
   own_grave: {
     enabled: true,
     scan_radius: 10,
-    dig_range: 3.5,
-    loot_radius: 4,
-    loot_ms: 5000
+    dig_range: 3.5
+  },
+  nearby_loot: {
+    enabled: true,
+    radius: 8,
+    max_ms: 15000,
+    quiet_ms: 1500,
+    grace_ms: 2500
   },
   reflexes: {
     self_defense: true,

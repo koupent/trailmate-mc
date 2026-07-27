@@ -1,7 +1,7 @@
 import { Vec3 } from 'vec3';
 import { findOwnGravesNear, isGraveCandidateBlock } from '../../world/graves.js';
 import { approachPosition } from '../utils/approachPosition.js';
-import { pickupNearbyItems } from '../utils/pickupItems.js';
+import { releaseHoldReflexesIfIdle } from '../deathRecovery.js';
 import {
     allowDigAt,
     clearAllowedDig,
@@ -10,12 +10,10 @@ import {
 
 const DEFAULT_SCAN_RADIUS = 10;
 const DEFAULT_DIG_RANGE = 3.5;
-const DEFAULT_LOOT_MS = 5000;
-const DEFAULT_LOOT_RADIUS = 4;
 
 /**
  * Break GravesX-style graves that are clearly owned by this bot within scan radius.
- * Independent from death-return travel so scattered graves can still be recovered.
+ * Drop pickup is handled separately by NearbyLootInterrupt.
  */
 export class OwnGraveInterrupt {
     constructor() {
@@ -34,8 +32,7 @@ export class OwnGraveInterrupt {
         if (ctx.graveLoot?.active) return true;
 
         const radius = cfg?.scan_radius ?? DEFAULT_SCAN_RADIUS;
-        const graves = findOwnGravesNear(ctx.bot, ctx.bot.username, radius);
-        return graves.length > 0;
+        return findOwnGravesNear(ctx.bot, ctx.bot.username, radius).length > 0;
     }
 
     /**
@@ -46,8 +43,6 @@ export class OwnGraveInterrupt {
         const cfg = ctx.config?.own_grave || {};
         const radius = cfg.scan_radius ?? DEFAULT_SCAN_RADIUS;
         const digRange = cfg.dig_range ?? DEFAULT_DIG_RANGE;
-        const lootMs = cfg.loot_ms ?? DEFAULT_LOOT_MS;
-        const lootRadius = cfg.loot_radius ?? DEFAULT_LOOT_RADIUS;
 
         ctx.graveLoot = ctx.graveLoot || { active: false, targetKey: null };
         ctx.graveLoot.active = true;
@@ -59,63 +54,54 @@ export class OwnGraveInterrupt {
             /* ignore */
         }
 
-        const graves = findOwnGravesNear(bot, bot.username, radius);
-        if (graves.length === 0) {
-            this._finish(ctx);
-            return;
-        }
-
-        const target = graves[0];
-        const pos = target.block.position;
-        const key = `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
-        ctx.graveLoot.targetKey = key;
-        await this._announceFound(ctx, key, pos);
-
-        const reached = await approachPosition(ctx, {
-            x: pos.x + 0.5,
-            y: pos.y,
-            z: pos.z + 0.5
-        }, {
-            range: digRange,
-            timeoutMs: 10000
-        });
-
-        if (!reached || !bot.entity) {
-            this._finish(ctx);
-            return;
-        }
-
-        const block = bot.blockAt(new Vec3(pos.x, pos.y, pos.z));
-        if (!block || !isGraveCandidateBlock(block.name)) {
-            console.warn('[companion] own grave block missing or not a grave candidate');
-            this._finish(ctx);
-            return;
-        }
-
-        allowDigAt(block.position);
         try {
-            if (!canBreakBlockUnderProtection(block)) {
-                console.warn('[companion] dig blocked by protection policy');
-                this._finish(ctx);
+            const graves = findOwnGravesNear(bot, bot.username, radius);
+            if (graves.length === 0) return;
+
+            const target = graves[0];
+            const pos = target.block.position;
+            const key = `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
+            ctx.graveLoot.targetKey = key;
+            await this._announceFound(ctx, key, pos);
+
+            const reached = await approachPosition(ctx, {
+                x: pos.x + 0.5,
+                y: pos.y,
+                z: pos.z + 0.5
+            }, {
+                range: digRange,
+                timeoutMs: 10000
+            });
+
+            if (!reached || !bot.entity) return;
+
+            const block = bot.blockAt(new Vec3(pos.x, pos.y, pos.z));
+            if (!block || !isGraveCandidateBlock(block.name)) {
+                console.warn('[companion] own grave block missing or not a grave candidate');
                 return;
             }
-            await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
-            ctx.movement.stop();
-            await bot.dig(block);
-            console.log(`[companion] broke own grave at ${key}`);
-        } catch (err) {
-            console.warn('[companion] grave dig failed:', err.message || err);
+
+            allowDigAt(block.position);
+            try {
+                if (!canBreakBlockUnderProtection(block)) {
+                    console.warn('[companion] dig blocked by protection policy');
+                    return;
+                }
+                await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
+                ctx.movement.stop();
+                await bot.dig(block);
+                console.log(`[companion] broke own grave at ${key}`);
+            } catch (err) {
+                console.warn('[companion] grave dig failed:', err.message || err);
+            } finally {
+                clearAllowedDig();
+            }
         } finally {
-            clearAllowedDig();
+            // Leave inactive so NearbyLootInterrupt can collect drops next.
+            ctx.graveLoot.active = false;
+            ctx.graveLoot.targetKey = null;
+            releaseHoldReflexesIfIdle(ctx);
         }
-
-        await pickupNearbyItems(ctx, {
-            radius: lootRadius,
-            around: { x: pos.x + 0.5, y: pos.y, z: pos.z + 0.5 },
-            durationMs: lootMs
-        });
-
-        this._finish(ctx);
     }
 
     /**
@@ -135,19 +121,6 @@ export class OwnGraveInterrupt {
             await ctx.agent?.openChat?.(`自分の墓を見つけたよ (${x}, ${y}, ${z})`);
         } catch {
             /* ignore */
-        }
-    }
-
-    /**
-     * @param {import('../CompanionContext.js').CompanionContext} ctx
-     */
-    _finish(ctx) {
-        if (ctx.graveLoot) {
-            ctx.graveLoot.active = false;
-            ctx.graveLoot.targetKey = null;
-        }
-        if (!ctx.deathRecovery?.active) {
-            ctx.holdReflexes = false;
         }
     }
 }

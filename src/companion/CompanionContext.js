@@ -28,6 +28,8 @@ export class CompanionContext {
         this.deathRecovery = createDeathRecoveryState();
         /** @type {{ active: boolean, targetKey: string|null }} */
         this.graveLoot = { active: false, targetKey: null };
+        /** @type {{ active: boolean }} nearby ground-item scavenging */
+        this.nearbyLoot = { active: false };
         /** When true, companion loop skips combat reflexes. */
         this.holdReflexes = false;
     }

@@ -162,7 +162,7 @@ docker compose up -d --build
 - `locales/ja.json` … 独り言・コマンド返答（英語を足すなら `locales/en.json`）
 - `services/viaproxy/viaproxy.yml` … **実際の Minecraft サーバー**（`target-address`）
 
-### 死亡復帰と自分の墓回収
+### 死亡復帰・自分の墓・周辺ドロップ回収
 
 `config.json` の `companion` 配下:
 
@@ -170,18 +170,24 @@ docker compose up -d --build
 |---|---|---|
 | `death_return.enabled` | リスポーン後に死亡座標へ戻る | `true` |
 | `death_return.arrive_range` | 到着とみなす距離（ブロック） | `3` |
-| `death_return.loot_radius` | 到着後に拾うドロップの半径 | `5` |
 | `death_return.timeout_ms` | 復帰を諦めるまでの時間 | `90000` |
-| `own_grave.enabled` | 近くの自分の墓を壊して回収する | `true` |
+| `own_grave.enabled` | 近くの自分の墓を壊す | `true` |
 | `own_grave.scan_radius` | 墓を探す半径（ブロック） | `10` |
+| `own_grave.dig_range` | 墓破壊に入る距離 | `3.5` |
+| `nearby_loot.enabled` | 周辺の地面ドロップを拾う | `true` |
+| `nearby_loot.radius` | 拾いに行く半径（ブロック） | `8` |
+| `nearby_loot.max_ms` | 1回の拾いの上限時間 | `15000` |
+| `nearby_loot.quiet_ms` | ドロップが消えてから終了するまでの待ち | `1500` |
+| `nearby_loot.grace_ms` | 拾い開始直後の出現待ち | `2500` |
 
 挙動の要点:
 
-1. **死亡復帰**と**墓破壊**は別ロジックです。死亡後に死亡地点へ向かい、半径内に自分の墓があればそちらを優先して壊します。
+1. **死亡復帰**・**墓破壊**・**周辺ドロップ回収**は別ロジックです。墓は壊すだけ、散らばったアイテムや探索中のドロップは `nearby_loot` が拾います。
 2. チャットで状況を知らせます（例: `死亡地点へ戻るよ (x, y, z)` / `自分の墓を見つけたよ (x, y, z)`）。
 3. 墓はホログラム等の表示名から持ち主を判定します。ボット自身のユーザー名と一致しない墓、名前が読めない墓は**壊しません**（他人の墓破壊によるゾンビ出現を防ぐため）。
 4. ViaProxy 経由などで名前表示が読めない環境では、安全のため墓は破壊しません（死亡座標への移動と地面ドロップの拾得のみ有効）。
 5. ネザー / エンドなど**別ワールド種別**への自動ポータル移動はしません。同じワールド種別に戻った時点で死亡復帰を続けます。
+6. `nearby_loot` は半径内にドロップがある間拾い続け、しばらく無くなったら終了します（上限 `max_ms`）。ドロップ回収は墓破壊より優先し、散らばったアイテムの取りこぼしを減らします。
 
 **秘密情報（`.env`、実 `viaproxy.yml`、`saves.json`）はコミットしないでください。**
 

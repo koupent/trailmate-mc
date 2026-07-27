@@ -26,6 +26,8 @@ import {
 } from '../src/companion/deathRecovery.js';
 import { DeathReturnInterrupt } from '../src/companion/interrupts/DeathReturnInterrupt.js';
 import { OwnGraveInterrupt } from '../src/companion/interrupts/OwnGraveInterrupt.js';
+import { NearbyLootInterrupt } from '../src/companion/interrupts/NearbyLootInterrupt.js';
+import { pickupNearbyItems } from '../src/companion/utils/pickupItems.js';
 
 describe('grave label parsing', () => {
     it('strips formatting codes', () => {
@@ -303,9 +305,11 @@ describe('death recovery state', () => {
             graveLoot: { active: false, targetKey: null },
             holdReflexes: false,
             config: {
-                death_return: { enabled: true, arrive_range: 3, loot_radius: 5, loot_ms: 10, timeout_ms: 90000 },
-                own_grave: { enabled: true, scan_radius: 10 }
+                death_return: { enabled: true, arrive_range: 3, timeout_ms: 90000 },
+                own_grave: { enabled: true, scan_radius: 10 },
+                nearby_loot: { enabled: true, radius: 8, max_ms: 15000, quiet_ms: 1500, grace_ms: 2500 }
             },
+            nearbyLoot: { active: false },
             ...overrides
         };
     }
@@ -325,7 +329,7 @@ describe('death recovery state', () => {
         assert.equal(ctx.deathRecovery.phase, 'travel');
     });
 
-    it('DeathReturnInterrupt walks toward death pos then finishes loot phase', async () => {
+    it('DeathReturnInterrupt walks toward death pos then clears on arrive', async () => {
         const ctx = makeCtx();
         captureDeathState(ctx);
         beginDeathReturnAfterSpawn(ctx);
@@ -339,7 +343,7 @@ describe('death recovery state', () => {
         assert.equal(ctx.deathRecovery.phase, 'travel');
         assert.equal(ctx.movement.went, true);
 
-        // Arrive
+        // Arrive — ground loot is NearbyLootInterrupt's job
         ctx.bot.entity.position = new Vec3(12, 70, -4);
         ctx.bot.entities = {};
         ctx.bot.nearestEntity = () => null;
@@ -445,12 +449,11 @@ describe('OwnGraveInterrupt gating', () => {
                 own_grave: {
                     enabled: true,
                     scan_radius: 10,
-                    dig_range: 3.5,
-                    loot_ms: 10,
-                    loot_radius: 2
+                    dig_range: 3.5
                 }
             },
             graveLoot: { active: false, targetKey: null },
+            nearbyLoot: { active: false },
             deathRecovery: { active: false },
             holdReflexes: false
         };
@@ -461,5 +464,64 @@ describe('OwnGraveInterrupt gating', () => {
 
         await interrupt.run(ctx);
         assert.equal(chats.length, 1);
+    });
+});
+
+describe('NearbyLootInterrupt', () => {
+    it('shouldRun is true when ground items are within radius', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = {
+            bot: {
+                entity: { position: new Vec3(0, 64, 0) },
+                entities: {
+                    1: { name: 'item', position: new Vec3(3, 64, 0) }
+                }
+            },
+            config: { nearby_loot: { enabled: true, radius: 8 } },
+            deathRecovery: { active: false }
+        };
+        assert.equal(interrupt.shouldRun(ctx), true);
+    });
+
+    it('shouldRun is true while death-return is traveling if ground items are near', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = {
+            bot: {
+                entity: { position: new Vec3(0, 64, 0) },
+                entities: {
+                    1: { name: 'item', position: new Vec3(2, 64, 0) }
+                }
+            },
+            config: { nearby_loot: { enabled: true, radius: 8 } },
+            deathRecovery: { active: true, phase: 'travel' }
+        };
+        assert.equal(interrupt.shouldRun(ctx), true);
+    });
+
+    it('pickupNearbyItems untilClear stops after quiet period with no items', async () => {
+        const approaches = [];
+        const ctx = {
+            bot: {
+                entity: { position: new Vec3(0, 64, 0) },
+                entities: {},
+                interrupt_code: false
+            },
+            movement: { stop() {} },
+            holdReflexes: true
+        };
+        // No items → after grace+quiet should exit well under max duration.
+        const started = Date.now();
+        const attempts = await pickupNearbyItems(ctx, {
+            radius: 5,
+            durationMs: 10000,
+            untilClear: true,
+            quietMs: 80,
+            graceMs: 50,
+            pollMs: 20
+        });
+        const elapsed = Date.now() - started;
+        assert.equal(attempts, 0);
+        assert.equal(approaches.length, 0);
+        assert.ok(elapsed < 2000, `expected early clear, elapsed=${elapsed}`);
     });
 });

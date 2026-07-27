@@ -8,7 +8,7 @@ const DEFAULT_POLL_MS = 250;
  * Walk toward a fixed position until within range or timeout.
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} pos
- * @param {{ range?: number, timeoutMs?: number, pollMs?: number }} [options]
+ * @param {{ range?: number, timeoutMs?: number, pollMs?: number, arrivalSlack?: number }} [options]
  * @returns {Promise<boolean>}
  */
 export async function approachPosition(ctx, pos, options = {}) {
@@ -18,9 +18,10 @@ export async function approachPosition(ctx, pos, options = {}) {
     const range = options.range ?? DEFAULT_RANGE;
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
+    const arrivalSlack = options.arrivalSlack ?? 0.5;
+    const arrived = () => bot.entity.position.distanceTo(pos) <= range + arrivalSlack;
 
-    const distance = () => bot.entity.position.distanceTo(pos);
-    if (distance() <= range + 0.5) return true;
+    if (arrived()) return true;
 
     ctx.movement?.goToward?.(pos, range);
 
@@ -34,7 +35,7 @@ export async function approachPosition(ctx, pos, options = {}) {
             ctx.movement?.stop?.();
             return false;
         }
-        if (distance() <= range + 0.5) {
+        if (arrived()) {
             ctx.movement?.stop?.();
             return true;
         }
@@ -43,7 +44,7 @@ export async function approachPosition(ctx, pos, options = {}) {
     }
 
     ctx.movement?.stop?.();
-    return distance() <= range + 1.5;
+    return bot.entity ? bot.entity.position.distanceTo(pos) <= range + Math.max(arrivalSlack, 1) : false;
 }
 
 /**

@@ -9,8 +9,7 @@
  *   deathPos: { x: number, y: number, z: number } | null,
  *   deathDim: string | null,
  *   startedAt: number,
- *   arrivedAt: number,
- *   phase: 'idle' | 'travel' | 'loot' | 'done'
+ *   phase: 'idle' | 'travel' | 'done'
  * }} DeathRecoveryState
  */
 
@@ -22,9 +21,18 @@ export function createDeathRecoveryState() {
         deathPos: null,
         deathDim: null,
         startedAt: 0,
-        arrivedAt: 0,
         phase: 'idle'
     };
+}
+
+/**
+ * Release combat hold when no recovery interrupt is still active.
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ */
+export function releaseHoldReflexesIfIdle(ctx) {
+    if (!ctx.graveLoot?.active && !ctx.nearbyLoot?.active && !ctx.deathRecovery?.active) {
+        ctx.holdReflexes = false;
+    }
 }
 
 /**
@@ -79,7 +87,6 @@ export function beginDeathReturnAfterSpawn(ctx, config = ctx.config) {
     dr.pending = false;
     dr.active = true;
     dr.startedAt = Date.now();
-    dr.arrivedAt = 0;
     dr.phase = 'travel';
     ctx.holdReflexes = true;
 
@@ -95,7 +102,5 @@ export function beginDeathReturnAfterSpawn(ctx, config = ctx.config) {
  */
 export function clearDeathReturn(ctx) {
     ctx.deathRecovery = createDeathRecoveryState();
-    if (!ctx.graveLoot?.active) {
-        ctx.holdReflexes = false;
-    }
+    releaseHoldReflexesIfIdle(ctx);
 }
