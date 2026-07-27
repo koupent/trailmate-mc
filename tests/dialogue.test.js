@@ -75,7 +75,21 @@ describe('rule commentary', () => {
       owner: 'Alice'
     });
     assert.match(text, /zombie/);
-    assert.match(text, /4\.2/);
+  });
+
+  it('embeds distance when template includes it', () => {
+    // Retry a few times because wording variants are random.
+    let sawDistance = false;
+    for (let i = 0; i < 20; i++) {
+      const text = renderCommentary('ja', 'hostile', {
+        hostile: { name: 'zombie', distance: 4.2 }
+      });
+      if (/4\.2/.test(text)) {
+        sawDistance = true;
+        break;
+      }
+    }
+    assert.equal(sawDistance, true);
   });
 
   it('embeds health on low_health', () => {
