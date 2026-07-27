@@ -1,5 +1,6 @@
 import { jumpOntoStep, sleep } from '../movement/climb.js';
 import { scanSurroundings } from '../movement/surroundings.js';
+import { isCloseablePassage } from '../movement/DoorTracker.js';
 
 /** Cooldown after any recovery action, so the path gets a chance to work. */
 const COOLDOWN_MS = 900;
@@ -59,15 +60,35 @@ export class RecoveryInterrupt {
     async run(ctx) {
         const bot = ctx.bot;
         const owner = ctx.ownerEntity;
-        const start = bot.entity.position.clone();
-        const dy = owner.position.y - start.y;
+        const botPos = bot.entity.position;
+        const dy = owner.position.y - botPos.y;
         const around = scanSurroundings(bot, owner.position);
+
+        // Closed door ahead: open via shared DoorTracker API (avoids double-toggle).
+        if (await this._tryOpenFrontDoor(ctx, around)) {
+            ctx.stuck.reset(bot.entity.position);
+            this.cooldownUntil = Date.now() + COOLDOWN_MS;
+            return;
+        }
+
         const plan = choosePlan(around, dy);
 
         await this._perform(ctx, plan);
 
         ctx.stuck.reset(bot.entity.position);
         this.cooldownUntil = Date.now() + COOLDOWN_MS;
+    }
+
+    /**
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     * @param {ReturnType<typeof scanSurroundings>} around
+     */
+    async _tryOpenFrontDoor(ctx, around) {
+        const ahead = around.front?.find((f) => f.side === 'ahead');
+        // solid=true means a closed passage is still blocking the forward column.
+        if (!ahead?.solid || !isCloseablePassage({ name: ahead.block })) return false;
+        if (typeof ctx.doors?.openBlockingDoorIfNeeded !== 'function') return false;
+        return ctx.doors.openBlockingDoorIfNeeded();
     }
 
     async _perform(ctx, plan) {
@@ -111,6 +132,14 @@ export class RecoveryInterrupt {
  * @param {number} dy
  */
 export function choosePlan(around, dy) {
+    const doorAhead = around.front?.some(
+        (f) => f.side === 'ahead' && isCloseablePassage({ name: f.block }) && f.solid
+    );
+    // Closed door ahead: never climb the frame. Open doors are solid=false.
+    if (doorAhead) {
+        return { action: 'wait' };
+    }
+
     const inHole = around.raisedNeighbors >= HOLE_RAISED_MIN;
 
     // Owner below: do not climb the wrong wall.

@@ -1,4 +1,5 @@
 import Vec3 from 'vec3';
+import { isDoorPassableName } from '../blockProtection.js';
 
 /** Half-width of the scanned grid (2 = 5x5 columns around the bot). */
 const RADIUS = 2;
@@ -74,13 +75,24 @@ function describeFront(bot, cells, facing, baseX, feetY, baseZ) {
     return offsets.map(({ dx, dz, side }) => {
         const cell = cells.find((c) => c.dx === dx && c.dz === dz);
         const obstacle = bot.blockAt(new Vec3(baseX + dx, feetY, baseZ + dz));
+        const name = obstacle?.name || 'unknown';
+        const openPassage = isOpenPassageBlock(obstacle);
         return {
             side,
             rise: cell ? cell.rise : null,
-            block: obstacle?.name || 'unknown',
-            solid: obstacle?.boundingBox === 'block'
+            block: name,
+            solid: !openPassage && obstacle?.boundingBox === 'block'
         };
     });
+}
+
+/**
+ * Open wooden doors / gates should not count as solid walls for recovery decisions.
+ * @param {{ name?: string, _properties?: { open?: boolean, half?: string } }|null|undefined} block
+ */
+function isOpenPassageBlock(block) {
+    if (!isDoorPassableName(block?.name)) return false;
+    return block._properties?.open === true || block._properties?.half === 'upper';
 }
 
 /**
