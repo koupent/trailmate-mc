@@ -1,0 +1,4 @@
+* text=auto
+
+# Windows cmd.exe requires CRLF in batch files
+*.bat text eol=crlf
