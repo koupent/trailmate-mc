@@ -1,5 +1,6 @@
 import { Mode } from '../Mode.js';
 import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
+import { hasLineOfSight } from '../../world/lineOfSight.js';
 
 /**
  * GoalFollow only measures straight-line distance, so a loose range counts as
@@ -12,22 +13,6 @@ const SAME_FLOOR_DY = 2;
 const LAST_KNOWN_ARRIVE_RANGE = 3;
 /** Fallback when config omits follow_distance. */
 const DEFAULT_FOLLOW_DISTANCE = 3;
-
-/**
- * Nothing solid between the two heads. Used to tell "next to the owner" from
- * "next to the owner but outside the wall".
- * @param {import('mineflayer').Bot} bot
- * @param {import('prismarine-entity').Entity} owner
- * @returns {boolean}
- */
-function ownerInSight(bot, owner) {
-    const eye = bot.entity.position.offset(0, bot.entity.height * 0.9, 0);
-    const target = owner.position.offset(0, (owner.height ?? 1.8) * 0.9, 0);
-    const delta = target.minus(eye);
-    const dist = delta.norm();
-    if (dist < 0.1) return true;
-    return bot.world.raycast(eye, delta.scaled(1 / dist), dist) === null;
-}
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -92,7 +77,7 @@ export class FollowMode extends Mode {
         // Close enough only counts when the owner is actually reachable from
         // here — a wall between them means the bot is parked outside the room.
         const nearOwner = horizDist < followDistance && Math.abs(ownerDy) < SAME_FLOOR_DY;
-        if (nearOwner && ownerInSight(bot, owner)) {
+        if (nearOwner && hasLineOfSight(bot, owner)) {
             ctx.movement.stop();
             return;
         }

@@ -7,6 +7,7 @@ import {
     evaluatePassage,
     isCloseablePassage,
     isClosedToOpen,
+    isDoorBetween,
     normalizeDoorPos,
     posKey
 } from '../src/companion/movement/DoorTracker.js';
@@ -119,6 +120,47 @@ describe('doorSide / evaluatePassage', () => {
     });
 });
 
+describe('isDoorBetween', () => {
+    const door = { x: 22, y: 63, z: 551 };
+
+    it('rejects owner perched on the door sill (repro case)', () => {
+        // Bot inside (south), owner 4cm past door center — must NOT open.
+        assert.equal(
+            isDoorBetween(
+                { x: 22.5, z: 550.05 },
+                { x: 22.54, z: 551.51 },
+                door,
+                'north'
+            ),
+            false
+        );
+    });
+
+    it('accepts owner clearly through the door', () => {
+        assert.equal(
+            isDoorBetween(
+                { x: 22.5, z: 550.05 },
+                { x: 22.5, z: 553.5 },
+                door,
+                'north'
+            ),
+            true
+        );
+    });
+
+    it('rejects when both are on the same side', () => {
+        assert.equal(
+            isDoorBetween(
+                { x: 22.5, z: 549.5 },
+                { x: 22.5, z: 550.5 },
+                door,
+                'north'
+            ),
+            false
+        );
+    });
+});
+
 describe('DoorTracker integration', () => {
     /** @type {any} */
     let bot;
@@ -194,6 +236,8 @@ describe('DoorTracker integration', () => {
     });
 
     it('ignores doors that were already open when looked at', () => {
+        // Keep owner away so a later closed→open is not treated as owner-near open.
+        owner.position = { x: 40, y: 64, z: 40, offset() { return this; } };
         const openDoor = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
             open: true,
             facing: 'north',
@@ -209,6 +253,7 @@ describe('DoorTracker integration', () => {
     });
 
     it('ignores swings from non-owner entities', () => {
+        owner.position = { x: 40, y: 64, z: 40, offset() { return this; } };
         const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
             open: false,
             facing: 'north',
@@ -225,6 +270,8 @@ describe('DoorTracker integration', () => {
     });
 
     it('ignores redstone-style opens without a matching owner swing', () => {
+        // Owner far away: must not treat as a companion passage to close.
+        owner.position = { x: 40, y: 64, z: 40, offset() { return this; } };
         const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
             open: false,
             facing: 'north',
@@ -236,6 +283,22 @@ describe('DoorTracker integration', () => {
             half: 'lower'
         }));
         assert.equal(tracker.trackedCount, 0);
+    });
+
+    it('tracks owner-near opens even when the swing did not target the door', () => {
+        owner.position = { x: 0.5, y: 64, z: 0.8, offset() { return this; } };
+        bot.entity.position = { x: 0.5, y: 64, z: 2 };
+        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.emit('blockUpdate', closed, makeBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: true,
+            facing: 'north',
+            half: 'lower'
+        }));
+        assert.equal(tracker.trackedCount, 1);
     });
 
     it('ignores iron doors and trapdoors', () => {
@@ -398,5 +461,35 @@ describe('DoorTracker integration', () => {
         await bot.activateBlock(closed);
         await bot.activateBlock(closed);
         assert.equal(tracker.trackedCount, 1);
+    });
+
+    it('does not open when owner stands on the door sill', async () => {
+        // Repro: bot inside, owner at threshold looking out.
+        setBlock('oak_door', { x: 22, y: 63, z: 551 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.entity.position = { x: 22.5, y: 63, z: 550.05 };
+        owner.position = { x: 22.54, y: 63, z: 551.51 };
+
+        const opened = await tracker.openBlockingDoorIfNeeded();
+        assert.equal(opened, false);
+        assert.equal(activations.length, 0);
+    });
+
+    it('opens when owner has clearly gone through the door', async () => {
+        setBlock('oak_door', { x: 22, y: 63, z: 551 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.entity.position = { x: 22.5, y: 63, z: 550.05 };
+        owner.position = { x: 22.5, y: 63, z: 553.5 };
+
+        const opened = await tracker.openBlockingDoorIfNeeded();
+        assert.equal(opened, true);
+        assert.equal(activations.length, 1);
+        assert.equal(activations[0].name, 'oak_door');
     });
 });

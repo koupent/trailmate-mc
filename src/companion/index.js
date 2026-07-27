@@ -81,7 +81,8 @@ export async function startCompanion(agent, companionConfig = {}) {
         try {
             await agent.reflexes?.tick?.({
                 movementHeld: !!ctx.movement?.isHeld,
-                isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait'
+                isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
+                owner: ctx.ownerEntity ?? null
             });
         } catch (err) {
             console.error('[companion] reflexes error:', err);

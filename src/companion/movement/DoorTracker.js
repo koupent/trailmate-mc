@@ -3,6 +3,11 @@ import { isDoorPassableName } from '../blockProtection.js';
 
 /** Max reach used when reading what the owner is looking at. */
 const OWNER_LOOK_RANGE = 5;
+/**
+ * If the owner opens a door while looking past it (common when exiting),
+ * still track when they are this close to the door.
+ */
+const OWNER_NEAR_DOOR_FOR_TRACK = 4;
 /** After a swing, accept a matching closed→open update for this long. */
 const SWING_MATCH_MS = 450;
 /** Drop a tracked door if the bot never finishes passing through. */
@@ -67,6 +72,31 @@ export function doorSide(pos, doorPos, facing) {
 }
 
 /**
+ * Whether the door truly separates bot from owner.
+ * Owner standing on the threshold (a few cm past the door plane) must not count —
+ * that was opening doors while both were still sheltering inside.
+ * @param {{ x: number, z: number }} botPos
+ * @param {{ x: number, z: number }} ownerPos
+ * @param {{ x: number, z: number }} doorPos
+ * @param {string|undefined} facing
+ * @param {number} [clearDistance]
+ * @returns {boolean}
+ */
+export function isDoorBetween(botPos, ownerPos, doorPos, facing, clearDistance = CLEAR_DISTANCE) {
+    const botSide = doorSide(botPos, doorPos, facing);
+    const ownerSide = doorSide(ownerPos, doorPos, facing);
+    if (botSide === 0 || ownerSide === 0 || botSide === ownerSide) return false;
+
+    const ownerHoriz = Math.hypot(
+        ownerPos.x - (doorPos.x + 0.5),
+        ownerPos.z - (doorPos.z + 0.5)
+    );
+    // Owner must be clearly past the door, not perched on the sill.
+    if (ownerHoriz < clearDistance) return false;
+    return true;
+}
+
+/**
  * Whether the bot has approached and fully crossed to the other side.
  * @param {{
  *   approachSide: -1|0|1|null,
@@ -111,8 +141,8 @@ export function isClosedToOpen(oldBlock, newBlock) {
 
 /**
  * Closes wooden doors / fence gates after the bot passes through.
- * Owner opens: swing + look + closed→open blockUpdate.
- * Bot opens: pathfinder activateBlock on a closed passage.
+ * Owner opens: swing + look + closed→open, or closed→open while owner is near the door.
+ * Bot opens: pathfinder / DoorTracker activateBlock on a closed passage.
  */
 export class DoorTracker {
     /**
@@ -273,6 +303,12 @@ export class DoorTracker {
 
                 if (this._openSkipReason(lower)) continue;
 
+                // Same room / threshold: door is toward the owner but they have not
+                // actually gone through it — do not open and let mobs in.
+                if (!isDoorBetween(botPos, ownerPos, lower.position, lower._properties?.facing)) {
+                    continue;
+                }
+
                 candidates.push({ block: lower, score: alignment * 2 - dist });
             }
         }
@@ -363,10 +399,23 @@ export class DoorTracker {
         const key = posKey(doorPos);
         const now = Date.now();
         const pending = this._pending.find((p) => p.key === key && now - p.at <= SWING_MATCH_MS);
-        if (!pending) return;
+        if (pending) {
+            this._pending = this._pending.filter((p) => p.key !== key);
+            this._startTracking(doorPos, newBlock._properties?.facing ?? pending.facing, now);
+            return;
+        }
 
-        this._pending = this._pending.filter((p) => p.key !== key);
-        this._startTracking(doorPos, newBlock._properties?.facing ?? pending.facing, now);
+        // Owner often looks outward while opening; swing never targets the door.
+        // Still track when the owner is standing at the passage.
+        const owner = this.getOwnerEntity();
+        if (!owner?.position) return;
+        const ownerHoriz = Math.hypot(
+            owner.position.x - (doorPos.x + 0.5),
+            owner.position.z - (doorPos.z + 0.5)
+        );
+        if (ownerHoriz > OWNER_NEAR_DOOR_FOR_TRACK) return;
+
+        this._startTracking(doorPos, newBlock._properties?.facing, now);
     }
 
     /**

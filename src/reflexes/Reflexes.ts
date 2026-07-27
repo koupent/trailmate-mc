@@ -1,7 +1,13 @@
 import { Vec3 } from 'vec3';
 import type { Bot } from 'mineflayer';
 import { getNearestEntityWhere, isHostile } from '../world/entities.js';
+import { hasLineOfSight } from '../world/lineOfSight.js';
 import type { ReflexConfig } from '../config.js';
+
+type DefendOwner = {
+  position: { offset: (x: number, y: number, z: number) => any };
+  height?: number;
+} | null | undefined;
 
 /**
  * Lightweight survival reflexes (replaces Mindcraft modes.js subset).
@@ -16,12 +22,16 @@ export class Reflexes {
     private readonly torchLightThreshold: number
   ) {}
 
-  async tick(opts: { movementHeld: boolean; isIdleish: boolean }): Promise<void> {
+  async tick(opts: {
+    movementHeld: boolean;
+    isIdleish: boolean;
+    owner?: DefendOwner;
+  }): Promise<void> {
     if (this.config.self_preservation) {
       this.preserve();
     }
     if (this.config.self_defense && !opts.movementHeld) {
-      await this.defend();
+      await this.defend(opts.owner);
     }
     if (this.config.torch_placing && opts.isIdleish && !opts.movementHeld) {
       await this.maybeTorch();
@@ -48,19 +58,22 @@ export class Reflexes {
     }
   }
 
-  private async defend(): Promise<void> {
+  private async defend(owner?: DefendOwner): Promise<void> {
     if (this.fighting) return;
+
+    // Owner is behind a door/wall: drop combat so Follow can reunite first.
+    if (owner && !hasLineOfSight(this.bot, owner)) {
+      await this.stopCombat();
+      return;
+    }
+
     const enemy = getNearestEntityWhere(
       this.bot,
-      (e) => isHostile(e),
+      (e) => isHostile(e) && hasLineOfSight(this.bot, e),
       this.config.hostile_range
     );
     if (!enemy) {
-      try {
-        this.bot.pvp?.stop?.();
-      } catch {
-        /* ignore */
-      }
+      await this.stopCombat();
       return;
     }
 
@@ -69,6 +82,18 @@ export class Reflexes {
       await this.bot.pvp.attack(enemy);
     } catch (err) {
       console.warn('[reflexes] defend failed:', (err as Error).message || err);
+    } finally {
+      this.fighting = false;
+    }
+  }
+
+  private async stopCombat(): Promise<void> {
+    if (this.fighting) return;
+    this.fighting = true;
+    try {
+      await this.bot.pvp?.stop?.();
+    } catch {
+      /* ignore */
     } finally {
       this.fighting = false;
     }
