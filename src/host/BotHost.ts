@@ -6,18 +6,7 @@ import armorManager from 'mineflayer-armor-manager';
 import type { AppConfig } from '../config.js';
 import { startCompanion } from '../companion/index.js';
 import { Reflexes } from '../reflexes/Reflexes.js';
-
-const UNSAFE_FOODS = [
-  'rotten_flesh',
-  'spider_eye',
-  'poisonous_potato',
-  'pufferfish',
-  'chicken',
-  'chorus_fruit',
-  'suspicious_stew',
-  'golden_apple',
-  'enchanted_golden_apple'
-];
+import { setupAutoEat } from './autoEat.js';
 
 export type TrailmateHost = {
   bot: Bot;
@@ -76,17 +65,6 @@ export function createBot(config: AppConfig): Bot {
   bot.loadPlugin(armorManager);
 
   return bot;
-}
-
-export function setupAutoEat(bot: Bot): void {
-  const current = bot.autoEat?.options || {};
-  bot.autoEat.options = {
-    ...current,
-    priority: 'foodPoints',
-    startAt: 19,
-    bannedFood: [...new Set([...(current.bannedFood || []), ...UNSAFE_FOODS])]
-  };
-  void bot.autoEat.eat().catch(() => {});
 }
 
 export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
