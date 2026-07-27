@@ -1,5 +1,5 @@
 {
-  "name": "trailmate",
+  "name": "trailmate-mc",
   "version": "0.1.0",
   "description": "Rule-based Minecraft exploration companion (Mineflayer). No LLM.",
   "type": "module",

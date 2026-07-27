@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 echo ========================================
-echo  Trailmate START
+echo  Trailmate MC START
 echo ========================================
 echo.
 
@@ -46,7 +46,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-echo [2/2] Starting Trailmate...
+echo [2/2] Starting Trailmate MC...
 docker compose up -d --build trailmate
 if errorlevel 1 (
   echo [ERROR] Failed to start trailmate.

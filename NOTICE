@@ -1,7 +1,7 @@
 # Notices
 
-Trailmate includes code adapted from [Mindcraft](https://github.com/mindcraft-bots/mindcraft)
+Trailmate MC includes code adapted from [Mindcraft](https://github.com/mindcraft-bots/mindcraft)
 (MIT License, Copyright (c) 2024 Kolby Nottingham), especially the companion movement,
 mode, and dialogue helpers originally developed in a personal fork.
 
-Trailmate is a separate product: a **rule-based** exploration companion with **no LLM**.
+Trailmate MC is a separate product: a **rule-based** Minecraft exploration companion with **no LLM**.

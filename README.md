@@ -1,12 +1,12 @@
-# Trailmate
+# Trailmate MC
 
-ルールベースの Minecraft **探索相棒**です。LLM は使いません。
+*Trailmate MC* は Minecraft 向けのルールベース **探索相棒**です。LLM は使いません。
 
 ワールドに「もう一人のプレイヤー」として入り、追従・護衛・松明・短い実況で旅に付き合います。
 
 ```text
 あなた ──► Minecraft サーバー
-Trailmate ──► ViaProxy ──► 同じサーバー
+Trailmate MC ──► ViaProxy ──► 同じサーバー
 ```
 
 ## できること

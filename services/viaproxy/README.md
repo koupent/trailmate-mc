@@ -20,8 +20,8 @@ then point your `settings.js` `host` and `port` to viaproxy endpoint:
 This easily works with "offline" servers. 
 
 Connecting to "online" servers via viaproxy involves more effort:\
-First start the ViaProxy container, then open another terminal in the mindcraft directory.\
-Run `docker attach mindcraft-viaproxy-1` in the new terminal to attach to the container.\
+First start the ViaProxy container, then open another terminal in the trailmate-mc directory.\
+Run `docker attach trailmate-mc-viaproxy-1` in the new terminal to attach to the container.\
 After attaching, you can use the `account` command to manage user accounts:
  - `account list` List all accounts in the list
  - `account add microsoft` Add a microsoft account (run the command and follow the instructions)
