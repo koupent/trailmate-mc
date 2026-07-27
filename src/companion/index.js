@@ -3,10 +3,16 @@ import { WorldState } from './WorldState.js';
 import { ModeManager } from './ModeManager.js';
 import { FollowMode } from './modes/FollowMode.js';
 import { WaitMode } from './modes/WaitMode.js';
+import { OwnGraveInterrupt } from './interrupts/OwnGraveInterrupt.js';
+import { DeathReturnInterrupt } from './interrupts/DeathReturnInterrupt.js';
 import { RecoveryInterrupt } from './interrupts/RecoveryInterrupt.js';
 import { AutoEquip } from './utils/AutoEquip.js';
 import { CompanionDialogue, DEFAULT_CHAT_CONFIG } from './CompanionDialogue.js';
 import { applyJumpHitboxFix } from './hitboxFix.js';
+import {
+    beginDeathReturnAfterSpawn,
+    captureDeathState
+} from './deathRecovery.js';
 import {
     DEFAULT_TORCH_LIGHT_THRESHOLD,
     enableCompanionBlockProtection
@@ -21,6 +27,20 @@ const DEFAULT_CONFIG = {
     stuck_detect_seconds: 1.5,
     tick_ms: 250,
     torch_light_threshold: DEFAULT_TORCH_LIGHT_THRESHOLD,
+    death_return: {
+        enabled: true,
+        arrive_range: 3,
+        loot_radius: 5,
+        loot_ms: 6000,
+        timeout_ms: 90000
+    },
+    own_grave: {
+        enabled: true,
+        scan_radius: 10,
+        dig_range: 3.5,
+        loot_radius: 4,
+        loot_ms: 5000
+    },
     chat: { ...DEFAULT_CHAT_CONFIG }
 };
 
@@ -46,6 +66,14 @@ export async function startCompanion(agent, companionConfig = {}) {
         chat: {
             ...DEFAULT_CONFIG.chat,
             ...(companionConfig.chat || {})
+        },
+        death_return: {
+            ...DEFAULT_CONFIG.death_return,
+            ...(companionConfig.death_return || {})
+        },
+        own_grave: {
+            ...DEFAULT_CONFIG.own_grave,
+            ...(companionConfig.own_grave || {})
         }
     };
 
@@ -56,7 +84,12 @@ export async function startCompanion(agent, companionConfig = {}) {
     const worldState = new WorldState();
     const ctx = new CompanionContext(agent, worldState, config);
     const modes = createCompanionModes();
-    const interrupts = [new RecoveryInterrupt()];
+    // Own grave first so death-site graves are broken before ground-loot travel finishes.
+    const interrupts = [
+        new OwnGraveInterrupt(),
+        new DeathReturnInterrupt(),
+        new RecoveryInterrupt()
+    ];
     const manager = new ModeManager(ctx, modes, interrupts, 'follow');
     const autoEquip = new AutoEquip(agent);
     const dialogue = new CompanionDialogue(agent, manager, config);
@@ -71,21 +104,24 @@ export async function startCompanion(agent, companionConfig = {}) {
 
     await manager.start();
     await applyJumpHitboxFix(agent.bot);
+    wireDeathRecovery(agent, ctx, config);
 
-    console.log('[companion] started (follow + wait + recovery + auto-equip + dialogue)');
+    console.log('[companion] started (follow + wait + death-return + own-grave + recovery + auto-equip + dialogue)');
 
     const loop = async () => {
         if (!agent.bot || agent.bot.entity == null) return;
         await manager.tick();
         await autoEquip.maybeRun(ctx);
-        try {
-            await agent.reflexes?.tick?.({
-                movementHeld: !!ctx.movement?.isHeld,
-                isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
-                owner: ctx.ownerEntity ?? null
-            });
-        } catch (err) {
-            console.error('[companion] reflexes error:', err);
+        if (!ctx.holdReflexes) {
+            try {
+                await agent.reflexes?.tick?.({
+                    movementHeld: !!ctx.movement?.isHeld,
+                    isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
+                    owner: ctx.ownerEntity ?? null
+                });
+            } catch (err) {
+                console.error('[companion] reflexes error:', err);
+            }
         }
         try {
             await dialogue.maybeSpeak();
@@ -99,4 +135,54 @@ export async function startCompanion(agent, companionConfig = {}) {
     }, config.tick_ms);
 
     await autoEquip.equipBest();
+}
+
+/**
+ * Record death coordinates and resume return-to-death after respawn.
+ * startCompanion runs after the first spawn, so later `spawn` events are respawns.
+ * @param {import('../host/BotHost.ts').TrailmateHost} agent
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ * @param {object} config
+ */
+function wireDeathRecovery(agent, ctx, config) {
+    const bot = agent.bot;
+
+    bot.on('death', () => {
+        try {
+            captureDeathState(ctx);
+            const pos = ctx.deathRecovery.deathPos;
+            console.log(
+                '[companion] death recorded',
+                pos
+                    ? `at ${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`
+                    : '(no position)'
+            );
+        } catch (err) {
+            console.error('[companion] death handler error:', err);
+        }
+    });
+
+    bot.on('spawn', () => {
+        void (async () => {
+            try {
+                if (ctx.stuck?.reset && bot.entity?.position) {
+                    ctx.stuck.reset(bot.entity.position);
+                }
+                beginDeathReturnAfterSpawn(ctx, config);
+                if (ctx.deathRecovery?.active) {
+                    console.log('[companion] death return started after respawn');
+                    try {
+                        await agent.openChat?.(
+                            `死亡地点へ戻るよ (${Math.floor(ctx.deathRecovery.deathPos.x)}, ${Math.floor(ctx.deathRecovery.deathPos.y)}, ${Math.floor(ctx.deathRecovery.deathPos.z)})`
+                        );
+                    } catch {
+                        /* ignore */
+                    }
+                }
+                await applyJumpHitboxFix(bot);
+            } catch (err) {
+                console.error('[companion] respawn handler error:', err);
+            }
+        })();
+    });
 }

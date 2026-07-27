@@ -18,6 +18,9 @@ let policy = {
     torchLightThreshold: DEFAULT_TORCH_LIGHT_THRESHOLD
 };
 
+/** @type {string|null} temporary dig allow-list key "x,y,z" for own-grave recovery */
+let allowedDigKey = null;
+
 /**
  * @param {number} value
  * @param {number} min
@@ -59,6 +62,7 @@ export function disableCompanionBlockProtection() {
         enabled: false,
         torchLightThreshold: DEFAULT_TORCH_LIGHT_THRESHOLD
     };
+    allowedDigKey = null;
 }
 
 export function isBlockProtectionEnabled() {
@@ -81,9 +85,41 @@ export function canPlaceUnderProtection(blockType) {
 
 /**
  * Whether breaking blocks is allowed under the current policy.
+ * Without a specific block, only unrestricted (protection off) digs are allowed.
  */
 export function canBreakUnderProtection() {
     return !policy.enabled;
+}
+
+/**
+ * Whether this concrete block may be broken.
+ * When protection is on, only a temporarily allow-listed grave position is diggable.
+ * @param {{ position?: { x: number, y: number, z: number } }|null|undefined} block
+ */
+export function canBreakBlockUnderProtection(block) {
+    if (!policy.enabled) return true;
+    if (!block?.position || !allowedDigKey) return false;
+    return blockKey(block.position) === allowedDigKey;
+}
+
+/**
+ * Allow digging exactly one block position (own grave recovery).
+ * @param {{ x: number, y: number, z: number }} pos
+ */
+export function allowDigAt(pos) {
+    allowedDigKey = blockKey(pos);
+}
+
+/** Clear the temporary dig allow-list. */
+export function clearAllowedDig() {
+    allowedDigKey = null;
+}
+
+/**
+ * @param {{ x: number, y: number, z: number }} pos
+ */
+function blockKey(pos) {
+    return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
 }
 
 /**

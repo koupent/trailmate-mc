@@ -27,6 +27,22 @@ export type ReflexConfig = {
   hostile_range: number;
 };
 
+export type DeathReturnConfig = {
+  enabled: boolean;
+  arrive_range: number;
+  loot_radius: number;
+  loot_ms: number;
+  timeout_ms: number;
+};
+
+export type OwnGraveConfig = {
+  enabled: boolean;
+  scan_radius: number;
+  dig_range: number;
+  loot_radius: number;
+  loot_ms: number;
+};
+
 export type CompanionConfig = {
   scan_radius: number;
   fov_degrees: number;
@@ -36,6 +52,8 @@ export type CompanionConfig = {
   stuck_detect_seconds: number;
   tick_ms: number;
   torch_light_threshold: number;
+  death_return: DeathReturnConfig;
+  own_grave: OwnGraveConfig;
   reflexes: ReflexConfig;
   chat: ChatConfig;
 };
@@ -60,6 +78,20 @@ const DEFAULT_COMPANION: CompanionConfig = {
   stuck_detect_seconds: 1.5,
   tick_ms: 250,
   torch_light_threshold: 0,
+  death_return: {
+    enabled: true,
+    arrive_range: 3,
+    loot_radius: 5,
+    loot_ms: 6000,
+    timeout_ms: 90000
+  },
+  own_grave: {
+    enabled: true,
+    scan_radius: 10,
+    dig_range: 3.5,
+    loot_radius: 4,
+    loot_ms: 5000
+  },
   reflexes: {
     self_defense: true,
     torch_placing: true,
@@ -99,6 +131,14 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.reflexes,
     ...(companionFile.reflexes || {})
   };
+  const death_return = {
+    ...DEFAULT_COMPANION.death_return,
+    ...(companionFile.death_return || {})
+  };
+  const own_grave = {
+    ...DEFAULT_COMPANION.own_grave,
+    ...(companionFile.own_grave || {})
+  };
 
   return {
     host: process.env.MC_HOST || 'viaproxy',
@@ -112,7 +152,9 @@ export function loadConfig(): AppConfig {
       ...DEFAULT_COMPANION,
       ...companionFile,
       chat,
-      reflexes
+      reflexes,
+      death_return,
+      own_grave
     }
   };
 }
