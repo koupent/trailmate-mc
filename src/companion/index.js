@@ -8,6 +8,7 @@ import { DeathReturnInterrupt } from './interrupts/DeathReturnInterrupt.js';
 import { NearbyLootInterrupt } from './interrupts/NearbyLootInterrupt.js';
 import { RecoveryInterrupt } from './interrupts/RecoveryInterrupt.js';
 import { AutoEquip } from './utils/AutoEquip.js';
+import { PeriodicItemTransfer, createItemShareConfig } from './utils/PeriodicItemTransfer.js';
 import { CompanionDialogue, DEFAULT_CHAT_CONFIG } from './CompanionDialogue.js';
 import { applyJumpHitboxFix } from './hitboxFix.js';
 import {
@@ -47,6 +48,7 @@ const DEFAULT_CONFIG = {
         owner_clearance: 8,
         give_suppress_ms: 12000
     },
+    item_share: createItemShareConfig(),
     chat: { ...DEFAULT_CHAT_CONFIG }
 };
 
@@ -84,7 +86,8 @@ export async function startCompanion(agent, companionConfig = {}) {
         nearby_loot: {
             ...DEFAULT_CONFIG.nearby_loot,
             ...(companionConfig.nearby_loot || {})
-        }
+        },
+        item_share: createItemShareConfig(companionConfig.item_share)
     };
 
     enableCompanionBlockProtection({
@@ -104,25 +107,36 @@ export async function startCompanion(agent, companionConfig = {}) {
     const manager = new ModeManager(ctx, modes, interrupts, 'follow');
     const autoEquip = new AutoEquip(agent);
     const dialogue = new CompanionDialogue(agent, manager, config);
+    const itemTransfer = new PeriodicItemTransfer(config.item_share, {
+        manager,
+        autoEquip,
+        dialogue
+    });
     autoEquip.start();
 
     agent.companion = {
         ctx,
         manager,
         autoEquip,
-        dialogue
+        dialogue,
+        itemTransfer
     };
 
     await manager.start();
     await applyJumpHitboxFix(agent.bot);
     wireDeathRecovery(agent, ctx, config);
 
-    console.log('[companion] started (follow + wait + death-return + own-grave + nearby-loot + recovery + auto-equip + dialogue)');
+    console.log('[companion] started (follow + wait + death-return + own-grave + nearby-loot + recovery + auto-equip + item-share + dialogue)');
 
     const loop = async () => {
         if (!agent.bot || agent.bot.entity == null) return;
         await manager.tick();
         await autoEquip.maybeRun(ctx);
+        try {
+            await itemTransfer.maybeRun(ctx);
+        } catch (err) {
+            console.error('[companion] item-share error:', err);
+        }
         if (!ctx.holdReflexes) {
             try {
                 await agent.reflexes?.tick?.({

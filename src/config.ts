@@ -49,6 +49,14 @@ export type NearbyLootConfig = {
   give_suppress_ms: number;
 };
 
+export type ItemShareConfig = {
+  enabled: boolean;
+  interval_ms: number;
+  keep_torch_stacks: number;
+  keep_food_stacks: number;
+  keep_equipment_sets: number;
+};
+
 export type CompanionConfig = {
   scan_radius: number;
   fov_degrees: number;
@@ -61,6 +69,7 @@ export type CompanionConfig = {
   death_return: DeathReturnConfig;
   own_grave: OwnGraveConfig;
   nearby_loot: NearbyLootConfig;
+  item_share: ItemShareConfig;
   reflexes: ReflexConfig;
   chat: ChatConfig;
 };
@@ -103,6 +112,13 @@ const DEFAULT_COMPANION: CompanionConfig = {
     grace_ms: 2500,
     owner_clearance: 8,
     give_suppress_ms: 12000
+  },
+  item_share: {
+    enabled: true,
+    interval_ms: 60000,
+    keep_torch_stacks: 3,
+    keep_food_stacks: 3,
+    keep_equipment_sets: 3
   },
   reflexes: {
     self_defense: true,
@@ -155,6 +171,10 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.nearby_loot,
     ...(companionFile.nearby_loot || {})
   };
+  const item_share = {
+    ...DEFAULT_COMPANION.item_share,
+    ...(companionFile.item_share || {})
+  };
 
   return {
     host: process.env.MC_HOST || 'viaproxy',
@@ -171,7 +191,8 @@ export function loadConfig(): AppConfig {
       reflexes,
       death_return,
       own_grave,
-      nearby_loot
+      nearby_loot,
+      item_share
     }
   };
 }
