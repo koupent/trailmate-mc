@@ -43,7 +43,9 @@ const DEFAULT_CONFIG = {
         radius: 8,
         max_ms: 15000,
         quiet_ms: 1500,
-        grace_ms: 2500
+        grace_ms: 2500,
+        owner_clearance: 3.5,
+        give_suppress_ms: 12000
     },
     chat: { ...DEFAULT_CHAT_CONFIG }
 };

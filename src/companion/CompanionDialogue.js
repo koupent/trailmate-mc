@@ -9,6 +9,8 @@ import { isPlayerEligible, lockOwner } from './ownerLock.js';
 import { giveAllItemsToPlayer, countAllItems } from './utils/giveAllItems.js';
 import { tCommand } from '../i18n/index.js';
 
+const DEFAULT_GIVE_SUPPRESS_MS = 12000;
+
 export const DEFAULT_CHAT_CONFIG = {
     enabled: true,
     min_interval_ms: 90000,
@@ -170,6 +172,10 @@ export class CompanionDialogue {
                 await this._say(tCommand(language, 'give_all_failed'));
             }
         } finally {
+            // Avoid scooping up the items we just tossed to the player.
+            const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
+            ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
+            ctx.nearbyLoot.suppressUntil = Date.now() + ms;
             this.agent.companion?.autoEquip?.resume?.();
             this.manager.resume();
             this._actionBusy = false;

@@ -14,20 +14,35 @@ const PICKUP_SETTLE_MS = 350;
 const APPROACH_TIMEOUT_CAP_MS = 4000;
 
 /**
+ * Skip drops near the owner so mining / gathering is not interrupted.
+ * Death return and grave dig keep full clearance (loot is the goal).
+ *
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @param {{ x: number, y: number, z: number }} itemPos
+ * @param {number} clearance
+ */
+export function isExcludedNearOwner(ctx, itemPos, clearance) {
+    if (ctx?.deathRecovery?.active || ctx?.graveLoot?.active) return false;
+    if (clearance <= 0 || !itemPos) return false;
+    const owner = ctx?.ownerEntity;
+    if (!owner?.position) return false;
+    return distanceBetween(owner.position, itemPos) <= clearance;
+}
+
+/**
  * Count ground-item entities within radius of a point.
  * @param {any} bot
  * @param {number} radius
  * @param {{ x: number, y: number, z: number }} around
+ * @param {(entity: any) => boolean} [exclude]
  */
-export function countGroundItemsNear(bot, radius, around) {
+export function countGroundItemsNear(bot, radius, around, exclude) {
     if (!bot || !around) return 0;
     let count = 0;
     for (const entity of Object.values(bot.entities || {})) {
         if (!isGroundItem(entity) || !entity.position) continue;
-        const dx = entity.position.x - around.x;
-        const dy = entity.position.y - around.y;
-        const dz = entity.position.z - around.z;
-        if (Math.hypot(dx, dy, dz) <= radius) count += 1;
+        if (exclude?.(entity)) continue;
+        if (distanceBetween(around, entity.position) <= radius) count += 1;
     }
     return count;
 }
@@ -47,6 +62,7 @@ export function countGroundItemsNear(bot, radius, around) {
  *   untilClear?: boolean,
  *   quietMs?: number,
  *   graceMs?: number,
+ *   ownerClearance?: number,
  *   around?: { x: number, y: number, z: number }
  * }} [options]
  * @returns {Promise<number>} number of approach attempts
@@ -62,6 +78,8 @@ export async function pickupNearbyItems(ctx, options = {}) {
     const untilClear = options.untilClear === true;
     const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
     const graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
+    const ownerClearance = options.ownerClearance ?? 0;
+    const exclude = (entity) => isExcludedNearOwner(ctx, entity.position, ownerClearance);
 
     let attempts = 0;
     const start = Date.now();
@@ -72,7 +90,7 @@ export async function pickupNearbyItems(ctx, options = {}) {
 
         // Chase relative to bot when no fixed around — keep origin fresh each poll.
         const origin = options.around || bot.entity.position;
-        const item = getNearestGroundItem(bot, radius, origin);
+        const item = getNearestGroundItem(bot, radius, origin, exclude);
         if (!item?.position) {
             if (untilClear) {
                 const elapsed = Date.now() - start;
@@ -96,6 +114,15 @@ export async function pickupNearbyItems(ctx, options = {}) {
 
     ctx.movement?.stop?.();
     return attempts;
+}
+
+/**
+ * @param {{ x: number, y: number, z: number, distanceTo?: Function }} a
+ * @param {{ x: number, y: number, z: number }} b
+ */
+function distanceBetween(a, b) {
+    if (typeof a.distanceTo === 'function') return a.distanceTo(b);
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
 /**
