@@ -14,7 +14,7 @@ const PICKUP_SETTLE_MS = 350;
 const APPROACH_TIMEOUT_CAP_MS = 4000;
 
 /**
- * Skip drops near the owner so mining / gathering is not interrupted.
+ * Skip drops near the owner so mining, grave, and chest scatter are not stolen.
  * Death return and grave dig keep full clearance (loot is the goal).
  *
  * @param {import('../CompanionContext.js').CompanionContext} ctx

@@ -5,7 +5,8 @@ const DEFAULT_RADIUS = 8;
 const DEFAULT_MAX_MS = 15000;
 const DEFAULT_QUIET_MS = 1500;
 const DEFAULT_GRACE_MS = 2500;
-const DEFAULT_OWNER_CLEARANCE = 3.5;
+/** Match loot radius so owner-reachable drops are left alone. */
+const DEFAULT_OWNER_CLEARANCE = DEFAULT_RADIUS;
 
 /**
  * Pick up ground-item entities near the bot.

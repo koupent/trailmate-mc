@@ -101,7 +101,7 @@ const DEFAULT_COMPANION: CompanionConfig = {
     max_ms: 15000,
     quiet_ms: 1500,
     grace_ms: 2500,
-    owner_clearance: 3.5,
+    owner_clearance: 8,
     give_suppress_ms: 12000
   },
   reflexes: {
@@ -151,6 +151,10 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.own_grave,
     ...(companionFile.own_grave || {})
   };
+  const nearby_loot = {
+    ...DEFAULT_COMPANION.nearby_loot,
+    ...(companionFile.nearby_loot || {})
+  };
 
   return {
     host: process.env.MC_HOST || 'viaproxy',
@@ -166,7 +170,8 @@ export function loadConfig(): AppConfig {
       chat,
       reflexes,
       death_return,
-      own_grave
+      own_grave,
+      nearby_loot
     }
   };
 }
