@@ -32,6 +32,7 @@ services:
       # - ./config.json:/app/config.json:ro
       - ./locales:/app/locales:ro
       - ./src:/app/src:ro
+      - ./data:/app/data
       - trailmate_auth:/root/.minecraft
     extra_hosts:
       - "host.docker.internal:host-gateway"

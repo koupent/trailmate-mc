@@ -156,6 +156,21 @@ export class MovementController {
         }
     }
 
+    /**
+     * Toggle pathfinder sprint. Follow stays walk-only; combat retreat enables sprint.
+     * @param {boolean} allowed
+     */
+    setSprintAllowed(allowed) {
+        const next = allowed === true;
+        if (this.movements.allowSprinting === next) return;
+        this.movements.allowSprinting = next;
+        try {
+            this.bot.pathfinder.setMovements(this.movements);
+        } catch {
+            // pathfinder may not be ready yet
+        }
+    }
+
     _clearHold() {
         this._holdUntil = 0;
         this._holdOrigin = null;

@@ -174,8 +174,15 @@ docker compose up -d --build
 | `retreat_health` | 撤退を始める体力 | `8` |
 | `resume_health` | 戦闘を再開できる体力 | `14` |
 | `retreat_distance` | 持ち主が不在時に敵から離れる距離 | `6` |
+| `combat_learning.enabled` | 戦闘プリセットのオンライン学習 | `true` |
+| `combat_learning.explore_rate` | 1〜2体戦での探索率 | `0.12` |
+| `combat_learning.swarm_explore_rate` | 3体以上での探索率（低め） | `0.05` |
+| `combat_learning.min_trials` | 採用判定に必要な最低試行数 | `3` |
+| `combat_learning.state_path` | 学習状態の保存先 | `data/combat-state.json` |
 
 戦闘中は敵への接近を優先し、追従経路との切り替わりを防ぎます。低体力時は持ち主の近くへ撤退し、持ち主が見つからない場合は敵と反対方向へ退きます。また、遠距離攻撃を行う敵には距離を詰め、起爆中のクリーパーからは盾がなければ離れます。
+
+学習が有効なときは、敵の種類（近接 / 機敏 / 遠距離 / 爆発）と敵数（1 / 2 / 3+）、盾の有無ごとに安全な立ち回りプリセットを比較します。悪化した候補は自動で戻し、結果は `data/combat-state.json` に保存されます。
 
 ### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し・作業退避
 

@@ -20,6 +20,16 @@ export type ChatConfig = {
   hostile_range: number;
 };
 
+export type CombatLearningConfig = {
+  enabled: boolean;
+  explore_rate: number;
+  swarm_explore_rate: number;
+  min_trials: number;
+  min_health_to_explore: number;
+  explore_damage_abort: number;
+  state_path: string;
+};
+
 export type ReflexConfig = {
   self_defense: boolean;
   torch_placing: boolean;
@@ -29,6 +39,7 @@ export type ReflexConfig = {
   retreat_health: number;
   resume_health: number;
   retreat_distance: number;
+  combat_learning: CombatLearningConfig;
 };
 
 export type DeathReturnConfig = {
@@ -142,7 +153,16 @@ const DEFAULT_COMPANION: CompanionConfig = {
     combat_lost_grace_ms: 2500,
     retreat_health: 8,
     resume_health: 14,
-    retreat_distance: 6
+    retreat_distance: 6,
+    combat_learning: {
+      enabled: true,
+      explore_rate: 0.12,
+      swarm_explore_rate: 0.05,
+      min_trials: 3,
+      min_health_to_explore: 12,
+      explore_damage_abort: 8,
+      state_path: 'data/combat-state.json'
+    }
   },
   chat: {
     enabled: true,
@@ -173,9 +193,14 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.chat,
     ...(companionFile.chat || {})
   };
+  const reflexesFile = (companionFile.reflexes || {}) as Partial<ReflexConfig>;
   const reflexes = {
     ...DEFAULT_COMPANION.reflexes,
-    ...(companionFile.reflexes || {})
+    ...reflexesFile,
+    combat_learning: {
+      ...DEFAULT_COMPANION.reflexes.combat_learning,
+      ...(reflexesFile.combat_learning || {})
+    }
   };
   const death_return = {
     ...DEFAULT_COMPANION.death_return,

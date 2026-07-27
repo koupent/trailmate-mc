@@ -49,7 +49,16 @@
       "combat_lost_grace_ms": 2500,
       "retreat_health": 8,
       "resume_health": 14,
-      "retreat_distance": 6
+      "retreat_distance": 6,
+      "combat_learning": {
+        "enabled": true,
+        "explore_rate": 0.12,
+        "swarm_explore_rate": 0.05,
+        "min_trials": 3,
+        "min_health_to_explore": 12,
+        "explore_damage_abort": 8,
+        "state_path": "data/combat-state.json"
+      }
     },
     "chat": {
       "enabled": true,
