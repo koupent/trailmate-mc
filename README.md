@@ -181,6 +181,7 @@ docker compose up -d --build
 | `nearby_loot.grace_ms` | 拾い開始直後の出現待ち | `2500` |
 | `nearby_loot.owner_clearance` | オーナー近傍で拾わない半径（採掘・墓・チェストの散らばり対策） | `8` |
 | `nearby_loot.give_suppress_ms` | 全回収・余剰受け渡し後に再拾いしない時間 | `12000` |
+| `torch_light_threshold` | この明るさ以下で松明を置く（近くの松明と日光から推定）。上げるほど松明が増える | `7` |
 | `item_share.enabled` | 余剰アイテムをオーナーへ定期的に渡す | `true` |
 | `item_share.interval_ms` | 受け渡し判定の間隔 | `60000` |
 | `item_share.keep_torch_stacks` | 手元に残す松明のスタック数 | `3` |
