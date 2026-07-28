@@ -93,7 +93,7 @@ const DEFAULT_COMPANION: CompanionConfig = {
   owner_near_radius: 12,
   stuck_detect_seconds: 1.5,
   tick_ms: 250,
-  torch_light_threshold: 0,
+  torch_light_threshold: 7,
   death_return: {
     enabled: true,
     arrive_range: 3,

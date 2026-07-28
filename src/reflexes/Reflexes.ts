@@ -3,6 +3,13 @@ import type { Bot } from 'mineflayer';
 import { getNearestEntityWhere, isHostile } from '../world/entities.js';
 import { hasLineOfSight } from '../world/lineOfSight.js';
 import type { ReflexConfig } from '../config.js';
+import {
+  estimateBrightness,
+  nearestTorchDistance,
+  torchScanRadius,
+  TORCH_PLACE_COOLDOWN_MS,
+  type LightSample
+} from './torchPlacement.js';
 
 type DefendOwner = {
   position: { offset: (x: number, y: number, z: number) => any };
@@ -101,24 +108,32 @@ export class Reflexes {
 
   private async maybeTorch(): Promise<void> {
     const now = Date.now();
-    if (now - this.lastTorchAt < 5000) return;
+    if (now - this.lastTorchAt < TORCH_PLACE_COOLDOWN_MS) return;
+
+    const pos = this.bot.entity?.position;
+    if (!pos) return;
+
     const torch = this.bot.inventory.items().find((i) => i.name === 'torch');
     if (!torch) return;
 
-    const pos = this.bot.entity.position;
     const feet = this.bot.blockAt(pos);
     if (!feet || feet.name !== 'air') return;
 
-    const timeOfDay = this.bot.time?.timeOfDay ?? 0;
-    const isNight = timeOfDay >= 13000 && timeOfDay < 23000;
-    const light = (feet as { light?: number }).light;
-    const darkEnough = typeof light === 'number'
-      ? light <= this.torchLightThreshold
-      : isNight;
-    if (!darkEnough) return;
-
     const below = this.bot.blockAt(pos.offset(0, -1, 0));
     if (!below || !below.name || below.name === 'air' || below.name === 'water') return;
+
+    const timeOfDay = this.bot.time?.timeOfDay ?? 0;
+    const isNight = timeOfDay >= 13000 && timeOfDay < 23000;
+    const brightness = estimateBrightness({
+      skyLight: (feet as LightSample).skyLight ?? null,
+      isNight,
+      torchDistance: nearestTorchDistance(
+        (x, y, z) => this.bot.blockAt(new Vec3(x, y, z)),
+        pos,
+        torchScanRadius(this.torchLightThreshold)
+      )
+    });
+    if (brightness > this.torchLightThreshold) return;
 
     this.lastTorchAt = now;
     try {
