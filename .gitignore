@@ -9,6 +9,9 @@ keys.json
 .vscode/
 .cursor/
 
+# Runtime / local debug dumps
+data/
+
 # ViaProxy secrets and runtime
 services/viaproxy/viaproxy.yml
 services/viaproxy/saves.json

@@ -1,3 +1,5 @@
+import { tickOwnerWork } from './ownerWorkTracker.js';
+
 /**
  * Runs recovery interrupts, then the active registered mode.
  * New modes are discovered via the registry for dialogue / mode switching.
@@ -95,6 +97,8 @@ export class ModeManager {
 
         this._busy = true;
         try {
+            this.ctx.invalidateCompanionAwareness?.();
+            tickOwnerWork(this.ctx);
             this.ctx.worldState.update(this.ctx);
             this.ctx.stuck.update(this.ctx.bot, this.ctx.movement.hasGoal);
             await this.ctx.doors?.tick();

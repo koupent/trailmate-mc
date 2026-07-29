@@ -1,6 +1,8 @@
 import { Mode } from '../Mode.js';
 import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
 import { hasLineOfSight } from '../../world/lineOfSight.js';
+import { isOwnerWorkDeferring } from '../ownerWorkTracker.js';
+import { computeOutOfSightAnchor, isBotInOwnerFov } from '../followPosition.js';
 
 /**
  * GoalFollow only measures straight-line distance, so a loose range counts as
@@ -13,6 +15,7 @@ const SAME_FLOOR_DY = 2;
 const LAST_KNOWN_ARRIVE_RANGE = 3;
 /** Fallback when config omits follow_distance. */
 const DEFAULT_FOLLOW_DISTANCE = 3;
+const DEFAULT_OWNER_WORK_FOV = 100;
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -20,6 +23,9 @@ const DEFAULT_FOLLOW_DISTANCE = 3;
  * The lock is kept until wait / a different owner is set via dialogue.
  * When the owner entity is unloaded, walk toward the last known position;
  * after arriving, wait in place until the entity reappears.
+ *
+ * While the owner is mining/placing (ownerWork deferring/cooldown), path to a
+ * behind-the-owner anchor so the companion stays out of the owner's view.
  */
 export class FollowMode extends Mode {
     constructor() {
@@ -73,6 +79,29 @@ export class FollowMode extends Mode {
 
         // Skip Follow only while a climb hold is still making progress.
         if (ctx.movement.isHeld) return;
+
+        if (isOwnerWorkDeferring(ctx)) {
+            const fov = config.owner_work?.fov_degrees ?? DEFAULT_OWNER_WORK_FOV;
+            const inHorizFov = isBotInOwnerFov(owner, bot.entity.position, fov);
+            const sameFloor = Math.abs(ownerDy) < SAME_FLOOR_DY;
+
+            // Already clear of the owner's view — stay put (don't chase a moving behind-anchor).
+            if (!inHorizFov && sameFloor) {
+                ctx.movement.stop();
+                return;
+            }
+            const anchor = computeOutOfSightAnchor(owner, followDistance);
+            const distToAnchor = Math.hypot(
+                bot.entity.position.x - anchor.x,
+                bot.entity.position.z - anchor.z
+            );
+            if (distToAnchor < FOLLOW_GOAL_RANGE && sameFloor) {
+                ctx.movement.stop();
+                return;
+            }
+            ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE);
+            return;
+        }
 
         // Close enough only counts when the owner is actually reachable from
         // here — a wall between them means the bot is parked outside the room.

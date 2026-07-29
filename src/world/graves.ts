@@ -281,21 +281,27 @@ type BotLike = {
   registry?: { entitiesByName?: Record<string, { metadataKeys?: string[] }> };
 };
 
+type AwarenessLike = {
+  displayEntities?: any[];
+};
+
 /**
- * Find graves owned by `username` within `radius` of the bot.
- * Requires a readable owner label AND a known grave-like block under/near it.
+ * Find graves owned by `username` from a companion awareness snapshot.
+ * Owner work FOV / clearance is intentionally ignored — own graves may sit at the owner's feet.
  */
-export function findOwnGravesNear(bot: BotLike, username: string, radius = 10): GraveTarget[] {
-  if (!bot?.entity || !username) return [];
+export function findOwnGravesFromAwareness(
+  bot: BotLike,
+  username: string,
+  snapshot: AwarenessLike | null | undefined
+): GraveTarget[] {
+  if (!bot?.entity || !username || !snapshot) return [];
 
   const results: GraveTarget[] = [];
   const seenBlocks = new Set<string>();
   const registry = bot.registry;
 
-  for (const entity of Object.values(bot.entities || {})) {
+  for (const entity of snapshot.displayEntities || []) {
     if (!isHologramEntity(entity, registry)) continue;
-    const dist = bot.entity.position.distanceTo(entity.position);
-    if (dist > radius) continue;
 
     const label = readEntityDisplayText(entity, registry);
     if (!label || !isOwnGraveLabel(label, username)) continue;
@@ -332,6 +338,24 @@ export function findOwnGravesNear(bot: BotLike, username: string, radius = 10): 
     return da - db;
   });
   return results;
+}
+
+/**
+ * Find graves owned by `username` within `radius` of the bot.
+ * Requires a readable owner label AND a known grave-like block under/near it.
+ */
+export function findOwnGravesNear(bot: BotLike, username: string, radius = 10): GraveTarget[] {
+  if (!bot?.entity || !username) return [];
+
+  const displayEntities: any[] = [];
+  const registry = bot.registry;
+  for (const entity of Object.values(bot.entities || {})) {
+    if (!isHologramEntity(entity, registry)) continue;
+    const dist = bot.entity.position.distanceTo(entity.position);
+    if (dist > radius) continue;
+    displayEntities.push(entity);
+  }
+  return findOwnGravesFromAwareness(bot, username, { displayEntities });
 }
 
 /**

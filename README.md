@@ -162,24 +162,26 @@ docker compose up -d --build
 - `locales/ja.json` … 独り言・コマンド返答（英語を足すなら `locales/en.json`）
 - `services/viaproxy/viaproxy.yml` … **実際の Minecraft サーバー**（`target-address`）
 
-### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し
+### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し・作業退避
 
 `config.json` の `companion` 配下:
 
 | キー | 意味 | 既定 |
 |---|---|---|
+| `awareness_radius` | 相棒が周囲のエンティティ／墓を把握する半径（SSOT） | `10` |
+| `owner_work.enabled` | オーナー作業中に視界外へ退避する | `true` |
+| `owner_work.fov_degrees` | 退避判定に使うオーナー視界の水平角度 | `100` |
+| `owner_work.swing_idle_ms` | スイング停止後、作業終了とみなすまでの待ち | `1000` |
+| `owner_work.post_work_cooldown_ms` | 作業終了後も視界外を維持する時間 | `4000` |
 | `death_return.enabled` | リスポーン後に死亡座標へ戻る | `true` |
 | `death_return.arrive_range` | 到着とみなす距離（ブロック） | `3` |
 | `death_return.timeout_ms` | 復帰を諦めるまでの時間 | `90000` |
 | `own_grave.enabled` | 近くの自分の墓を壊す | `true` |
-| `own_grave.scan_radius` | 墓を探す半径（ブロック） | `10` |
 | `own_grave.dig_range` | 墓破壊に入る距離 | `3.5` |
 | `nearby_loot.enabled` | 周辺の地面ドロップを拾う | `true` |
-| `nearby_loot.radius` | 拾いに行く半径（ブロック） | `8` |
 | `nearby_loot.max_ms` | 1回の拾いの上限時間 | `15000` |
 | `nearby_loot.quiet_ms` | ドロップが消えてから終了するまでの待ち | `1500` |
 | `nearby_loot.grace_ms` | 拾い開始直後の出現待ち | `2500` |
-| `nearby_loot.owner_clearance` | オーナー近傍で拾わない半径（採掘・墓・チェストの散らばり対策） | `8` |
 | `nearby_loot.give_suppress_ms` | 全回収・余剰受け渡し後に再拾いしない時間 | `12000` |
 | `torch_light_threshold` | この明るさ以下で松明を置く（近くの松明と日光から推定）。上げるほど松明が増える | `7` |
 | `item_share.enabled` | 余剰アイテムをオーナーへ定期的に渡す | `true` |
@@ -195,7 +197,7 @@ docker compose up -d --build
 3. 墓はホログラム等の表示名から持ち主を判定します。ボット自身のユーザー名と一致しない墓、名前が読めない墓は**壊しません**（他人の墓破壊によるゾンビ出現を防ぐため）。
 4. ViaProxy 経由などで名前表示が読めない環境では、安全のため墓は破壊しません（死亡座標への移動と地面ドロップの拾得のみ有効）。
 5. ネザー / エンドなど**別ワールド種別**への自動ポータル移動はしません。同じワールド種別に戻った時点で死亡復帰を続けます。
-6. `nearby_loot` は半径内にドロップがある間拾い続け、しばらく無くなったら終了します（上限 `max_ms`）。通常時は、採掘や墓・チェスト破壊で散らばったアイテムを奪わないよう、オーナー近傍（`owner_clearance`）のドロップを拾いません。死亡復帰・墓回収中は例外です。全回収・余剰受け渡し直後は `give_suppress_ms` の間拾いません。ドロップ回収は墓破壊より優先し、散らばったアイテムの取りこぼしを減らします。
+6. `awareness_radius` 内のドロップは基本すべて拾います。オーナーが採掘・設置などで腕を振っている間は視界外（後方）へ退避し、作業終了後も `post_work_cooldown_ms` の間は戻らず回収 interrupt も止めます。振り向いただけでは退避しません。死亡復帰・墓回収中は例外で回収を続けます。全回収・余剰受け渡し直後は `give_suppress_ms` の間拾いません。ドロップ回収は墓破壊より優先し、散らばったアイテムの取りこぼしを減らします。
 7. `item_share` はロック済みオーナーが近く、戦闘・回収中でないときに余剰を渡します。松明・食料は各指定スタック、装備は部位ごとに性能上位の指定セット数を残し、それ以外を渡します。チャットの「全回収」は従来どおり全アイテムを渡します。
 
 **秘密情報（`.env`、実 `viaproxy.yml`、`saves.json`）はコミットしないでください。**

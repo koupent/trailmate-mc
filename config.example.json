@@ -11,6 +11,13 @@
     "stuck_detect_seconds": 1.5,
     "tick_ms": 250,
     "torch_light_threshold": 7,
+    "awareness_radius": 10,
+    "owner_work": {
+      "enabled": true,
+      "fov_degrees": 100,
+      "swing_idle_ms": 1000,
+      "post_work_cooldown_ms": 4000
+    },
     "death_return": {
       "enabled": true,
       "arrive_range": 3,
@@ -18,16 +25,13 @@
     },
     "own_grave": {
       "enabled": true,
-      "scan_radius": 10,
       "dig_range": 3.5
     },
     "nearby_loot": {
       "enabled": true,
-      "radius": 8,
       "max_ms": 15000,
       "quiet_ms": 1500,
       "grace_ms": 2500,
-      "owner_clearance": 8,
       "give_suppress_ms": 12000
     },
     "item_share": {

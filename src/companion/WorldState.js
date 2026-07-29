@@ -1,3 +1,5 @@
+import { isInHorizontalFov } from '../world/fov.js';
+
 /**
  * Tracks players needed by the follow behavior.
  */
@@ -23,7 +25,12 @@ export class WorldState {
             if (!entity) continue;
             const distance = pos.distanceTo(entity.position);
             if (distance > config.scan_radius) continue;
-            players.push({ name, entity, distance, inFov: isInFov(pos, yaw, entity.position, config.fov_degrees) });
+            players.push({
+                name,
+                entity,
+                distance,
+                inFov: isInHorizontalFov(pos, yaw, entity.position, config.fov_degrees)
+            });
         }
         players.sort((a, b) => a.distance - b.distance);
         this.visiblePlayers = players.filter((p) => {
@@ -42,14 +49,4 @@ export class WorldState {
             this.ownerVisible = false;
         }
     }
-}
-
-function isInFov(origin, yaw, targetPos, fovDegrees) {
-    const dx = targetPos.x - origin.x;
-    const dz = targetPos.z - origin.z;
-    const angleTo = Math.atan2(-dx, -dz); // mineflayer yaw convention
-    let diff = angleTo - yaw;
-    while (diff > Math.PI) diff -= Math.PI * 2;
-    while (diff < -Math.PI) diff += Math.PI * 2;
-    return Math.abs(diff) <= (fovDegrees * Math.PI) / 180 / 2;
 }
