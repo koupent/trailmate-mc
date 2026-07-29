@@ -82,11 +82,11 @@ export class FollowMode extends Mode {
 
         if (isOwnerWorkDeferring(ctx)) {
             const fov = config.owner_work?.fov_degrees ?? DEFAULT_OWNER_WORK_FOV;
+            const inHorizFov = isBotInOwnerFov(owner, bot.entity.position, fov);
+            const sameFloor = Math.abs(ownerDy) < SAME_FLOOR_DY;
+
             // Already clear of the owner's view — stay put (don't chase a moving behind-anchor).
-            if (
-                !isBotInOwnerFov(owner, bot.entity.position, fov)
-                && Math.abs(ownerDy) < SAME_FLOOR_DY
-            ) {
+            if (!inHorizFov && sameFloor) {
                 ctx.movement.stop();
                 return;
             }
@@ -95,7 +95,7 @@ export class FollowMode extends Mode {
                 bot.entity.position.x - anchor.x,
                 bot.entity.position.z - anchor.z
             );
-            if (distToAnchor < FOLLOW_GOAL_RANGE && Math.abs(ownerDy) < SAME_FLOOR_DY) {
+            if (distToAnchor < FOLLOW_GOAL_RANGE && sameFloor) {
                 ctx.movement.stop();
                 return;
             }
