@@ -186,6 +186,25 @@ docker compose up -d --build
 
 学習が有効なときは、敵の種類（近接 / 機敏 / 遠距離 / 爆発）と盾の有無ごとに安全な立ち回りプリセットを比較します。悪化した候補は自動で戻し、結果は `data/combat-state.json` に保存されます（敵数バケットは使いません）。
 
+### PC戦闘シミュレータ
+
+Minecraftを起動せず、固定配置をtick単位で操作・可視化できます。
+
+```bash
+npx tsx src/simulator/server.ts
+# ブラウザで http://127.0.0.1:4173
+```
+
+- `single-ranged`、`multi-positioning`、`recovery` の代表ケースを同梱しています。
+- 平面をクリックしてBot、owner、敵、ドロップ、障害物を移動できます。敵・ドロップ・障害物の追加、tick/自動進行、期待owner/intent/spanの検証、ケースのブラウザ保存とJSON入出力が可能です。
+- 判断は表示専用の再実装ではなく、`threatArc`、`CombatIntent`、`CombatProfiles`、`ControlPriority`、墓由来IDのRecovery helperを直接利用します。Minecraft固有のMineflayer移動・PVP・ブロック操作はシミュレータadapterの後段です。
+
+戦闘改善の受け入れ順序:
+
+1. **simulator/test** — ケースを配置・保存し、期待owner、intent、span、Recovery遷移を決定論的テストにする。
+2. **bot integration** — 合格した純粋ルールだけをMineflayer adapterへ接続する。
+3. **Minecraft smoke test** — 最後に固定した敵配置で移動、視線、被弾、攻撃結果を確認する。
+
 ### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し・作業退避
 
 `config.json` の `companion` 配下:
