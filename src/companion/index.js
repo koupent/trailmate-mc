@@ -19,6 +19,7 @@ import {
     DEFAULT_TORCH_LIGHT_THRESHOLD,
     enableCompanionBlockProtection
 } from './blockProtection.js';
+import { attachOwnerWorkTracker } from './ownerWorkTracker.js';
 
 const DEFAULT_CONFIG = {
     scan_radius: 48,
@@ -29,6 +30,13 @@ const DEFAULT_CONFIG = {
     stuck_detect_seconds: 1.5,
     tick_ms: 250,
     torch_light_threshold: DEFAULT_TORCH_LIGHT_THRESHOLD,
+    awareness_radius: 10,
+    owner_work: {
+        enabled: true,
+        fov_degrees: 100,
+        swing_idle_ms: 1000,
+        post_work_cooldown_ms: 4000
+    },
     death_return: {
         enabled: true,
         arrive_range: 3,
@@ -36,16 +44,13 @@ const DEFAULT_CONFIG = {
     },
     own_grave: {
         enabled: true,
-        scan_radius: 10,
         dig_range: 3.5
     },
     nearby_loot: {
         enabled: true,
-        radius: 8,
         max_ms: 15000,
         quiet_ms: 1500,
         grace_ms: 2500,
-        owner_clearance: 8,
         give_suppress_ms: 12000
     },
     item_share: createItemShareConfig(),
@@ -87,6 +92,10 @@ export async function startCompanion(agent, companionConfig = {}) {
             ...DEFAULT_CONFIG.nearby_loot,
             ...(companionConfig.nearby_loot || {})
         },
+        owner_work: {
+            ...DEFAULT_CONFIG.owner_work,
+            ...(companionConfig.owner_work || {})
+        },
         item_share: createItemShareConfig(companionConfig.item_share)
     };
 
@@ -96,6 +105,7 @@ export async function startCompanion(agent, companionConfig = {}) {
 
     const worldState = new WorldState();
     const ctx = new CompanionContext(agent, worldState, config);
+    attachOwnerWorkTracker(ctx);
     const modes = createCompanionModes();
     // Nearby loot before grave dig so scattered drops are not abandoned for the next grave.
     const interrupts = [

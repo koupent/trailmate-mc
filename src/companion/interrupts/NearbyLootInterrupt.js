@@ -1,16 +1,16 @@
-import { countGroundItemsNear, isExcludedNearOwner, pickupNearbyItems } from '../utils/pickupItems.js';
+import { pickupNearbyItems } from '../utils/pickupItems.js';
 import { releaseHoldReflexesIfIdle } from '../deathRecovery.js';
+import { isOwnerWorkDeferring } from '../ownerWorkTracker.js';
 
-const DEFAULT_RADIUS = 8;
+const DEFAULT_AWARENESS_RADIUS = 10;
 const DEFAULT_MAX_MS = 15000;
 const DEFAULT_QUIET_MS = 1500;
 const DEFAULT_GRACE_MS = 2500;
-/** Match loot radius so owner-reachable drops are left alone. */
-const DEFAULT_OWNER_CLEARANCE = DEFAULT_RADIUS;
 
 /**
  * Pick up ground-item entities near the bot.
  * Independent from grave digging / death-return travel — those only get the bot near loot.
+ * Suspended while the owner is working (deferring / post-work cooldown).
  */
 export class NearbyLootInterrupt {
     constructor() {
@@ -26,10 +26,25 @@ export class NearbyLootInterrupt {
         if (!ctx.bot?.entity) return false;
         if (Date.now() < (ctx.nearbyLoot?.suppressUntil || 0)) return false;
 
-        const radius = cfg?.radius ?? DEFAULT_RADIUS;
-        const ownerClearance = cfg?.owner_clearance ?? DEFAULT_OWNER_CLEARANCE;
-        const exclude = (entity) => isExcludedNearOwner(ctx, entity.position, ownerClearance);
-        return countGroundItemsNear(ctx.bot, radius, ctx.bot.entity.position, exclude) > 0;
+        // Stay out of the owner's work area; death/grave recovery still loots.
+        if (
+            isOwnerWorkDeferring(ctx)
+            && !ctx.deathRecovery?.active
+            && !ctx.graveLoot?.active
+        ) {
+            return false;
+        }
+
+        const snap = ctx.getCompanionAwareness?.();
+        if (snap) return snap.dropItems.length > 0;
+
+        const radius = ctx.config?.awareness_radius ?? DEFAULT_AWARENESS_RADIUS;
+        return Object.values(ctx.bot.entities || {}).some((entity) => {
+            if (!entity?.position || !entity.name) return false;
+            const name = String(entity.name).toLowerCase();
+            if (name !== 'item' && name !== 'item_entity') return false;
+            return ctx.bot.entity.position.distanceTo(entity.position) <= radius;
+        });
     }
 
     /**
@@ -38,11 +53,10 @@ export class NearbyLootInterrupt {
     async run(ctx) {
         const bot = ctx.bot;
         const cfg = ctx.config?.nearby_loot || {};
-        const radius = cfg.radius ?? DEFAULT_RADIUS;
+        const radius = ctx.config?.awareness_radius ?? DEFAULT_AWARENESS_RADIUS;
         const maxMs = cfg.max_ms ?? DEFAULT_MAX_MS;
         const quietMs = cfg.quiet_ms ?? DEFAULT_QUIET_MS;
         const graceMs = cfg.grace_ms ?? DEFAULT_GRACE_MS;
-        const ownerClearance = cfg.owner_clearance ?? DEFAULT_OWNER_CLEARANCE;
 
         ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
         ctx.nearbyLoot.active = true;
@@ -60,8 +74,7 @@ export class NearbyLootInterrupt {
                 durationMs: maxMs,
                 untilClear: true,
                 quietMs,
-                graceMs,
-                ownerClearance
+                graceMs
             });
         } finally {
             ctx.nearbyLoot.active = false;

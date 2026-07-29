@@ -8,7 +8,13 @@ const DEFAULT_POLL_MS = 250;
  * Walk toward a fixed position until within range or timeout.
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} pos
- * @param {{ range?: number, timeoutMs?: number, pollMs?: number, arrivalSlack?: number }} [options]
+ * @param {{
+ *   range?: number,
+ *   timeoutMs?: number,
+ *   pollMs?: number,
+ *   arrivalSlack?: number,
+ *   abort?: () => boolean
+ * }} [options]
  * @returns {Promise<boolean>}
  */
 export async function approachPosition(ctx, pos, options = {}) {
@@ -19,6 +25,7 @@ export async function approachPosition(ctx, pos, options = {}) {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     const arrivalSlack = options.arrivalSlack ?? 0.5;
+    const shouldAbort = typeof options.abort === 'function' ? options.abort : null;
     const arrived = () => bot.entity.position.distanceTo(pos) <= range + arrivalSlack;
 
     if (arrived()) return true;
@@ -27,6 +34,10 @@ export async function approachPosition(ctx, pos, options = {}) {
 
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
+        if (shouldAbort?.()) {
+            ctx.movement?.stop?.();
+            return false;
+        }
         if (bot.interrupt_code) {
             ctx.movement?.stop?.();
             return false;

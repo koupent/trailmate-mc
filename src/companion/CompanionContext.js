@@ -2,6 +2,10 @@ import { MovementController } from './movement/MovementController.js';
 import { StuckMonitor } from './movement/StuckMonitor.js';
 import { DoorTracker } from './movement/DoorTracker.js';
 import { createDeathRecoveryState } from './deathRecovery.js';
+import { scanCompanionAwareness } from '../world/companionAwareness.js';
+import { createOwnerWorkState } from './ownerWorkTracker.js';
+
+const DEFAULT_AWARENESS_RADIUS = 10;
 
 /**
  * Shared context passed to modes and interrupts.
@@ -32,12 +36,32 @@ export class CompanionContext {
         this.nearbyLoot = { active: false, suppressUntil: 0 };
         /** @type {{ active: boolean }} periodic surplus item transfer to owner */
         this.itemTransfer = { active: false };
+        /** @type {import('./ownerWorkTracker.js').OwnerWorkState} */
+        this.ownerWork = createOwnerWorkState();
         /** When true, companion loop skips combat reflexes. */
         this.holdReflexes = false;
+        /** @type {import('../world/companionAwareness.js').CompanionAwarenessSnapshot|null} */
+        this._awareness = null;
     }
 
     get ownerEntity() {
         if (!this.ownerName) return null;
         return this.bot.players[this.ownerName]?.entity || null;
+    }
+
+    /** Clear the per-tick awareness cache so the next read rescans. */
+    invalidateCompanionAwareness() {
+        this._awareness = null;
+    }
+
+    /**
+     * Companion awareness snapshot for the current tick (cached).
+     * @returns {import('../world/companionAwareness.js').CompanionAwarenessSnapshot}
+     */
+    getCompanionAwareness() {
+        if (this._awareness) return this._awareness;
+        const radius = this.config?.awareness_radius ?? DEFAULT_AWARENESS_RADIUS;
+        this._awareness = scanCompanionAwareness(this.bot, radius, this.bot?.entity?.position);
+        return this._awareness;
     }
 }

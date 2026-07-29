@@ -28,6 +28,8 @@ import { DeathReturnInterrupt } from '../src/companion/interrupts/DeathReturnInt
 import { OwnGraveInterrupt } from '../src/companion/interrupts/OwnGraveInterrupt.js';
 import { NearbyLootInterrupt } from '../src/companion/interrupts/NearbyLootInterrupt.js';
 import { pickupNearbyItems } from '../src/companion/utils/pickupItems.js';
+import { scanCompanionAwareness } from '../src/world/companionAwareness.js';
+import { createOwnerWorkState, OWNER_WORK_PHASES } from '../src/companion/ownerWorkTracker.js';
 
 describe('grave label parsing', () => {
     it('strips formatting codes', () => {
@@ -306,8 +308,9 @@ describe('death recovery state', () => {
             holdReflexes: false,
             config: {
                 death_return: { enabled: true, arrive_range: 3, timeout_ms: 90000 },
-                own_grave: { enabled: true, scan_radius: 10 },
-                nearby_loot: { enabled: true, radius: 8, max_ms: 15000, quiet_ms: 1500, grace_ms: 2500 }
+                own_grave: { enabled: true, dig_range: 3.5 },
+                nearby_loot: { enabled: true, max_ms: 15000, quiet_ms: 1500, grace_ms: 2500 },
+                awareness_radius: 10
             },
             nearbyLoot: { active: false },
             ...overrides
@@ -365,24 +368,38 @@ describe('death recovery state', () => {
 });
 
 describe('OwnGraveInterrupt gating', () => {
+    function withAwareness(ctx) {
+        ctx.config = {
+            awareness_radius: 10,
+            ...(ctx.config || {})
+        };
+        ctx.getCompanionAwareness = () => scanCompanionAwareness(
+            ctx.bot,
+            ctx.config.awareness_radius,
+            ctx.bot.entity.position
+        );
+        ctx.invalidateCompanionAwareness = () => {};
+        return ctx;
+    }
+
     it('shouldRun is false when no own graves are nearby', () => {
         const interrupt = new OwnGraveInterrupt();
-        const ctx = {
+        const ctx = withAwareness({
             bot: {
                 username: 'Trailmate',
                 entity: { position: new Vec3(0, 64, 0) },
                 entities: {},
                 blockAt() { return { name: 'air', position: { x: 0, y: 64, z: 0 } }; }
             },
-            config: { own_grave: { enabled: true, scan_radius: 10 } },
+            config: { own_grave: { enabled: true, dig_range: 3.5 } },
             graveLoot: { active: false, targetKey: null }
-        };
+        });
         assert.equal(interrupt.shouldRun(ctx), false);
     });
 
-    it('shouldRun is true for own named grave within 10 blocks', () => {
+    it('shouldRun is true for own named grave within awareness radius', () => {
         const interrupt = new OwnGraveInterrupt();
-        const ctx = {
+        const ctx = withAwareness({
             bot: {
                 username: 'Trailmate',
                 entity: { position: new Vec3(0, 64, 0) },
@@ -400,9 +417,9 @@ describe('OwnGraveInterrupt gating', () => {
                     return { name: 'air', position: { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) } };
                 }
             },
-            config: { own_grave: { enabled: true, scan_radius: 10 } },
+            config: { own_grave: { enabled: true, dig_range: 3.5 } },
             graveLoot: { active: false, targetKey: null }
-        };
+        });
         assert.equal(interrupt.shouldRun(ctx), true);
     });
 
@@ -417,7 +434,7 @@ describe('OwnGraveInterrupt gating', () => {
                 return new Vec3(headPos.x + x, headPos.y + y, headPos.z + z);
             }
         };
-        const ctx = {
+        const ctx = withAwareness({
             agent: {
                 openChat: async (text) => { chats.push(text); }
             },
@@ -448,7 +465,6 @@ describe('OwnGraveInterrupt gating', () => {
             config: {
                 own_grave: {
                     enabled: true,
-                    scan_radius: 10,
                     dig_range: 3.5
                 }
             },
@@ -456,7 +472,7 @@ describe('OwnGraveInterrupt gating', () => {
             nearbyLoot: { active: false },
             deathRecovery: { active: false },
             holdReflexes: false
-        };
+        });
 
         await interrupt.run(ctx);
         assert.equal(chats.length, 1);
@@ -475,28 +491,41 @@ describe('NearbyLootInterrupt', () => {
      *   ownerPos: import('vec3').Vec3 | null,
      *   deathActive: boolean,
      *   graveActive: boolean,
-     *   suppressUntil: number
+     *   suppressUntil: number,
+     *   ownerWorkPhase: string
      * }>} [opts]
      */
     function makeLootCtx(opts = {}) {
         const botPos = opts.botPos || new Vec3(0, 64, 0);
         const itemPos = opts.itemPos || new Vec3(3, 64, 0);
-        return {
-            bot: {
-                entity: { position: botPos },
-                entities: {
-                    1: { name: 'item', position: itemPos }
-                }
+        const bot = {
+            entity: { position: botPos },
+            entities: {
+                1: { name: 'item', position: itemPos }
+            }
+        };
+        const ctx = {
+            bot,
+            ownerEntity: opts.ownerPos ? { position: opts.ownerPos, yaw: 0 } : undefined,
+            config: {
+                awareness_radius: 10,
+                nearby_loot: { enabled: true },
+                owner_work: { enabled: true, fov_degrees: 100, swing_idle_ms: 1000, post_work_cooldown_ms: 4000 }
             },
-            ownerEntity: opts.ownerPos ? { position: opts.ownerPos } : undefined,
-            config: { nearby_loot: { enabled: true, radius: 8, owner_clearance: 8 } },
             deathRecovery: { active: opts.deathActive === true, phase: 'travel' },
             graveLoot: { active: opts.graveActive === true },
-            nearbyLoot: { active: false, suppressUntil: opts.suppressUntil ?? 0 }
+            nearbyLoot: { active: false, suppressUntil: opts.suppressUntil ?? 0 },
+            ownerWork: {
+                ...createOwnerWorkState(),
+                phase: opts.ownerWorkPhase || OWNER_WORK_PHASES.idle
+            }
         };
+        ctx.getCompanionAwareness = () => scanCompanionAwareness(bot, 10, botPos);
+        ctx.invalidateCompanionAwareness = () => {};
+        return ctx;
     }
 
-    it('shouldRun is true when ground items are within radius', () => {
+    it('shouldRun is true when ground items are within awareness radius', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx()), true);
     });
@@ -509,40 +538,39 @@ describe('NearbyLootInterrupt', () => {
         })), true);
     });
 
-    it('shouldRun is false when drops are only within owner clearance', () => {
+    it('shouldRun picks up drops near the owner when not deferring', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
             botPos: new Vec3(2, 64, 0),
             itemPos: new Vec3(1, 64, 0),
             ownerPos: new Vec3(0, 64, 0)
-        })), false);
-    });
-
-    it('shouldRun leaves scattered drops within expanded owner clearance', () => {
-        const interrupt = new NearbyLootInterrupt();
-        assert.equal(interrupt.shouldRun(makeLootCtx({
-            botPos: new Vec3(7, 64, 0),
-            itemPos: new Vec3(6, 64, 0),
-            ownerPos: new Vec3(0, 64, 0)
-        })), false);
-    });
-
-    it('shouldRun is true when a drop is outside owner clearance', () => {
-        const interrupt = new NearbyLootInterrupt();
-        assert.equal(interrupt.shouldRun(makeLootCtx({
-            botPos: new Vec3(8, 64, 0),
-            itemPos: new Vec3(9, 64, 0),
-            ownerPos: new Vec3(0, 64, 0)
         })), true);
     });
 
-    it('shouldRun ignores owner clearance while deathRecovery is active', () => {
+    it('shouldRun is false while owner work is deferring', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            itemPos: new Vec3(3, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring
+        })), false);
+    });
+
+    it('shouldRun is false while owner work is in cooldown', () => {
+        const interrupt = new NearbyLootInterrupt();
+        assert.equal(interrupt.shouldRun(makeLootCtx({
+            itemPos: new Vec3(3, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.cooldown
+        })), false);
+    });
+
+    it('shouldRun still loots during death recovery even if owner work is deferring', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
             botPos: new Vec3(2, 64, 0),
             itemPos: new Vec3(1, 64, 0),
             ownerPos: new Vec3(0, 64, 0),
-            deathActive: true
+            deathActive: true,
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring
         })), true);
     });
 
@@ -569,10 +597,12 @@ describe('NearbyLootInterrupt', () => {
                 entities: {},
                 interrupt_code: false
             },
+            config: { awareness_radius: 10 },
             movement: { stop() {} },
             holdReflexes: true
         };
-        // No items → after grace+quiet should exit well under max duration.
+        ctx.getCompanionAwareness = () => scanCompanionAwareness(ctx.bot, 10, ctx.bot.entity.position);
+        ctx.invalidateCompanionAwareness = () => {};
         const started = Date.now();
         const attempts = await pickupNearbyItems(ctx, {
             radius: 5,

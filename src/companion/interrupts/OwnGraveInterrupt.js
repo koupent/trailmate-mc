@@ -1,5 +1,5 @@
 import { Vec3 } from 'vec3';
-import { findOwnGravesNear, isGraveCandidateBlock } from '../../world/graves.js';
+import { findOwnGravesFromAwareness, isGraveCandidateBlock } from '../../world/graves.js';
 import { approachPosition } from '../utils/approachPosition.js';
 import { releaseHoldReflexesIfIdle } from '../deathRecovery.js';
 import {
@@ -8,12 +8,12 @@ import {
     canBreakBlockUnderProtection
 } from '../blockProtection.js';
 
-const DEFAULT_SCAN_RADIUS = 10;
 const DEFAULT_DIG_RANGE = 3.5;
 
 /**
- * Break GravesX-style graves that are clearly owned by this bot within scan radius.
+ * Break GravesX-style graves that are clearly owned by this bot within awareness radius.
  * Drop pickup is handled separately by NearbyLootInterrupt.
+ * Owner work FOV does not block grave digs.
  */
 export class OwnGraveInterrupt {
     constructor() {
@@ -31,8 +31,9 @@ export class OwnGraveInterrupt {
         if (!ctx.bot?.entity) return false;
         if (ctx.graveLoot?.active) return true;
 
-        const radius = cfg?.scan_radius ?? DEFAULT_SCAN_RADIUS;
-        return findOwnGravesNear(ctx.bot, ctx.bot.username, radius).length > 0;
+        const snap = ctx.getCompanionAwareness?.();
+        if (!snap) return false;
+        return findOwnGravesFromAwareness(ctx.bot, ctx.bot.username, snap).length > 0;
     }
 
     /**
@@ -41,7 +42,6 @@ export class OwnGraveInterrupt {
     async run(ctx) {
         const bot = ctx.bot;
         const cfg = ctx.config?.own_grave || {};
-        const radius = cfg.scan_radius ?? DEFAULT_SCAN_RADIUS;
         const digRange = cfg.dig_range ?? DEFAULT_DIG_RANGE;
 
         ctx.graveLoot = ctx.graveLoot || { active: false, targetKey: null };
@@ -55,7 +55,9 @@ export class OwnGraveInterrupt {
         }
 
         try {
-            const graves = findOwnGravesNear(bot, bot.username, radius);
+            ctx.invalidateCompanionAwareness?.();
+            const snap = ctx.getCompanionAwareness?.();
+            const graves = findOwnGravesFromAwareness(bot, bot.username, snap);
             if (graves.length === 0) return;
 
             const target = graves[0];

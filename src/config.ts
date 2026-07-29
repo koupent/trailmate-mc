@@ -35,18 +35,22 @@ export type DeathReturnConfig = {
 
 export type OwnGraveConfig = {
   enabled: boolean;
-  scan_radius: number;
   dig_range: number;
 };
 
 export type NearbyLootConfig = {
   enabled: boolean;
-  radius: number;
   max_ms: number;
   quiet_ms: number;
   grace_ms: number;
-  owner_clearance: number;
   give_suppress_ms: number;
+};
+
+export type OwnerWorkConfig = {
+  enabled: boolean;
+  fov_degrees: number;
+  swing_idle_ms: number;
+  post_work_cooldown_ms: number;
 };
 
 export type ItemShareConfig = {
@@ -66,6 +70,8 @@ export type CompanionConfig = {
   stuck_detect_seconds: number;
   tick_ms: number;
   torch_light_threshold: number;
+  awareness_radius: number;
+  owner_work: OwnerWorkConfig;
   death_return: DeathReturnConfig;
   own_grave: OwnGraveConfig;
   nearby_loot: NearbyLootConfig;
@@ -94,6 +100,13 @@ const DEFAULT_COMPANION: CompanionConfig = {
   stuck_detect_seconds: 1.5,
   tick_ms: 250,
   torch_light_threshold: 7,
+  awareness_radius: 10,
+  owner_work: {
+    enabled: true,
+    fov_degrees: 100,
+    swing_idle_ms: 1000,
+    post_work_cooldown_ms: 4000
+  },
   death_return: {
     enabled: true,
     arrive_range: 3,
@@ -101,16 +114,13 @@ const DEFAULT_COMPANION: CompanionConfig = {
   },
   own_grave: {
     enabled: true,
-    scan_radius: 10,
     dig_range: 3.5
   },
   nearby_loot: {
     enabled: true,
-    radius: 8,
     max_ms: 15000,
     quiet_ms: 1500,
     grace_ms: 2500,
-    owner_clearance: 8,
     give_suppress_ms: 12000
   },
   item_share: {
@@ -171,6 +181,10 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.nearby_loot,
     ...(companionFile.nearby_loot || {})
   };
+  const owner_work = {
+    ...DEFAULT_COMPANION.owner_work,
+    ...(companionFile.owner_work || {})
+  };
   const item_share = {
     ...DEFAULT_COMPANION.item_share,
     ...(companionFile.item_share || {})
@@ -192,6 +206,7 @@ export function loadConfig(): AppConfig {
       death_return,
       own_grave,
       nearby_loot,
+      owner_work,
       item_share
     }
   };
