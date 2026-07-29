@@ -11,10 +11,12 @@ import { AutoEquip } from './utils/AutoEquip.js';
 import { PeriodicItemTransfer, createItemShareConfig } from './utils/PeriodicItemTransfer.js';
 import { CompanionDialogue, DEFAULT_CHAT_CONFIG } from './CompanionDialogue.js';
 import { applyJumpHitboxFix } from './hitboxFix.js';
+import { findOwnGravesNear } from '../world/graves.js';
 import {
     beginDeathReturnAfterSpawn,
     captureDeathState
 } from './deathRecovery.js';
+import { needsGearRecovery } from './combatGate.js';
 import {
     DEFAULT_TORCH_LIGHT_THRESHOLD,
     enableCompanionBlockProtection
@@ -40,7 +42,8 @@ const DEFAULT_CONFIG = {
     death_return: {
         enabled: true,
         arrive_range: 3,
-        timeout_ms: 90000
+        timeout_ms: 90000,
+        grave_wait_ms: 2500
     },
     own_grave: {
         enabled: true,
@@ -48,6 +51,11 @@ const DEFAULT_CONFIG = {
     },
     nearby_loot: {
         enabled: true,
+        radius: 8,
+        recovery_radius: 12,
+        recovery_capture_ms: 1000,
+        recovery_deadline_ms: 12000,
+        recovery_quiet_ms: 750,
         max_ms: 15000,
         quiet_ms: 1500,
         grace_ms: 2500,
@@ -107,7 +115,7 @@ export async function startCompanion(agent, companionConfig = {}) {
     const ctx = new CompanionContext(agent, worldState, config);
     attachOwnerWorkTracker(ctx);
     const modes = createCompanionModes();
-    // Nearby loot before grave dig so scattered drops are not abandoned for the next grave.
+    // 通常ドロップは先に回収し、Recoveryの墓フェーズでは墓処理へ譲る。
     const interrupts = [
         new NearbyLootInterrupt(),
         new OwnGraveInterrupt(),
@@ -129,7 +137,8 @@ export async function startCompanion(agent, companionConfig = {}) {
         manager,
         autoEquip,
         dialogue,
-        itemTransfer
+        itemTransfer,
+        _loopBusy: false
     };
 
     await manager.start();
@@ -140,31 +149,44 @@ export async function startCompanion(agent, companionConfig = {}) {
 
     const loop = async () => {
         if (!agent.bot || agent.bot.entity == null) return;
-        await manager.tick();
-        await autoEquip.maybeRun(ctx);
+
+        const graveRadius = config.own_grave?.scan_radius ?? 10;
+        const recoveryActive = Boolean(ctx.deathRecovery?.active);
+        const preferGearRecovery = !recoveryActive && needsGearRecovery(agent.bot)
+            && findOwnGravesNear(agent.bot, agent.bot.username, graveRadius).length > 0;
+
+        // Combat always ticks — even while loot/grave interrupts block the rest of the loop.
         try {
-            await itemTransfer.maybeRun(ctx);
+            await agent.reflexes?.tick?.({
+                movementHeld: !!ctx.movement?.isHeld,
+                isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
+                nonCombatHeld: !!ctx.holdReflexes || preferGearRecovery,
+                preferGearRecovery,
+                recovery: ctx.deathRecovery,
+                owner: ctx.ownerEntity ?? null,
+                movement: ctx.movement
+            });
         } catch (err) {
-            console.error('[companion] item-share error:', err);
+            console.error('[companion] reflexes error:', err);
         }
-        if (!ctx.holdReflexes) {
+
+        if (agent.companion._loopBusy) return;
+        agent.companion._loopBusy = true;
+        try {
+            await manager.tick();
+            await autoEquip.maybeRun(ctx);
             try {
-                await agent.reflexes?.tick?.({
-                    movementHeld: !!ctx.movement?.isHeld,
-                    isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
-                    owner: ctx.ownerEntity ?? null,
-                    movement: ctx.movement
-                });
+                await itemTransfer.maybeRun(ctx);
             } catch (err) {
-                console.error('[companion] reflexes error:', err);
+                console.error('[companion] item-share error:', err);
             }
-        } else {
-            agent.reflexes?.resetCombat?.();
-        }
-        try {
-            await dialogue.maybeSpeak();
-        } catch (err) {
-            console.error('[companion] dialogue loop error:', err);
+            try {
+                await dialogue.maybeSpeak();
+            } catch (err) {
+                console.error('[companion] dialogue loop error:', err);
+            }
+        } finally {
+            agent.companion._loopBusy = false;
         }
     };
 

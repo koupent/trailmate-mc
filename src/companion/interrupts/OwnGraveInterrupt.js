@@ -1,7 +1,14 @@
 import { Vec3 } from 'vec3';
 import { findOwnGravesFromAwareness, isGraveCandidateBlock } from '../../world/graves.js';
+import { isGroundItem } from '../../world/entities.js';
 import { approachPosition } from '../utils/approachPosition.js';
-import { releaseHoldReflexesIfIdle } from '../deathRecovery.js';
+import {
+    completeDeathRecovery,
+    isRecoveryEmergencyActive,
+    releaseHoldReflexesIfIdle,
+    requestRecoveryItemCollection
+} from '../deathRecovery.js';
+import { needsGearRecovery, shouldDeferToCombat } from '../combatGate.js';
 import {
     allowDigAt,
     clearAllowedDig,
@@ -14,6 +21,8 @@ const DEFAULT_DIG_RANGE = 3.5;
  * Break GravesX-style graves that are clearly owned by this bot within awareness radius.
  * Drop pickup is handled separately by NearbyLootInterrupt.
  * Owner work FOV does not block grave digs.
+ *
+ * When the bot has no weapon, grave recovery outranks combat so it can re-arm.
  */
 export class OwnGraveInterrupt {
     constructor() {
@@ -29,6 +38,12 @@ export class OwnGraveInterrupt {
         const cfg = ctx.config?.own_grave;
         if (cfg?.enabled === false) return false;
         if (!ctx.bot?.entity) return false;
+        const recovery = Boolean(ctx.deathRecovery?.active);
+        if (recovery && isRecoveryEmergencyActive(ctx)) return false;
+        if (recovery && ctx.deathRecovery.phase !== 'grave') return false;
+        const unarmed = needsGearRecovery(ctx.bot);
+        // Armed bots still yield to active combat; unarmed bots recover gear first.
+        if (!recovery && shouldDeferToCombat(ctx) && !unarmed) return false;
         if (ctx.graveLoot?.active) return true;
 
         const snap = ctx.getCompanionAwareness?.();
@@ -43,6 +58,15 @@ export class OwnGraveInterrupt {
         const bot = ctx.bot;
         const cfg = ctx.config?.own_grave || {};
         const digRange = cfg.dig_range ?? DEFAULT_DIG_RANGE;
+        const recovery = ctx.deathRecovery;
+        const recoveryTimeoutMs = ctx.config?.death_return?.timeout_ms ?? 90000;
+        if (
+            recovery?.active
+            && Date.now() - (recovery.startedAt || Date.now()) > recoveryTimeoutMs
+        ) {
+            completeDeathRecovery(ctx, 'grave-unreachable-timeout');
+            return;
+        }
 
         ctx.graveLoot = ctx.graveLoot || { active: false, targetKey: null };
         ctx.graveLoot.active = true;
@@ -89,9 +113,20 @@ export class OwnGraveInterrupt {
                     console.warn('[companion] dig blocked by protection policy');
                     return;
                 }
+                await equipDigTool(bot);
                 await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
                 ctx.movement.stop();
-                await bot.dig(block);
+                // Snapshot unrelated drops before the grave opens. Only new IDs
+                // appearing in the short post-break window belong to Recovery.
+                const preexistingItemIds = groundItemIdsNear(
+                    bot,
+                    pos,
+                    ctx.config?.nearby_loot?.recovery_radius ?? 12
+                );
+                await digBlockIgnoringBrokenEnchants(bot, block);
+                requestRecoveryItemCollection(ctx, pos, Date.now(), 'grave', {
+                    preexistingItemIds
+                });
                 console.log(`[companion] broke own grave at ${key}`);
             } catch (err) {
                 console.warn('[companion] grave dig failed:', err.message || err);
@@ -99,7 +134,6 @@ export class OwnGraveInterrupt {
                 clearAllowedDig();
             }
         } finally {
-            // Leave inactive so NearbyLootInterrupt can collect drops next.
             ctx.graveLoot.active = false;
             ctx.graveLoot.targetKey = null;
             releaseHoldReflexesIfIdle(ctx);
@@ -124,5 +158,75 @@ export class OwnGraveInterrupt {
         } catch {
             /* ignore */
         }
+    }
+}
+
+function groundItemIdsNear(bot, origin, radius) {
+    const ids = [];
+    for (const entity of Object.values(bot.entities || {})) {
+        if (!isGroundItem(entity) || !entity.position) continue;
+        const distance = typeof origin.distanceTo === 'function'
+            ? origin.distanceTo(entity.position)
+            : Math.hypot(
+                origin.x - entity.position.x,
+                origin.y - entity.position.y,
+                origin.z - entity.position.z
+            );
+        const id = Number(entity.id);
+        if (distance <= radius && Number.isFinite(id)) ids.push(id);
+    }
+    return ids;
+}
+
+/**
+ * Equip a basic dig tool when available. Dig speed uses item type only;
+ * enchant handling is done separately because component-map enchants are often
+ * non-arrays on this server and crash mineflayer's digTime.
+ * @param {import('mineflayer').Bot} bot
+ */
+async function equipDigTool(bot) {
+    try {
+        const tool = bot.inventory.items().find((i) =>
+            /pickaxe|shovel|axe|hoe/.test(String(i.name || ''))
+        );
+        if (tool) await bot.equip(tool, 'hand');
+    } catch {
+        /* ignore */
+    }
+}
+
+/**
+ * Dig while forcing empty enchant lists into digTime.
+ *
+ * Root cause (runtime): prismarine-item `enchants` is a getter over componentMap
+ * data that is sometimes a non-array object. mineflayer then does
+ * `held.enchants.concat(helmet.enchants)` → "enchantments is not iterable".
+ * Assigning `item.enchants = []` does nothing (getter-only).
+ *
+ * @param {import('mineflayer').Bot} bot
+ * @param {import('prismarine-block').Block} block
+ */
+async function digBlockIgnoringBrokenEnchants(bot, block) {
+    const previousDigTime = bot.digTime;
+    bot.digTime = (target) => {
+        const heldType = bot.heldItem?.type ?? null;
+        const creative = bot.game?.gameMode === 'creative';
+        const inWater = ['water', 'flowing_water'].includes(
+            bot._getBlockAtEyeLevel?.()?.name
+        );
+        const notOnGround = !bot.entity?.onGround;
+        return target.digTime(
+            heldType,
+            creative,
+            inWater,
+            notOnGround,
+            [],
+            bot.entity?.effects || {}
+        );
+    };
+    try {
+        await bot.dig(block);
+    } finally {
+        bot.digTime = previousDigTime;
     }
 }

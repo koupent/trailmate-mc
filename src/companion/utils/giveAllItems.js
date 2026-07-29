@@ -13,7 +13,7 @@ const APPROACH_POLL_MS = 250;
  * @param {string} username
  * @returns {Promise<'ok'|'empty'|'unavailable'|'failed'>}
  */
-export async function giveAllItemsToPlayer(ctx, username) {
+export async function giveAllItemsToPlayer(ctx, username, opts = {}) {
     const bot = ctx?.bot;
     if (!bot?.entity) return 'unavailable';
 
@@ -21,7 +21,11 @@ export async function giveAllItemsToPlayer(ctx, username) {
     if (Object.keys(countsBefore).length === 0) return 'empty';
 
     const stacks = snapshotOccupiedStacks(bot);
-    return giveStacksToPlayer(ctx, username, stacks, { countsBefore, sweepAll: true });
+    return giveStacksToPlayer(ctx, username, stacks, {
+        ...opts,
+        countsBefore,
+        sweepAll: true
+    });
 }
 
 /**
@@ -29,8 +33,8 @@ export async function giveAllItemsToPlayer(ctx, username) {
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {string} username
  * @param {Array<{ slot: number, type: number, count: number, name: string }>} stacks
- * @param {{ countsBefore?: Record<string, number>, sweepAll?: boolean }} [opts]
- * @returns {Promise<'ok'|'empty'|'unavailable'|'failed'>}
+ * @param {{ countsBefore?: Record<string, number>, sweepAll?: boolean, shouldAbort?: () => boolean }} [opts]
+ * @returns {Promise<'ok'|'empty'|'unavailable'|'failed'|'deferred'>}
  */
 export async function giveStacksToPlayer(ctx, username, stacks, opts = {}) {
     const name = String(username || '').trim();
@@ -46,14 +50,19 @@ export async function giveStacksToPlayer(ctx, username, stacks, opts = {}) {
     const countsBefore = opts.countsBefore || countStacks(targetStacks);
 
     try {
-        const reached = await approachPlayer(ctx, player);
+        const reached = await approachPlayer(ctx, player, opts.shouldAbort);
+        if (reached === 'deferred') return 'deferred';
         if (!reached) return 'unavailable';
 
+        if (opts.shouldAbort?.()) return 'deferred';
         await bot.lookAt(player.position.offset(0, player.height * 0.9, 0));
-        await tossStacks(bot, targetStacks);
+        if (opts.shouldAbort?.()) return 'deferred';
+        const tossedAll = await tossStacks(bot, targetStacks, opts.shouldAbort);
+        if (!tossedAll && opts.shouldAbort?.()) return 'deferred';
 
         if (opts.sweepAll) {
-            await sweepAllRemaining(bot);
+            const sweptAll = await sweepAllRemaining(bot, opts.shouldAbort);
+            if (!sweptAll && opts.shouldAbort?.()) return 'deferred';
         }
 
         const remaining = countAllItems(bot);
@@ -109,7 +118,7 @@ function countStacks(stacks) {
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {import('prismarine-entity').Entity} player
  */
-export async function approachPlayer(ctx, player) {
+export async function approachPlayer(ctx, player, shouldAbort) {
     const bot = ctx.bot;
     const distance = () => bot.entity.position.distanceTo(player.position);
     if (distance() <= APPROACH_RANGE + 1) return true;
@@ -120,6 +129,12 @@ export async function approachPlayer(ctx, player) {
 
     const start = Date.now();
     while (Date.now() - start < APPROACH_TIMEOUT_MS) {
+        if (shouldAbort?.()) {
+            // Release only our owner goal. If combat already installed a pvp
+            // goal, MovementController.hasGoal is false and we leave it alone.
+            if (ctx.movement?.hasGoal) ctx.movement.stop?.();
+            return 'deferred';
+        }
         if (bot.interrupt_code) return false;
         if (!player.position) return false;
         if (distance() <= APPROACH_RANGE + 1) {
@@ -139,28 +154,30 @@ export async function approachPlayer(ctx, player) {
  * @param {import('mineflayer').Bot} bot
  * @param {Array<{ slot: number, type: number, count: number, name: string }>} stacks
  */
-export async function tossStacks(bot, stacks) {
+export async function tossStacks(bot, stacks, shouldAbort) {
     for (const snap of stacks) {
-        if (bot.interrupt_code) return;
+        if (shouldAbort?.() || bot.interrupt_code) return false;
         const live = resolveLiveStack(bot, snap);
         if (!live) continue;
         await tossOneStack(bot, live);
     }
+    return true;
 }
 
 /**
  * @param {import('mineflayer').Bot} bot
  */
-async function sweepAllRemaining(bot) {
+async function sweepAllRemaining(bot, shouldAbort) {
     let guard = 0;
     while (Object.keys(countAllItems(bot)).length > 0 && guard < 64) {
-        if (bot.interrupt_code) break;
+        if (shouldAbort?.() || bot.interrupt_code) return false;
         const leftover = (bot.inventory.slots || []).find((slot) => slot && slot.name);
         if (!leftover) break;
         const ok = await tossOneStack(bot, leftover);
         if (!ok) break;
         guard += 1;
     }
+    return true;
 }
 
 /**

@@ -3,6 +3,7 @@
  */
 
 import { isPlayerEligible } from '../ownerLock.js';
+import { currentControlOwner } from '../ControlPriority.js';
 import { listGiveableStacks, DEFAULT_RETENTION } from './itemRetention.js';
 import { giveStacksToPlayer } from './giveAllItems.js';
 
@@ -39,10 +40,9 @@ export function shouldTransferNow(ctx, opts = {}) {
     if (!ctx.ownerName) return false;
     if (opts.dialogueBusy) return false;
     if (ctx.itemTransfer?.active) return false;
-    if (ctx.deathRecovery?.active) return false;
     if (ctx.graveLoot?.active) return false;
     if (ctx.nearbyLoot?.active) return false;
-    if (ctx.bot.pvp?.target) return false;
+    if (!['follow', 'wait'].includes(currentControlOwner(ctx))) return false;
     if (!isPlayerEligible(ctx, ctx.ownerName)) return false;
 
     const now = opts.now ?? Date.now();
@@ -97,10 +97,15 @@ export class PeriodicItemTransfer {
         }
 
         const stacks = listGiveableStacks(ctx.bot, this._retentionPolicy());
-        this._lastRunAt = Date.now();
-        if (stacks.length === 0) return;
+        if (stacks.length === 0) {
+            this._lastRunAt = Date.now();
+            return;
+        }
 
-        await this._transfer(ctx, stacks);
+        const result = await this._transfer(ctx, stacks);
+        // Combat preemption is not a completed share attempt. Retry after the
+        // tactical release latch clears rather than waiting a full interval.
+        if (result !== 'deferred') this._lastRunAt = Date.now();
     }
 
     /**
@@ -122,14 +127,19 @@ export class PeriodicItemTransfer {
                 /* ignore */
             }
 
-            const result = await giveStacksToPlayer(ctx, ctx.ownerName, stacks);
+            const result = await giveStacksToPlayer(ctx, ctx.ownerName, stacks, {
+                shouldAbort: () => currentControlOwner(ctx) !== 'transfer'
+            });
             if (result === 'ok') {
                 console.log(
                     `[companion] item-share: gave ${stacks.length} stack(s) to ${ctx.ownerName}`
                 );
+            } else if (result === 'deferred') {
+                console.log('[companion] item-share: deferred for combat');
             } else if (result !== 'empty') {
                 console.warn(`[companion] item-share: transfer result=${result}`);
             }
+            return result;
         } catch (err) {
             console.warn('[companion] item-share failed:', err.message || err);
         } finally {

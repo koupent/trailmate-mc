@@ -23,7 +23,6 @@ export type ChatConfig = {
 export type CombatLearningConfig = {
   enabled: boolean;
   explore_rate: number;
-  swarm_explore_rate: number;
   min_trials: number;
   min_health_to_explore: number;
   explore_damage_abort: number;
@@ -46,6 +45,7 @@ export type DeathReturnConfig = {
   enabled: boolean;
   arrive_range: number;
   timeout_ms: number;
+  grave_wait_ms?: number;
 };
 
 export type OwnGraveConfig = {
@@ -55,6 +55,11 @@ export type OwnGraveConfig = {
 
 export type NearbyLootConfig = {
   enabled: boolean;
+  radius: number;
+  recovery_radius?: number;
+  recovery_capture_ms?: number;
+  recovery_deadline_ms?: number;
+  recovery_quiet_ms?: number;
   max_ms: number;
   quiet_ms: number;
   grace_ms: number;
@@ -133,6 +138,11 @@ const DEFAULT_COMPANION: CompanionConfig = {
   },
   nearby_loot: {
     enabled: true,
+    radius: 8,
+    recovery_radius: 12,
+    recovery_capture_ms: 1000,
+    recovery_deadline_ms: 12000,
+    recovery_quiet_ms: 750,
     max_ms: 15000,
     quiet_ms: 1500,
     grace_ms: 2500,
@@ -149,15 +159,14 @@ const DEFAULT_COMPANION: CompanionConfig = {
     self_defense: true,
     torch_placing: true,
     self_preservation: true,
-    hostile_range: 8,
-    combat_lost_grace_ms: 2500,
+    hostile_range: 12,
+    combat_lost_grace_ms: 1500,
     retreat_health: 8,
     resume_health: 14,
     retreat_distance: 6,
     combat_learning: {
       enabled: true,
       explore_rate: 0.12,
-      swarm_explore_rate: 0.05,
       min_trials: 3,
       min_health_to_explore: 12,
       explore_damage_abort: 8,

@@ -1,14 +1,12 @@
 /**
- * Pure combat policy: enemy classification, count buckets, and safe presets.
- * No bot I/O — Reflexes / CombatOptimizer consume these helpers.
+ * Pure combat policy: enemy classification and safe presets.
+ * Context is enemy class × shield only (no enemy-count buckets).
  */
 
 export type EnemyClass = 'melee' | 'agile' | 'ranged' | 'explosive';
-export type CountBucket = 'solo' | 'duo' | 'swarm';
 
 export type CombatContext = {
   enemyClass: EnemyClass;
-  countBucket: CountBucket;
   hasShield: boolean;
 };
 
@@ -27,6 +25,14 @@ export type CombatPresetParams = {
   focusStickyMs: number;
   /** 0..1 bias to step away from the crowd centroid while kiting. */
   crowdAvoidBias: number;
+  /** Maximum duration of one world-space ranged dodge burst. */
+  rangedDodgeBurstMs: number;
+  /** Explicit attack/advance commit window after each dodge burst. */
+  rangedDodgeReassessMs: number;
+  /** Raise shield at or above this many ranged threats. */
+  guardRangedThreatThreshold: number;
+  /** Minimum candidate score improvement required before repositioning. */
+  positioningImprovementMarginDeg: number;
 };
 
 export type CombatPresetId = string;
@@ -73,10 +79,14 @@ export const PRESET_BOUNDS: {
   creeperSoftEvadeRange: { min: 2.5, max: 5.5 },
   creeperFollowRange: { min: 3.5, max: 6.5 },
   focusStickyMs: { min: 400, max: 5000 },
-  crowdAvoidBias: { min: 0, max: 1 }
+  crowdAvoidBias: { min: 0, max: 1 },
+  rangedDodgeBurstMs: { min: 250, max: 1000 },
+  rangedDodgeReassessMs: { min: 750, max: 3000 },
+  guardRangedThreatThreshold: { min: 1, max: 3 },
+  positioningImprovementMarginDeg: { min: 1, max: 15 }
 };
 
-const SOLO_MELEE_BASELINE: CombatPresetParams = {
+const MELEE_BASELINE: CombatPresetParams = {
   followRange: 2.4,
   kiteFollowRange: 3.4,
   backstepRange: 1.7,
@@ -88,7 +98,11 @@ const SOLO_MELEE_BASELINE: CombatPresetParams = {
   creeperSoftEvadeRange: 3.2,
   creeperFollowRange: 4.5,
   focusStickyMs: 900,
-  crowdAvoidBias: 0.15
+  crowdAvoidBias: 0.15,
+  rangedDodgeBurstMs: 650,
+  rangedDodgeReassessMs: 1500,
+  guardRangedThreatThreshold: 1,
+  positioningImprovementMarginDeg: 4
 };
 
 function cloneParams(params: CombatPresetParams): CombatPresetParams {
@@ -106,8 +120,8 @@ function adjust(
  * Built-in presets keyed by id. Each context maps to a small candidate set.
  */
 const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
-  'melee-solo-baseline': SOLO_MELEE_BASELINE,
-  'melee-solo-aggressive': adjust(SOLO_MELEE_BASELINE, {
+  'melee-baseline': MELEE_BASELINE,
+  'melee-aggressive': adjust(MELEE_BASELINE, {
     followRange: 2.0,
     kiteFollowRange: 2.8,
     backstepRange: 1.4,
@@ -115,7 +129,7 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
     focusStickyMs: 1200,
     crowdAvoidBias: 0.05
   }),
-  'melee-solo-defensive': adjust(SOLO_MELEE_BASELINE, {
+  'melee-defensive': adjust(MELEE_BASELINE, {
     followRange: 2.8,
     kiteFollowRange: 4.0,
     backstepRange: 2.0,
@@ -125,52 +139,7 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
     crowdAvoidBias: 0.35
   }),
 
-  'melee-duo-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 2.6,
-    kiteFollowRange: 3.8,
-    backstepRange: 1.9,
-    strafeRange: 3.2,
-    focusStickyMs: 1600,
-    crowdAvoidBias: 0.45
-  }),
-  'melee-duo-focus': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 2.4,
-    kiteFollowRange: 3.5,
-    backstepRange: 1.8,
-    strafeRange: 3.0,
-    focusStickyMs: 2400,
-    crowdAvoidBias: 0.35
-  }),
-  'melee-duo-kiting': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 2.9,
-    kiteFollowRange: 4.2,
-    backstepRange: 2.1,
-    strafeRange: 3.5,
-    strafeSwitchMs: 480,
-    focusStickyMs: 1100,
-    crowdAvoidBias: 0.6
-  }),
-
-  'melee-swarm-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 2.9,
-    kiteFollowRange: 4.4,
-    backstepRange: 2.2,
-    strafeRange: 3.6,
-    strafeSwitchMs: 450,
-    focusStickyMs: 1800,
-    crowdAvoidBias: 0.75
-  }),
-  'melee-swarm-escape': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 3.1,
-    kiteFollowRange: 4.8,
-    backstepRange: 2.4,
-    strafeRange: 4.0,
-    strafeSwitchMs: 400,
-    focusStickyMs: 900,
-    crowdAvoidBias: 0.95
-  }),
-
-  'agile-solo-baseline': adjust(SOLO_MELEE_BASELINE, {
+  'agile-baseline': adjust(MELEE_BASELINE, {
     followRange: 2.2,
     kiteFollowRange: 3.2,
     backstepRange: 1.6,
@@ -179,62 +148,32 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
     focusStickyMs: 800,
     crowdAvoidBias: 0.25
   }),
-  'agile-duo-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 2.5,
-    kiteFollowRange: 3.7,
-    backstepRange: 1.9,
-    strafeRange: 3.3,
-    focusStickyMs: 1500,
-    crowdAvoidBias: 0.5
-  }),
-  'agile-swarm-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 2.8,
-    kiteFollowRange: 4.2,
-    backstepRange: 2.1,
-    strafeRange: 3.6,
-    focusStickyMs: 1200,
-    crowdAvoidBias: 0.8
-  }),
 
-  'ranged-solo-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 1.4,
-    kiteFollowRange: 2.6,
+  'ranged-baseline': adjust(MELEE_BASELINE, {
+    followRange: 2.2,
+    kiteFollowRange: 3.6,
     backstepRange: 1.5,
     strafeRange: 3.2,
-    rangedBackRange: 2.4,
+    rangedBackRange: 2.8,
     strafeSwitchMs: 550,
     focusStickyMs: 1000,
     crowdAvoidBias: 0.2
   }),
-  'ranged-solo-shield-push': adjust(SOLO_MELEE_BASELINE, {
+  'ranged-shield-push': adjust(MELEE_BASELINE, {
     followRange: 1.2,
     kiteFollowRange: 2.4,
     backstepRange: 1.4,
     strafeRange: 2.8,
     rangedBackRange: 2.0,
     focusStickyMs: 1400,
-    crowdAvoidBias: 0.1
-  }),
-  'ranged-duo-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 1.5,
-    kiteFollowRange: 3.0,
-    backstepRange: 1.7,
-    strafeRange: 3.4,
-    rangedBackRange: 2.6,
-    focusStickyMs: 1700,
-    crowdAvoidBias: 0.45
-  }),
-  'ranged-swarm-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 1.7,
-    kiteFollowRange: 3.4,
-    backstepRange: 1.9,
-    strafeRange: 3.8,
-    rangedBackRange: 2.8,
-    focusStickyMs: 1300,
-    crowdAvoidBias: 0.7
+    crowdAvoidBias: 0.1,
+    rangedDodgeBurstMs: 400,
+    rangedDodgeReassessMs: 1800,
+    guardRangedThreatThreshold: 2,
+    positioningImprovementMarginDeg: 5
   }),
 
-  'explosive-solo-baseline': adjust(SOLO_MELEE_BASELINE, {
+  'explosive-baseline': adjust(MELEE_BASELINE, {
     followRange: 4.5,
     kiteFollowRange: 5.0,
     backstepRange: 2.4,
@@ -244,7 +183,7 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
     focusStickyMs: 700,
     crowdAvoidBias: 0.4
   }),
-  'explosive-solo-wide': adjust(SOLO_MELEE_BASELINE, {
+  'explosive-wide': adjust(MELEE_BASELINE, {
     followRange: 5.0,
     kiteFollowRange: 5.0,
     backstepRange: 2.5,
@@ -253,75 +192,40 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
     creeperFollowRange: 5.5,
     focusStickyMs: 600,
     crowdAvoidBias: 0.55
-  }),
-  'explosive-duo-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 4.8,
-    kiteFollowRange: 5.0,
-    backstepRange: 2.5,
-    strafeRange: 3.8,
-    creeperSoftEvadeRange: 3.6,
-    creeperFollowRange: 5.0,
-    focusStickyMs: 900,
-    crowdAvoidBias: 0.7
-  }),
-  'explosive-swarm-baseline': adjust(SOLO_MELEE_BASELINE, {
-    followRange: 5.0,
-    kiteFollowRange: 5.0,
-    backstepRange: 2.5,
-    strafeRange: 4.2,
-    creeperSoftEvadeRange: 4.2,
-    creeperFollowRange: 5.8,
-    focusStickyMs: 800,
-    crowdAvoidBias: 0.9
   })
 };
 
 const CONTEXT_PRESETS: Record<string, CombatPresetId[]> = {
-  'melee|solo|0': ['melee-solo-baseline', 'melee-solo-aggressive', 'melee-solo-defensive'],
-  'melee|solo|1': ['melee-solo-baseline', 'melee-solo-aggressive', 'melee-solo-defensive'],
-  'melee|duo|0': ['melee-duo-baseline', 'melee-duo-focus', 'melee-duo-kiting'],
-  'melee|duo|1': ['melee-duo-baseline', 'melee-duo-focus', 'melee-duo-kiting'],
-  'melee|swarm|0': ['melee-swarm-baseline', 'melee-swarm-escape'],
-  'melee|swarm|1': ['melee-swarm-baseline', 'melee-swarm-escape'],
-
-  'agile|solo|0': ['agile-solo-baseline', 'melee-solo-defensive'],
-  'agile|solo|1': ['agile-solo-baseline', 'melee-solo-defensive'],
-  'agile|duo|0': ['agile-duo-baseline', 'melee-duo-kiting'],
-  'agile|duo|1': ['agile-duo-baseline', 'melee-duo-kiting'],
-  'agile|swarm|0': ['agile-swarm-baseline', 'melee-swarm-escape'],
-  'agile|swarm|1': ['agile-swarm-baseline', 'melee-swarm-escape'],
-
-  'ranged|solo|0': ['ranged-solo-baseline', 'melee-solo-defensive'],
-  'ranged|solo|1': ['ranged-solo-baseline', 'ranged-solo-shield-push'],
-  'ranged|duo|0': ['ranged-duo-baseline', 'melee-duo-kiting'],
-  'ranged|duo|1': ['ranged-duo-baseline', 'ranged-solo-shield-push'],
-  'ranged|swarm|0': ['ranged-swarm-baseline', 'melee-swarm-escape'],
-  'ranged|swarm|1': ['ranged-swarm-baseline', 'melee-swarm-escape'],
-
-  'explosive|solo|0': ['explosive-solo-baseline', 'explosive-solo-wide'],
-  'explosive|solo|1': ['explosive-solo-baseline', 'explosive-solo-wide'],
-  'explosive|duo|0': ['explosive-duo-baseline', 'explosive-solo-wide'],
-  'explosive|duo|1': ['explosive-duo-baseline', 'explosive-solo-wide'],
-  'explosive|swarm|0': ['explosive-swarm-baseline', 'explosive-solo-wide'],
-  'explosive|swarm|1': ['explosive-swarm-baseline', 'explosive-solo-wide']
+  'melee|0': ['melee-baseline', 'melee-aggressive', 'melee-defensive'],
+  'melee|1': ['melee-baseline', 'melee-aggressive', 'melee-defensive'],
+  'agile|0': ['agile-baseline', 'melee-defensive'],
+  'agile|1': ['agile-baseline', 'melee-defensive'],
+  'ranged|0': ['ranged-baseline', 'melee-defensive'],
+  'ranged|1': ['ranged-baseline', 'ranged-shield-push'],
+  'explosive|0': ['explosive-baseline', 'explosive-wide'],
+  'explosive|1': ['explosive-baseline', 'explosive-wide']
 };
 
 export function classifyEnemy(name: string | null | undefined): EnemyClass {
   if (!name) return 'melee';
-  if (EXPLOSIVE_NAMES.has(name)) return 'explosive';
-  if (RANGED_NAMES.has(name)) return 'ranged';
-  if (AGILE_NAMES.has(name)) return 'agile';
+  const raw = name.includes(':') ? name.split(':').pop()! : name;
+  const base = raw.toLowerCase();
+  if (EXPLOSIVE_NAMES.has(base)) return 'explosive';
+  if (RANGED_NAMES.has(base)) return 'ranged';
+  if (AGILE_NAMES.has(base)) return 'agile';
   return 'melee';
 }
 
-export function countBucket(enemyCount: number): CountBucket {
-  if (enemyCount <= 1) return 'solo';
-  if (enemyCount === 2) return 'duo';
-  return 'swarm';
+export function isRangedEntity(
+  entity: { name?: string; displayName?: string } | null | undefined
+): boolean {
+  if (!entity) return false;
+  return classifyEnemy(entity.name) === 'ranged'
+    || classifyEnemy(entity.displayName) === 'ranged';
 }
 
 export function contextKey(ctx: CombatContext): string {
-  return `${ctx.enemyClass}|${ctx.countBucket}|${ctx.hasShield ? 1 : 0}`;
+  return `${ctx.enemyClass}|${ctx.hasShield ? 1 : 0}`;
 }
 
 export function baselinePresetId(ctx: CombatContext): CombatPresetId {
@@ -331,12 +235,12 @@ export function baselinePresetId(ctx: CombatContext): CombatPresetId {
 
 export function listPresetsForContext(ctx: CombatContext): CombatPresetId[] {
   const key = contextKey(ctx);
-  return CONTEXT_PRESETS[key] || ['melee-solo-baseline'];
+  return CONTEXT_PRESETS[key] || ['melee-baseline'];
 }
 
 export function getPresetParams(presetId: CombatPresetId): CombatPresetParams {
   const found = PRESETS[presetId];
-  if (!found) return clampPreset(cloneParams(SOLO_MELEE_BASELINE));
+  if (!found) return clampPreset(cloneParams(MELEE_BASELINE));
   return clampPreset(cloneParams(found));
 }
 
@@ -368,8 +272,7 @@ export function resolveFollowRange(
   enemyClass: EnemyClass,
   distance: number
 ): number {
-  if (enemyClass === 'explosive') return params.creeperFollowRange;
-  if (enemyClass === 'ranged') return params.followRange;
+  if (enemyClass === 'ranged') return params.kiteFollowRange;
   return distance <= params.backstepRange
     ? params.kiteFollowRange
     : params.followRange;
@@ -388,12 +291,10 @@ export function decideSpacing(opts: {
   const facing = enemyFacingBot;
   const exposed = distance <= params.strafeRange
     && (facing == null || facing >= params.strafeFacingThreshold);
-  const needStrafe = enemyClass === 'explosive'
-    || enemyClass === 'ranged'
+  const needStrafe = enemyClass === 'ranged'
     || exposed
     || distance <= params.backstepRange;
-  const needBackstep = enemyClass === 'explosive'
-    || distance <= params.backstepRange
+  const needBackstep = distance <= params.backstepRange
     || (
       enemyClass === 'ranged'
       && distance <= params.rangedBackRange
@@ -474,12 +375,10 @@ export function crowdAwayDirection(
     n += 1;
   }
   if (n === 0) return null;
-  // Away from centroid = opposite of average offset.
   return normalize2({ x: -(sumX / n), z: -(sumZ / n) });
 }
 
 export function defensivePresetId(ctx: CombatContext): CombatPresetId {
   const ids = listPresetsForContext(ctx);
-  // Prefer the last (usually more defensive / escape) when HP is low.
   return ids[ids.length - 1] || ids[0];
 }

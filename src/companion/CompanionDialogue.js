@@ -8,6 +8,7 @@ import {
 import { isPlayerEligible, lockOwner } from './ownerLock.js';
 import { giveAllItemsToPlayer, countAllItems } from './utils/giveAllItems.js';
 import { tCommand } from '../i18n/index.js';
+import { shouldDeferToCombat } from './combatGate.js';
 
 const DEFAULT_GIVE_SUPPRESS_MS = 12000;
 
@@ -158,6 +159,10 @@ export class CompanionDialogue {
             await this._say(tCommand(language, 'give_all_unavailable'));
             return;
         }
+        if (ctx.deathRecovery?.active || shouldDeferToCombat(ctx)) {
+            await this._say(tCommand(language, 'give_all_unavailable'));
+            return;
+        }
 
         if (Object.keys(countAllItems(ctx.bot)).length === 0) {
             await this._say(tCommand(language, 'give_all_empty'));
@@ -171,10 +176,12 @@ export class CompanionDialogue {
 
         try {
             await this._say(tCommand(language, 'give_all_ok'));
-            const result = await giveAllItemsToPlayer(ctx, command.owner);
+            const result = await giveAllItemsToPlayer(ctx, command.owner, {
+                shouldAbort: () => ctx.deathRecovery?.active || shouldDeferToCombat(ctx)
+            });
             if (result === 'empty') {
                 await this._say(tCommand(language, 'give_all_empty'));
-            } else if (result === 'unavailable') {
+            } else if (result === 'unavailable' || result === 'deferred') {
                 await this._say(tCommand(language, 'give_all_unavailable'));
             } else if (result === 'failed') {
                 await this._say(tCommand(language, 'give_all_failed'));

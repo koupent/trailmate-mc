@@ -1,11 +1,18 @@
-import { clearDeathReturn } from '../deathRecovery.js';
+import {
+    completeDeathRecovery,
+    isRecoveryEmergencyActive,
+    markDeathReturnArrived,
+    requestRecoveryItemCollection
+} from '../deathRecovery.js';
 
 const DEFAULT_ARRIVE_RANGE = 3;
 const DEFAULT_TIMEOUT_MS = 90000;
+const DEFAULT_GRAVE_WAIT_MS = 2500;
 
 /**
  * After respawn, walk back to the death coordinates.
- * Ground drops are collected by NearbyLootInterrupt once the bot is nearby.
+ * Ground drops are collected by the shared NearbyLoot/ItemCollection capability.
+ * Recovery owns the strategic goal; only bounded emergency survival may pause it.
  */
 export class DeathReturnInterrupt {
     constructor() {
@@ -22,6 +29,7 @@ export class DeathReturnInterrupt {
         const dr = ctx.deathRecovery;
         if (!dr?.active || !dr.deathPos) return false;
         if (!ctx.bot?.entity) return false;
+        if (isRecoveryEmergencyActive(ctx)) return false;
 
         const dim = ctx.bot.game?.dimension ?? null;
         if (dr.deathDim != null && dim != null && dr.deathDim !== dim) {
@@ -32,7 +40,7 @@ export class DeathReturnInterrupt {
         // Prefer in-progress dig / loot over travel this tick.
         if (ctx.graveLoot?.active || ctx.nearbyLoot?.active) return false;
 
-        return true;
+        return dr.phase === 'travel' || dr.phase === 'grave';
     }
 
     /**
@@ -45,30 +53,34 @@ export class DeathReturnInterrupt {
         const arriveRange = cfg.arrive_range ?? DEFAULT_ARRIVE_RANGE;
         const timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
-        ctx.holdReflexes = true;
-        try {
-            bot.pvp?.stop?.();
-        } catch {
-            /* ignore */
-        }
+        // Do not stop pvp / silence combat — Follow yields via isControllingMovement.
 
         if (!dr?.deathPos || !bot.entity) {
-            clearDeathReturn(ctx);
+            completeDeathRecovery(ctx, 'missing-death-position');
             return;
         }
 
         if (Date.now() - (dr.startedAt || Date.now()) > timeoutMs) {
             console.log('[companion] death return timed out');
             ctx.movement.stop();
-            clearDeathReturn(ctx);
+            completeDeathRecovery(ctx, 'timeout');
+            return;
+        }
+
+        if (dr.phase === 'grave') {
+            const graveWaitMs = cfg.grave_wait_ms ?? DEFAULT_GRAVE_WAIT_MS;
+            if (Date.now() - (dr.arrivedAt || Date.now()) >= graveWaitMs) {
+                requestRecoveryItemCollection(ctx, dr.deathPos);
+                console.log('[companion] no grave appeared; using common item collection at death site');
+            }
             return;
         }
 
         const dist = bot.entity.position.distanceTo(dr.deathPos);
         if (dist <= arriveRange) {
             ctx.movement.stop();
-            clearDeathReturn(ctx);
-            console.log('[companion] death return arrived');
+            markDeathReturnArrived(ctx);
+            console.log('[companion] death return arrived; waiting for grave/item recovery');
             return;
         }
 

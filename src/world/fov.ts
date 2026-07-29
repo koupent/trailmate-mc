@@ -1,18 +1,18 @@
 /** Shared horizontal FOV helpers (Mineflayer yaw convention). */
 
-type Pos = { x: number; y: number; z: number };
+export type FovPos = { x: number; y?: number; z: number };
 
 /**
  * True when `targetPos` lies inside the horizontal FOV cone around `yaw`.
  * Uses atan2(-dx, -dz) so yaw 0 faces -Z (Mineflayer).
  */
 export function isInHorizontalFov(
-  origin: Pos,
+  origin: FovPos,
   yaw: number,
-  targetPos: Pos,
+  targetPos: FovPos,
   fovDegrees: number
 ): boolean {
-  if (fovDegrees <= 0) return false;
+  if (!Number.isFinite(yaw) || !Number.isFinite(fovDegrees) || fovDegrees <= 0) return false;
   if (fovDegrees >= 360) return true;
   const dx = targetPos.x - origin.x;
   const dz = targetPos.z - origin.z;
@@ -23,12 +23,15 @@ export function isInHorizontalFov(
   return Math.abs(diff) <= (fovDegrees * Math.PI) / 180 / 2;
 }
 
+/** Issue 14以前の呼び出しとの互換名。 */
+export const isInFov = isInHorizontalFov;
+
 /**
  * True when `targetPos` is inside the owner's horizontal look FOV.
  */
 export function isInOwnerFov(
-  owner: { position: Pos; yaw?: number } | null | undefined,
-  targetPos: Pos,
+  owner: { position: FovPos; yaw?: number } | null | undefined,
+  targetPos: FovPos,
   fovDegrees: number
 ): boolean {
   if (!owner?.position) return false;

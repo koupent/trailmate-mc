@@ -1,5 +1,4 @@
 import type { CombatContext } from './CombatProfiles.js';
-import { countBucket } from './CombatProfiles.js';
 
 export type CombatEpisode = {
   context: CombatContext;
@@ -33,20 +32,16 @@ export type EpisodeScoreBreakdown = {
 
 /**
  * Score an episode. Higher is better.
- * Multi-enemy emphasizes kill/damage ratio more than solo.
  */
 export function scoreEpisode(episode: CombatEpisode): EpisodeScoreBreakdown {
   const durationSec = Math.max(
     0.5,
     ((episode.endedAt ?? Date.now()) - episode.startedAt) / 1000
   );
-  const bucket = episode.context.countBucket;
-  const killWeight = bucket === 'swarm' ? 4.5 : bucket === 'duo' ? 3.5 : 3;
-  const damageWeight = bucket === 'swarm' ? 1.4 : bucket === 'duo' ? 1.2 : 1.0;
 
-  const kills = episode.kills * killWeight;
+  const kills = episode.kills * 3;
   const hits = Math.min(episode.hitsLanded, 12) * 0.25;
-  const damage = -episode.damageTaken * damageWeight;
+  const damage = -episode.damageTaken * 1.0;
   const retreat = episode.retreated ? -2.5 : 0;
   const death = episode.died ? -12 : 0;
   // Mild time pressure so endless kiting does not look "safe".
@@ -93,17 +88,10 @@ export class CombatEpisodeTracker {
     return this.active;
   }
 
-  /**
-   * If the count bucket changed, close the current episode (caller should start a new one).
-   * Returns the closed episode when a split is required.
-   */
-  noteEnemyCount(enemyCount: number, now = Date.now()): CombatEpisode | null {
-    if (!this.active) return null;
+  /** Track peak nearby hostiles (does not split learning context). */
+  noteEnemyCount(enemyCount: number): void {
+    if (!this.active) return;
     this.active.peakEnemyCount = Math.max(this.active.peakEnemyCount, enemyCount);
-    const prev = this.active.context.countBucket;
-    const next = countBucket(enemyCount);
-    if (prev === next) return null;
-    return this.end({ now, reason: 'bucket-change' });
   }
 
   recordDamage(amount: number): void {

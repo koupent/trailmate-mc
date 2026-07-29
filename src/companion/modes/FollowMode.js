@@ -3,6 +3,7 @@ import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
 import { hasLineOfSight } from '../../world/lineOfSight.js';
 import { isOwnerWorkDeferring } from '../ownerWorkTracker.js';
 import { computeOutOfSightAnchor, isBotInOwnerFov } from '../followPosition.js';
+import { currentControlOwner } from '../ControlPriority.js';
 
 /**
  * GoalFollow only measures straight-line distance, so a loose range counts as
@@ -55,8 +56,8 @@ export class FollowMode extends Mode {
 
         ctx.movement.tickHoldWatchdog();
 
-        // Combat and retreat own pathfinder/looking until the threat is resolved.
-        if (ctx.agent.reflexes?.isControllingMovement) {
+        // Recovery supplies the destination; Follow only retains owner context.
+        if (currentControlOwner(ctx, 'follow') !== 'follow') {
             const owner = ctx.ownerEntity;
             if (owner) this._rememberOwner(ctx, owner);
             return;

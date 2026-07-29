@@ -3,7 +3,8 @@ import path from 'node:path';
 import type { CombatContext, CombatPresetId } from './CombatProfiles.js';
 import { contextKey } from './CombatProfiles.js';
 
-export const COMBAT_STATE_VERSION = 1;
+/** Bumped when context keys change (dropped enemy-count buckets). */
+export const COMBAT_STATE_VERSION = 2;
 
 export type PresetStats = {
   trials: number;
@@ -27,7 +28,6 @@ export type CombatStateFile = {
   updatedAt: number;
   contexts: Record<string, ContextLearningState>;
   enemyNameStats: Record<string, { fights: number; damage: number; kills: number }>;
-  countBucketStats: Record<string, { fights: number; damage: number; kills: number }>;
 };
 
 export function emptyCombatState(): CombatStateFile {
@@ -35,8 +35,7 @@ export function emptyCombatState(): CombatStateFile {
     version: COMBAT_STATE_VERSION,
     updatedAt: 0,
     contexts: {},
-    enemyNameStats: {},
-    countBucketStats: {}
+    enemyNameStats: {}
   };
 }
 
@@ -91,16 +90,6 @@ export function normalizeCombatState(raw: unknown): CombatStateFile {
     for (const [name, value] of Object.entries(raw.enemyNameStats)) {
       if (!isObject(value)) continue;
       state.enemyNameStats[name] = {
-        fights: Math.max(0, Number(value.fights) || 0),
-        damage: Math.max(0, Number(value.damage) || 0),
-        kills: Math.max(0, Number(value.kills) || 0)
-      };
-    }
-  }
-  if (isObject(raw.countBucketStats)) {
-    for (const [bucket, value] of Object.entries(raw.countBucketStats)) {
-      if (!isObject(value)) continue;
-      state.countBucketStats[bucket] = {
         fights: Math.max(0, Number(value.fights) || 0),
         damage: Math.max(0, Number(value.damage) || 0),
         kills: Math.max(0, Number(value.kills) || 0)
@@ -169,13 +158,6 @@ export class CombatStateStore {
     nameStats.kills += opts.kills;
     this.state.enemyNameStats[name] = nameStats;
 
-    const bucket = opts.ctx.countBucket;
-    const bucketStats = this.state.countBucketStats[bucket] || { fights: 0, damage: 0, kills: 0 };
-    bucketStats.fights += 1;
-    bucketStats.damage += opts.damageTaken;
-    bucketStats.kills += opts.kills;
-    this.state.countBucketStats[bucket] = bucketStats;
-
     this.dirty = true;
     this.scheduleSave();
     return entry;
@@ -190,14 +172,14 @@ export class CombatStateStore {
   }
 
   setExploreCooldown(ctx: CombatContext, until: number): void {
-    const entry = this.getContextState(ctx, 'melee-solo-baseline');
+    const entry = this.getContextState(ctx, 'melee-baseline');
     entry.exploreCooldownUntil = until;
     this.dirty = true;
     this.scheduleSave();
   }
 
   setConsecutiveWorse(ctx: CombatContext, value: number): void {
-    const entry = this.getContextState(ctx, 'melee-solo-baseline');
+    const entry = this.getContextState(ctx, 'melee-baseline');
     entry.consecutiveWorse = value;
     this.dirty = true;
     this.scheduleSave();

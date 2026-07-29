@@ -8,8 +8,9 @@ type BotLike = {
   entity: { position: Pos };
 };
 
-const IMMEDIATE_THREAT_RANGE = 3.5;
-const OWNER_THREAT_RANGE = 6;
+export const IMMEDIATE_THREAT_RANGE = 3.5;
+/** Enemies within this distance of the owner are escort threats (FOV-independent). */
+export const OWNER_PROTECT_RANGE = 8;
 
 export function isHostile(mob: { type?: string; name?: string } | null | undefined): boolean {
   if (!mob || !mob.name) return false;
@@ -78,7 +79,7 @@ function threatRank(botPos: Pos, ownerPos: Pos | undefined, enemyPos: Pos): numb
   }
 
   const ownerDistance = ownerPos ? distanceBetween(ownerPos, enemyPos) : Infinity;
-  if (ownerDistance <= OWNER_THREAT_RANGE) {
+  if (ownerDistance <= OWNER_PROTECT_RANGE) {
     return 100 + ownerDistance;
   }
   return 200 + botDistance;

@@ -213,6 +213,18 @@ describe('shouldTransferNow', () => {
         assert.equal(shouldTransferNow(combatCtx, {
             now: 100_000, lastRunAt: 0
         }), false);
+
+        const tacticalCtx = makeCtx({
+            agent: {
+                reflexes: {
+                    isControllingMovement: true,
+                    wantsCombat: true
+                }
+            }
+        });
+        assert.equal(shouldTransferNow(tacticalCtx, {
+            now: 100_000, lastRunAt: 0
+        }), false);
     });
 
     it('returns false when disabled', () => {
@@ -225,6 +237,81 @@ describe('shouldTransferNow', () => {
 });
 
 describe('PeriodicItemTransfer', () => {
+    it('defers an in-flight owner approach when combat takes control, then retries safely', async () => {
+        const events = [];
+        const cobble = makeItem(9, 'cobblestone', 32);
+        const slots = [];
+        slots[9] = cobble;
+        let ownerDistance = 10;
+        const reflexes = {
+            isControllingMovement: false,
+            wantsCombat: false
+        };
+        const ownerPos = {
+            x: 10, y: 64, z: 0,
+            offset(x, y, z) { return { x: this.x + x, y: this.y + y, z: this.z + z }; }
+        };
+        const movement = {
+            hasGoal: false,
+            goToward() {
+                events.push('owner-goal');
+                this.hasGoal = true;
+                reflexes.isControllingMovement = true;
+                reflexes.wantsCombat = true;
+            },
+            stop() {
+                events.push('owner-goal-stop');
+                this.hasGoal = false;
+            }
+        };
+        const ctx = {
+            ownerName: 'Owner',
+            ownerEntity: { position: ownerPos },
+            agent: { reflexes },
+            bot: {
+                entity: {
+                    position: { distanceTo() { return ownerDistance; } }
+                },
+                entities: {},
+                players: { Owner: { entity: { position: ownerPos, height: 1.8 } } },
+                inventory: { slots },
+                registry: { foodsByName: FOODS_BY_NAME },
+                pvp: { target: null, stop() { events.push('pvp-stop'); } },
+                interrupt_code: false,
+                async lookAt() { events.push('owner-look'); },
+                async tossStack(item) {
+                    events.push(`toss:${item.name}`);
+                    slots[item.slot] = null;
+                }
+            },
+            worldState: { visiblePlayers: [{ name: 'Owner' }] },
+            config: { owner_near_radius: 12, nearby_loot: { give_suppress_ms: 1000 } },
+            movement,
+            deathRecovery: { active: false },
+            graveLoot: { active: false },
+            nearbyLoot: { active: false, suppressUntil: 0 },
+            itemTransfer: { active: false }
+        };
+        const transfer = new PeriodicItemTransfer({ enabled: true, interval_ms: 0 });
+
+        await transfer.maybeRun(ctx);
+
+        assert.ok(events.includes('owner-goal-stop'));
+        assert.equal(events.includes('owner-look'), false);
+        assert.equal(events.some((event) => event.startsWith('toss:')), false);
+        assert.equal(slots[9], cobble);
+        assert.equal(ctx.itemTransfer.active, false);
+
+        reflexes.isControllingMovement = false;
+        reflexes.wantsCombat = false;
+        ownerDistance = 1;
+        await transfer.maybeRun(ctx);
+
+        assert.ok(events.includes('owner-look'));
+        assert.ok(events.includes('toss:cobblestone'));
+        assert.equal(slots[9], null);
+    });
+
     it('pauses/resumes and sets loot suppress after transfer', async () => {
         const events = [];
         const ownerPos = { x: 0, y: 64, z: 0, offset(x, y, z) { return { x: this.x + x, y: this.y + y, z: this.z + z }; } };

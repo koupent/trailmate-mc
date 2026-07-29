@@ -14,7 +14,6 @@ import { CombatStateStore } from './CombatStateStore.js';
 export type CombatLearningOptions = {
   enabled: boolean;
   exploreRate: number;
-  swarmExploreRate: number;
   minTrials: number;
   minHealthToExplore: number;
   /** Instant rollback if a single episode takes this much damage while exploring. */
@@ -34,7 +33,6 @@ export type PresetChoice = {
 const DEFAULT_OPTIONS: CombatLearningOptions = {
   enabled: true,
   exploreRate: 0.12,
-  swarmExploreRate: 0.05,
   minTrials: 3,
   minHealthToExplore: 12,
   exploreDamageAbort: 8,
@@ -92,14 +90,11 @@ export class CombatOptimizer {
       return this.choice(best, 'selected', false);
     }
 
-    const exploreRate = opts.context.countBucket === 'swarm'
-      ? this.options.swarmExploreRate
-      : this.options.exploreRate;
     const baselineStats = entry.presets[baseline];
     const baselineReady = (baselineStats?.trials || 0) >= this.options.minTrials;
     const canExplore = baselineReady
       && candidates.length > 1
-      && Math.random() < exploreRate;
+      && Math.random() < this.options.exploreRate;
 
     if (canExplore) {
       const others = candidates.filter((id) => id !== best);
@@ -246,12 +241,12 @@ export class CombatOptimizer {
     reason: string,
     score: number
   ): void {
-    const key = `${ctx.enemyClass}|${ctx.countBucket}|${ctx.hasShield}|${presetId}|${reason}`;
+    const key = `${ctx.enemyClass}|${ctx.hasShield}|${presetId}|${reason}`;
     if (key === this.lastLogKey) return;
     this.lastLogKey = key;
     console.log(
       `[combat-learn] ${reason} preset=${presetId} `
-      + `class=${ctx.enemyClass} count=${ctx.countBucket} shield=${ctx.hasShield} `
+      + `class=${ctx.enemyClass} shield=${ctx.hasShield} `
       + `score=${score.toFixed(2)}`
     );
   }

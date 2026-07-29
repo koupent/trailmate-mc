@@ -35,7 +35,12 @@ const APPROACH_TIMEOUT_CAP_MS = 4000;
  *   untilClear?: boolean,
  *   quietMs?: number,
  *   graceMs?: number,
- *   around?: { x: number, y: number, z: number }
+ *   ownerClearance?: number,
+ *   around?: { x: number, y: number, z: number },
+ *   onItemSeen?: (entity: any) => void,
+ *   shouldAbort?: () => boolean,
+ *   candidateFilter?: (entity: any) => boolean,
+ *   shouldStop?: () => boolean
  * }} [options]
  * @returns {Promise<number>} number of approach attempts
  */
@@ -53,6 +58,15 @@ export async function pickupNearbyItems(ctx, options = {}) {
     const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
     const graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
     const abortForOwnerWork = () => shouldAbortLootForOwnerWork(ctx);
+    const ownerClearance = options.ownerClearance ?? 0;
+    const requestedAbort = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
+    const shouldAbort = () => abortForOwnerWork() || requestedAbort?.() === true;
+    const shouldStop = typeof options.shouldStop === 'function' ? options.shouldStop : null;
+    const candidateFilter = typeof options.candidateFilter === 'function'
+        ? options.candidateFilter
+        : null;
+    const ownerExcluded = (entity) => isExcludedNearOwner(ctx, entity.position, ownerClearance);
+    const exclude = (entity) => ownerExcluded(entity) || (candidateFilter && !candidateFilter(entity));
 
     let attempts = 0;
     const start = Date.now();
@@ -60,14 +74,21 @@ export async function pickupNearbyItems(ctx, options = {}) {
 
     while (Date.now() - start < durationMs) {
         if (!bot.entity || bot.interrupt_code) break;
-        if (abortForOwnerWork()) break;
+        if (shouldAbort()) break;
 
         const origin = options.around || bot.entity.position;
         ctx.invalidateCompanionAwareness?.();
         const snap = typeof ctx.getCompanionAwareness === 'function'
             ? ctx.getCompanionAwareness()
             : scanCompanionAwareness(bot, radius, origin);
-        const item = findNearestDrop(snap, origin);
+        if (typeof options.onItemSeen === 'function') {
+            for (const entity of snap.dropItems) {
+                if (!ownerExcluded(entity)) options.onItemSeen(entity);
+            }
+        }
+        if (shouldStop?.()) break;
+        const candidates = snap.dropItems.filter((entity) => !exclude(entity));
+        const item = findNearestDrop(snap, origin, candidates);
         if (!item?.position) {
             if (untilClear) {
                 const elapsed = Date.now() - start;
@@ -85,14 +106,35 @@ export async function pickupNearbyItems(ctx, options = {}) {
             arrivalSlack: DEFAULT_ARRIVAL_SLACK,
             timeoutMs: Math.min(APPROACH_TIMEOUT_CAP_MS, durationMs - (Date.now() - start)),
             pollMs,
-            abort: abortForOwnerWork
+            abort: shouldAbort
         });
-        if (abortForOwnerWork()) break;
+        if (shouldAbort()) break;
         await sleep(Math.max(pollMs, PICKUP_SETTLE_MS));
     }
 
     ctx.movement?.stop?.();
     return attempts;
+}
+
+/**
+ * Skip drops near the owner only when a caller explicitly requests clearance.
+ * Recovery and grave collection always keep full access to their targets.
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @param {{ x: number, y: number, z: number }} itemPos
+ * @param {number} clearance
+ */
+export function isExcludedNearOwner(ctx, itemPos, clearance) {
+    if (ctx?.deathRecovery?.active || ctx?.graveLoot?.active) return false;
+    if (clearance <= 0 || !itemPos) return false;
+    const owner = ctx?.ownerEntity;
+    if (!owner?.position) return false;
+    return distanceBetween(owner.position, itemPos) <= clearance;
+}
+
+/** @param {{ x: number, y: number, z: number, distanceTo?: Function }} a @param {{ x: number, y: number, z: number }} b */
+function distanceBetween(a, b) {
+    if (typeof a.distanceTo === 'function') return a.distanceTo(b);
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
 /**
