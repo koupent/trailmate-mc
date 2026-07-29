@@ -1,6 +1,6 @@
 /**
- * Pure escort threat policy: who the companion should fight to protect the owner.
- * No FOV — nearby-owner and immediate-self threats only.
+ * ownerを守るために誰と戦うかを決める純粋な護衛脅威方針。
+ * 視野角は使わず、owner近傍とBot直近の脅威だけを扱う。
  */
 
 import {
@@ -12,11 +12,11 @@ import {
 export type Pos = { x: number; y: number; z: number; distanceTo?: (p: any) => number };
 
 export type ProtectRanges = {
-  /** Max distance from bot to chase (hostile_range). */
+  /** Botが追跡する最大距離（hostile_range）。 */
   botChaseRange: number;
-  /** Owner neighborhood that counts as "protect the player". */
+  /** 「プレイヤーを守る」対象とみなすowner周辺範囲。 */
   ownerProtectRange: number;
-  /** Bot-adjacent self-defense. */
+  /** Bot直近の自己防衛範囲。 */
   selfImmediateRange: number;
 };
 
@@ -34,7 +34,7 @@ function distanceBetween(a: Pos, b: Pos): number {
 }
 
 /**
- * True when this hostile is a protect-worthy threat (ignores LOS).
+ * この敵が護衛対象となる脅威なら true（視線判定は行わない）。
  */
 export function isProtectThreat(
   botPos: Pos,
@@ -66,7 +66,7 @@ function protectRank(
 }
 
 /**
- * Pick the best protect target among entities the bot can see (LOS supplied by caller).
+ * Botから見えるエンティティの中から最適な護衛対象を選ぶ（視線判定は呼び出し側が渡す）。
  */
 export function pickProtectTarget(
   bot: {
@@ -88,7 +88,7 @@ export function pickProtectTarget(
     })
     : [];
 
-  // Only fall back to nearestEntity when the bot has no entities map at all.
+  // Botがentitiesマップを持たない場合だけ nearestEntity へフォールバックする。
   if (!hasEntityMap && typeof bot.nearestEntity === 'function') {
     return bot.nearestEntity(
       (entity) =>

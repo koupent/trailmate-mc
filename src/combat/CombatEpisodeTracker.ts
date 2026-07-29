@@ -16,7 +16,7 @@ export type CombatEpisode = {
   retreated: boolean;
   died: boolean;
   interrupted: boolean;
-  /** False when interrupt / mixed recovery makes learning unsafe. */
+  /** 割り込みや復旧処理の混在により、安全に学習できない場合は false。 */
   learnable: boolean;
 };
 
@@ -31,7 +31,7 @@ export type EpisodeScoreBreakdown = {
 };
 
 /**
- * Score an episode. Higher is better.
+ * 戦闘エピソードを採点する。高いほど良い。
  */
 export function scoreEpisode(episode: CombatEpisode): EpisodeScoreBreakdown {
   const durationSec = Math.max(
@@ -44,7 +44,7 @@ export function scoreEpisode(episode: CombatEpisode): EpisodeScoreBreakdown {
   const damage = -episode.damageTaken * 1.0;
   const retreat = episode.retreated ? -2.5 : 0;
   const death = episode.died ? -12 : 0;
-  // Mild time pressure so endless kiting does not look "safe".
+  // 無限の引き撃ちを「安全」と誤認しないよう、時間経過を軽く減点する。
   const duration = -Math.min(8, durationSec * 0.15);
 
   const total = kills + hits + damage + retreat + death + duration;
@@ -88,7 +88,7 @@ export class CombatEpisodeTracker {
     return this.active;
   }
 
-  /** Track peak nearby hostiles (does not split learning context). */
+  /** 近傍敵数の最大値を記録する（学習コンテキストは分割しない）。 */
   noteEnemyCount(enemyCount: number): void {
     if (!this.active) return;
     this.active.peakEnemyCount = Math.max(this.active.peakEnemyCount, enemyCount);

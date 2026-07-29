@@ -39,8 +39,8 @@ export class RecoveryInterrupt {
      */
     shouldRun(ctx) {
         if (Date.now() < this.cooldownUntil) return false;
-        // This interrupt repairs Follow pathing; death Recovery already owns a
-        // more important destination and has its own bounded survival override.
+        // この割り込みはFollow経路を修復する。死亡Recoveryは既により重要な
+        // 目的地と、独自の上限付き生存割り込みを持つ。
         if (ctx.deathRecovery?.active) return false;
         if (!ctx.ownerEntity) return false;
         if (ctx.movement.isHeld) return false;

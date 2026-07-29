@@ -6,14 +6,14 @@ import {
 } from '../src/combat/CombatTrace.js';
 
 describe('CombatTrace', () => {
-  it('is enabled only by the exact opt-in value', () => {
+  it('明示的な指定値の場合だけ有効になる', () => {
     assert.equal(isCombatTraceEnabled({}), false);
     assert.equal(isCombatTraceEnabled({ COMBAT_TRACE: '0' }), false);
     assert.equal(isCombatTraceEnabled({ COMBAT_TRACE: 'true' }), false);
     assert.equal(isCombatTraceEnabled({ COMBAT_TRACE: '1' }), true);
   });
 
-  it('does no logging while disabled', () => {
+  it('無効時はログを出力しない', () => {
     const lines: string[] = [];
     const trace = new CombatTrace({ enabled: false, logger: (line) => lines.push(line) });
     assert.equal(trace.decision('guard', { mode: 'guard' }, 1000), false);
@@ -21,7 +21,7 @@ describe('CombatTrace', () => {
     assert.deepEqual(lines, []);
   });
 
-  it('logs state changes immediately and stable state only on heartbeat', () => {
+  it('状態変化は即時、安定状態はheartbeat時だけ記録する', () => {
     const lines: string[] = [];
     const trace = new CombatTrace({
       enabled: true,
@@ -41,7 +41,7 @@ describe('CombatTrace', () => {
     assert.equal(parsed.at, 1000);
   });
 
-  it('emits event records with representative structured fields', () => {
+  it('代表的な構造化フィールドを含むイベントを出力する', () => {
     const lines: string[] = [];
     const trace = new CombatTrace({ enabled: true, logger: (line) => lines.push(line) });
     trace.event('target_hurt_observed', {
@@ -55,7 +55,7 @@ describe('CombatTrace', () => {
     assert.equal(parsed.attribution, 'unconfirmed');
   });
 
-  it('keeps recovery state changes and heartbeats independent from combat decisions', () => {
+  it('復旧状態変化とheartbeatを戦闘判断から独立して記録する', () => {
     const lines: string[] = [];
     const trace = new CombatTrace({
       enabled: true,

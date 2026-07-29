@@ -237,7 +237,7 @@ describe('shouldTransferNow', () => {
 });
 
 describe('PeriodicItemTransfer', () => {
-    it('defers an in-flight owner approach when combat takes control, then retries safely', async () => {
+    it('接近中に戦闘が所有権を得たら延期し、その後安全に再試行する', async () => {
         const events = [];
         const cobble = makeItem(9, 'cobblestone', 32);
         const slots = [];

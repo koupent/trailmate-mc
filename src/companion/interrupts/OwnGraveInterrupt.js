@@ -18,11 +18,10 @@ import {
 const DEFAULT_DIG_RANGE = 3.5;
 
 /**
- * Break GravesX-style graves that are clearly owned by this bot within awareness radius.
- * Drop pickup is handled separately by NearbyLootInterrupt.
- * Owner work FOV does not block grave digs.
+ * 認識範囲内でこのBot所有と明確に分かるGravesX形式の墓を破壊する。
+ * ドロップ取得はNearbyLootInterruptが別途処理し、オーナーの作業視野では墓処理を止めない。
  *
- * When the bot has no weapon, grave recovery outranks combat so it can re-arm.
+ * 武器がない場合は再武装できるよう、墓復旧を戦闘より優先する。
  */
 export class OwnGraveInterrupt {
     constructor() {
@@ -42,7 +41,7 @@ export class OwnGraveInterrupt {
         if (recovery && isRecoveryEmergencyActive(ctx)) return false;
         if (recovery && ctx.deathRecovery.phase !== 'grave') return false;
         const unarmed = needsGearRecovery(ctx.bot);
-        // Armed bots still yield to active combat; unarmed bots recover gear first.
+        // 武装済みなら戦闘へ譲るが、未武装なら先に装備を復旧する。
         if (!recovery && shouldDeferToCombat(ctx) && !unarmed) return false;
         if (ctx.graveLoot?.active) return true;
 
@@ -116,8 +115,8 @@ export class OwnGraveInterrupt {
                 await equipDigTool(bot);
                 await bot.lookAt(block.position.offset(0.5, 0.5, 0.5), true);
                 ctx.movement.stop();
-                // Snapshot unrelated drops before the grave opens. Only new IDs
-                // appearing in the short post-break window belong to Recovery.
+                // 墓を開く前に無関係なドロップを記録する。破壊直後の短い時間内に
+                // 新たに現れたIDだけをRecovery対象とする。
                 const preexistingItemIds = groundItemIdsNear(
                     bot,
                     pos,
@@ -179,9 +178,9 @@ function groundItemIdsNear(bot, origin, radius) {
 }
 
 /**
- * Equip a basic dig tool when available. Dig speed uses item type only;
- * enchant handling is done separately because component-map enchants are often
- * non-arrays on this server and crash mineflayer's digTime.
+ * 使用可能なら基本的な採掘道具を装備する。採掘速度にはitem typeだけを使う。
+ * このサーバーではcomponent-mapのenchantsが配列でないことがあり
+ * mineflayerのdigTimeが異常終了するため、エンチャントは別処理する。
  * @param {import('mineflayer').Bot} bot
  */
 async function equipDigTool(bot) {
@@ -191,17 +190,17 @@ async function equipDigTool(bot) {
         );
         if (tool) await bot.equip(tool, 'hand');
     } catch {
-        /* ignore */
+        /* 失敗は無視する */
     }
 }
 
 /**
- * Dig while forcing empty enchant lists into digTime.
+ * digTimeへ空のエンチャント一覧を渡して採掘する。
  *
- * Root cause (runtime): prismarine-item `enchants` is a getter over componentMap
- * data that is sometimes a non-array object. mineflayer then does
- * `held.enchants.concat(helmet.enchants)` → "enchantments is not iterable".
- * Assigning `item.enchants = []` does nothing (getter-only).
+ * 実行時の原因: prismarine-itemの `enchants` はcomponentMap上のgetterで、
+ * 配列でないオブジェクトを返すことがある。するとmineflayer内の
+ * `held.enchants.concat(helmet.enchants)` が「反復可能でない」と失敗する。
+ * `item.enchants = []` はgetter専用のため効果がない。
  *
  * @param {import('mineflayer').Bot} bot
  * @param {import('prismarine-block').Block} block

@@ -1,21 +1,21 @@
-/** Pure combat intent evaluated independently from positioning movement. */
+/** 位置取り移動とは独立して評価する純粋な戦闘意図。 */
 
 export type CombatIntentPriority = 'guard' | 'dodge' | 'attack' | 'hold';
 
 export type CombatIntent = {
-  /** Keep an attack available when the target is in reach. */
+  /** 対象が射程内なら攻撃可能な状態を維持する。 */
   attack: boolean;
-  /** Raise a shield when ranged/explosive pressure makes it safer than attacking. */
+  /** 遠距離・爆発圧に対して攻撃より安全なら盾を構える。 */
   guard: boolean;
-  /** Preserve lateral/escape movement under ranged or explosive pressure. */
+  /** 遠距離・爆発圧を受けている間は横移動・退避移動を維持する。 */
   dodge: boolean;
-  /** Resolves actions that the Mineflayer API cannot execute simultaneously. */
+  /** Mineflayer APIで同時実行できない行動の優先順位を解決する。 */
   priority: CombatIntentPriority;
 };
 
 export type RangedDodgePhase = 'idle' | 'dodge' | 'advance' | 'attack';
 
-/** Small latch for one dodge -> advance cycle. */
+/** 1回の回避→前進サイクルを保持する小さなラッチ。 */
 export type RangedDodgeLatch = {
   burstUntil: number;
   advanceUntil: number;
@@ -61,8 +61,8 @@ export function decideCombatIntent(opts: {
     opts.explosiveImmediateDanger
     || opts.rangedThreatCount >= Math.max(1, opts.guardRangedThreatThreshold)
   );
-  // Once melee is available, committing the hit must break a lateral dodge
-  // loop. Guard still wins when the API cannot attack and block together.
+  // 近接攻撃が届いたら横回避ループを解除して攻撃を確定する。
+  // API上攻撃と防御を両立できない場合は、引き続き防御を優先する。
   const dodge = pressured && !guard && !attack;
   const priority: CombatIntentPriority = guard
     ? 'guard'
@@ -75,9 +75,9 @@ export function decideCombatIntent(opts: {
 }
 
 /**
- * Bounded ranged dodge: move sideways briefly, then explicitly commit to an
- * advance/attack window. Progress refreshes the stall latch; only a new hit,
- * stalled approach, or the hard deadline can begin another lateral burst.
+ * 上限付きの遠距離回避。短く横移動した後、明示的な前進・攻撃時間へ移る。
+ * 進展があれば停滞ラッチを更新し、新たな被弾、接近停滞、期限到達時だけ
+ * 次の横回避バーストを開始する。
  */
 export function decideRangedDodgeBurst(opts: {
   now: number;
@@ -85,7 +85,7 @@ export function decideRangedDodgeBurst(opts: {
   distanceToPrimary: number;
   meleeAttackRange: number;
   latch: RangedDodgeLatch;
-  /** Timestamp of the latest observed damage event, or 0 when none. */
+  /** 最後に観測した被弾イベントの時刻。未観測なら 0。 */
   lastDamageAt?: number;
   burstMs?: number;
   advanceMs?: number;
@@ -106,7 +106,7 @@ export function decideRangedDodgeBurst(opts: {
       dodge: true,
       latch: {
         ...opts.latch,
-        // A hit during the active burst is already covered by that burst.
+        // 現在のバースト中の被弾は、そのバーストで既に対処中とみなす。
         handledDamageAt: Math.max(opts.latch.handledDamageAt, lastDamageAt)
       }
     };
@@ -147,8 +147,8 @@ export function decideRangedDodgeBurst(opts: {
     latch: {
       burstUntil,
       advanceUntil,
-      // A lateral burst can increase distance. Establish the progress
-      // baseline on the first advance tick, not before the dodge starts.
+      // 横回避では距離が広がることがあるため、進展の基準距離は
+      // 回避開始前ではなく、最初の前進tickで確定する。
       bestDistance: Infinity,
       lastProgressAt: burstUntil,
       handledDamageAt: Math.max(opts.latch.handledDamageAt, lastDamageAt)

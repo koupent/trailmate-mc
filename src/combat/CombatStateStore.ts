@@ -3,7 +3,7 @@ import path from 'node:path';
 import type { CombatContext, CombatPresetId } from './CombatProfiles.js';
 import { contextKey } from './CombatProfiles.js';
 
-/** Bumped when context keys change (dropped enemy-count buckets). */
+/** コンテキストキー変更時に更新する（敵数バケットを廃止）。 */
 export const COMBAT_STATE_VERSION = 2;
 
 export type PresetStats = {
@@ -224,7 +224,7 @@ export class CombatStateStore {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       fs.renameSync(this.filePath, `${this.filePath}.corrupt-${stamp}`);
     } catch {
-      /* ignore */
+      /* 失敗は無視する */
     }
   }
 

@@ -96,7 +96,7 @@ export function captureDeathState(ctx) {
     if (pos && ctx.stuck?.reset) {
         ctx.stuck.reset(pos);
     }
-    // Spawn activates Recovery ownership; only bounded emergency survival may interrupt it.
+    // spawn時にRecovery所有権を有効化し、上限付きの緊急生存行動だけ割り込みを許す。
 }
 
 /**
@@ -116,7 +116,7 @@ export function beginDeathReturnAfterSpawn(ctx, config = ctx.config) {
     dr.active = true;
     dr.startedAt = Date.now();
     dr.phase = 'travel';
-    // Recovery owns the strategic destination until collection and re-equip finish.
+    // 回収と再装備が終わるまで、戦略上の目的地はRecoveryが所有する。
     ctx.holdReflexes = true;
 
     if (ctx.stuck?.reset && ctx.bot?.entity?.position) {
@@ -125,7 +125,7 @@ export function beginDeathReturnAfterSpawn(ctx, config = ctx.config) {
     return true;
 }
 
-/** Retain Recovery ownership after reaching the death site. */
+/** 死亡地点へ到着した後もRecovery所有権を維持する。 */
 export function markDeathReturnArrived(ctx, now = Date.now()) {
     const dr = ctx.deathRecovery;
     if (!dr?.active) return false;
@@ -136,7 +136,7 @@ export function markDeathReturnArrived(ctx, now = Date.now()) {
     return true;
 }
 
-/** Configure the shared ItemCollection capability for this recovery mission. */
+/** この復旧ミッション向けに共通ItemCollection Capabilityを設定する。 */
 export function requestRecoveryItemCollection(
     ctx,
     position,
@@ -147,12 +147,12 @@ export function requestRecoveryItemCollection(
     const dr = ctx.deathRecovery;
     if (!dr?.active) return false;
     const cfg = ctx.config?.nearby_loot || {};
-    // Even a configured zero keeps one scan opportunity before freezing IDs.
+    // 設定値が0でも、ID集合を固定する前に1回は走査する。
     const captureMs = Math.max(1, cfg.recovery_capture_ms ?? 1000);
     const deadlineMs = Math.max(captureMs, cfg.recovery_deadline_ms ?? 12000);
     dr.phase = 'items';
-    // These timestamps belong to the recovery mission. Emergency survival can
-    // pause collection, but retries must never extend the absolute deadline.
+    // これらの時刻は復旧ミッション全体に属する。緊急生存行動による
+    // 回収の一時停止は許すが、再試行で絶対期限を延長してはならない。
     if (!dr.collectionStartedAt) dr.collectionStartedAt = now;
     if (!dr.collectionCaptureUntil) dr.collectionCaptureUntil = now + captureMs;
     if (!dr.collectionDeadlineAt) dr.collectionDeadlineAt = now + deadlineMs;
@@ -172,7 +172,7 @@ export function requestRecoveryItemCollection(
     return true;
 }
 
-/** Track items observed by the common collector around the recovery origin. */
+/** 復旧起点の周囲で共通回収機構が観測したアイテムを追跡する。 */
 export function trackRecoveryItem(ctx, entity, now = Date.now()) {
     const dr = ctx.deathRecovery;
     const id = Number(entity?.id);
@@ -184,8 +184,8 @@ export function trackRecoveryItem(ctx, entity, now = Date.now()) {
 }
 
 /**
- * Freeze the grave-drop snapshot and report progress without considering
- * unrelated nearby items. Missing IDs mean either collected or despawned.
+ * 墓ドロップのスナップショットを固定し、無関係な近傍アイテムを除いて進捗を返す。
+ * 消えたIDは、取得済みまたはdespawn済みとみなす。
  */
 export function observeRecoveryItemCollection(ctx, now = Date.now()) {
     const dr = ctx.deathRecovery;

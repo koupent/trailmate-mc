@@ -1,13 +1,13 @@
 /**
- * Combat vs interrupt priority for the companion loop.
+ * 相棒ループにおける戦闘と割り込みの優先順位。
  *
- * Priority (high → low):
- *   1. Bounded emergency survival
- *   2. Guard (Reflexes) — including "just took damage"; no health-flee Retreat
- *   3. Other recovery interrupts (death-return, loot) — only when not fighting
- *   4. Follow / Wait modes
+ * 優先順位（高→低）:
+ *   1. 上限付きの緊急生存行動
+ *   2. Guard（Reflexes）— 直前の被弾を含む。HP低下だけのRetreatはしない
+ *   3. その他の復旧割り込み（死亡地点への帰還、回収）— 非戦闘時のみ
+ *   4. Follow / Wait モード
  *
- * Interrupts must never silence self-defense while the bot is armed and fighting.
+ * 武装して戦闘中のBotから、割り込みが自己防衛を奪ってはならない。
  */
 
 import {
@@ -18,7 +18,7 @@ import {
 const WEAPON_NAME_RE = /sword|axe|trident|bow|crossbow|mace|spear/;
 
 /**
- * True when the bot has no usable combat weapon in inventory.
+ * インベントリに使用可能な戦闘武器がない場合に true。
  * @param {import('mineflayer').Bot | null | undefined} bot
  */
 export function needsGearRecovery(bot) {
@@ -30,7 +30,7 @@ export function needsGearRecovery(bot) {
   }
 }
 
-/** True only when AutoEquip has restored a usable weapon to the hand. */
+/** AutoEquipが使用可能な武器を手に装備できた場合だけ true。 */
 export function hasEssentialWeaponEquipped(bot) {
   return WEAPON_NAME_RE.test(String(bot?.heldItem?.name || ''));
 }

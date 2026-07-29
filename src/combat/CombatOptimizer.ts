@@ -16,9 +16,9 @@ export type CombatLearningOptions = {
   exploreRate: number;
   minTrials: number;
   minHealthToExplore: number;
-  /** Instant rollback if a single episode takes this much damage while exploring. */
+  /** 探索中の1エピソードでこの値以上被弾したら即座にロールバックする。 */
   exploreDamageAbort: number;
-  /** After this many worse explore outcomes, pause exploration briefly. */
+  /** 悪化した探索結果がこの回数続いたら、探索を短時間休止する。 */
   maxConsecutiveWorse: number;
   exploreCooldownMs: number;
 };
@@ -102,7 +102,7 @@ export class CombatOptimizer {
       return this.choice(pick, 'explore', true);
     }
 
-    // Prefer selected once it has enough evidence; otherwise keep baseline.
+    // 十分な実績がある場合は選択済み設定を優先し、それまでは基準設定を保つ。
     const selectedStats = entry.presets[selected];
     if (
       selected !== baseline
@@ -115,7 +115,7 @@ export class CombatOptimizer {
   }
 
   /**
-   * Update learning state from a finished episode. May roll back selection.
+   * 完了したエピソードから学習状態を更新する。選択を戻す場合もある。
    */
   completeEpisode(episode: CombatEpisode): {
     score: number;
@@ -193,7 +193,7 @@ export class CombatOptimizer {
       return { score, adopted, rolledBack, reason };
     }
 
-    // Promote when a preset clearly beats the current best with enough trials.
+    // 十分な試行数があり、現行最良値を明確に上回った設定を採用する。
     if (
       presetStats.trials >= this.options.minTrials
       && (

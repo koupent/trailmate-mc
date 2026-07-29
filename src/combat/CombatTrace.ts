@@ -9,9 +9,9 @@ export function isCombatTraceEnabled(
 }
 
 /**
- * Opt-in structured combat trace. Disabled traces return before payload
- * construction at call sites; enabled decision snapshots are emitted only on
- * tactical state changes or a low-rate heartbeat.
+ * 明示的に有効化する構造化戦闘トレース。無効時は呼び出し側で
+ * ペイロード構築前に終了する。有効時の判断スナップショットは、
+ * 戦術状態の変化時または低頻度heartbeat時だけ出力する。
  */
 export class CombatTrace {
   readonly enabled: boolean;

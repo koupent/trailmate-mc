@@ -25,7 +25,7 @@ function pos(x: number, y: number, z: number) {
 }
 
 describe('threatPolicy', () => {
-  it('marks enemies near the owner as protect threats without FOV', () => {
+  it('視野角に関係なくowner近傍の敵を護衛脅威とみなす', () => {
     const reason = isProtectThreat(
       pos(0, 64, 0),
       pos(0, 64, 0),
@@ -35,7 +35,7 @@ describe('threatPolicy', () => {
     assert.equal(reason, 'owner-near');
   });
 
-  it('marks bot-adjacent enemies as self-immediate', () => {
+  it('Bot直近の敵を即時自己防衛脅威とみなす', () => {
     const reason = isProtectThreat(
       pos(0, 64, 0),
       pos(20, 64, 0),
@@ -45,7 +45,7 @@ describe('threatPolicy', () => {
     assert.equal(reason, 'self-immediate');
   });
 
-  it('ignores enemies far from both owner and bot', () => {
+  it('ownerとBotの両方から遠い敵を無視する', () => {
     const reason = isProtectThreat(
       pos(0, 64, 0),
       pos(0, 64, 0),
@@ -55,7 +55,7 @@ describe('threatPolicy', () => {
     assert.equal(reason, null);
   });
 
-  it('picks the owner-near enemy over a farther non-threat', () => {
+  it('遠い非脅威よりowner近傍の敵を選ぶ', () => {
     const ownerNear = {
       id: 1,
       name: 'skeleton',
@@ -76,7 +76,7 @@ describe('threatPolicy', () => {
     assert.equal(picked, ownerNear);
   });
 
-  it('requires line of sight for new picks', () => {
+  it('新規対象の選択には視線が必要', () => {
     const enemy = {
       id: 1,
       name: 'zombie',

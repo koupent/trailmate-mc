@@ -1,4 +1,4 @@
-/** Pure ownership/latch policy between upper companion modes and combat. */
+/** 相棒の上位モードと戦闘の間を調停する純粋な所有権・ラッチ方針。 */
 
 export const COMBAT_RELEASE_STABLE_MS = 1500;
 

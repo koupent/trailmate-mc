@@ -1,4 +1,6 @@
-/** Shared horizontal FOV helpers (Mineflayer yaw convention). */
+/**
+ * 水平視野角の補助関数（Mineflayer yaw規約）。
+ */
 
 export type FovPos = { x: number; y?: number; z: number };
 

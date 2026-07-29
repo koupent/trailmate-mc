@@ -3,69 +3,71 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TrailMate Combat Simulator</title>
+  <title>TrailMate 戦闘シミュレータ</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <main>
     <header>
       <div>
-        <h1>TrailMate Combat Simulator</h1>
+        <h1>TrailMate 戦闘シミュレータ</h1>
         <p>共有戦術ロジックを固定2D投影でtick実行します。</p>
       </div>
       <div class="controls compact">
-        <label>Scenario <select id="scenario"></select></label>
-        <button id="reset">Reset</button>
-        <button id="tick" class="primary">Tick</button>
-        <button id="play">Auto</button>
+        <label>シナリオ <select id="scenario"></select></label>
+        <label class="check"><input id="enemy-ai" type="checkbox"> 敵AI</label>
+        <label class="range-label">AI速度 <span id="enemy-speed-value">1.00×</span><input id="enemy-speed" type="range" min="0.25" max="2" step="0.25" value="1"></label>
+        <button id="reset">リセット</button>
+        <button id="tick" class="primary">1 tick進める</button>
+        <button id="play">自動進行</button>
       </div>
     </header>
 
     <section class="layout">
       <div class="arena-wrap">
         <canvas id="arena" width="760" height="620" aria-label="戦闘シミュレーション平面"></canvas>
-        <div class="legend">● Bot　◆ Owner　▲ Enemy　■ Grave　○ Drop　▧ Obstacle</div>
+        <div class="legend">● Bot　◆ オーナー　▲ 敵　■ 墓　○ ドロップ　▧ 障害物</div>
       </div>
 
       <aside>
         <section>
-          <h2>Decision</h2>
+          <h2>判断</h2>
           <dl id="decision"></dl>
           <div id="validation"></div>
         </section>
         <section>
-          <h2>Edit</h2>
-          <label>Entity <select id="entity"></select></label>
+          <h2>配置編集</h2>
+          <label>対象 <select id="entity"></select></label>
           <p class="hint">対象を選び、平面をクリックして移動。</p>
           <div class="controls">
             <select id="enemy-kind">
               <option>zombie</option><option>skeleton</option><option>creeper</option><option>spider</option>
             </select>
-            <button id="add-enemy">Add enemy</button>
-            <button id="add-drop">Add drop</button>
-            <button id="add-obstacle">Add obstacle</button>
-            <button id="remove">Remove selected</button>
+            <button id="add-enemy">敵を追加</button>
+            <button id="add-drop">ドロップを追加</button>
+            <button id="add-obstacle">障害物を追加</button>
+            <button id="remove">選択対象を削除</button>
           </div>
         </section>
         <section>
-          <h2>Expected</h2>
-          <label>Owner <select id="expect-owner"><option value="">—</option><option>follow</option><option>combat</option><option>recovery</option><option>survival</option></select></label>
-          <label>Intent <select id="expect-intent"><option value="">—</option><option>attack</option><option>guard</option><option>dodge</option><option>hold</option></select></label>
-          <label>Max span° <input id="expect-span" type="number" min="0" max="360" step="1"></label>
+          <h2>期待結果</h2>
+          <label>制御所有者 <select id="expect-owner"><option value="">—</option><option value="follow">追従</option><option value="combat">戦闘</option><option value="recovery">復旧</option><option value="survival">緊急生存</option></select></label>
+          <label>戦闘意図 <select id="expect-intent"><option value="">—</option><option value="attack">攻撃</option><option value="guard">防御</option><option value="dodge">回避</option><option value="hold">維持</option></select></label>
+          <label>最大span（度） <input id="expect-span" type="number" min="0" max="360" step="1"></label>
         </section>
         <section>
-          <h2>Cases</h2>
+          <h2>テストケース</h2>
           <div class="controls">
-            <input id="case-name" placeholder="case name">
-            <button id="save">Save</button>
+            <input id="case-name" placeholder="ケース名">
+            <button id="save">保存</button>
             <select id="saved"></select>
-            <button id="load">Load</button>
-            <button id="export">Export JSON</button>
-            <label class="file">Import <input id="import" type="file" accept="application/json"></label>
+            <button id="load">読込</button>
+            <button id="export">JSON出力</button>
+            <label class="file">JSON読込 <input id="import" type="file" accept="application/json"></label>
           </div>
         </section>
         <section>
-          <h2>Transitions</h2>
+          <h2>状態遷移</h2>
           <ol id="transitions"></ol>
         </section>
       </aside>

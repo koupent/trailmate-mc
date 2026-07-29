@@ -9,7 +9,7 @@ type BotLike = {
 };
 
 export const IMMEDIATE_THREAT_RANGE = 3.5;
-/** Enemies within this distance of the owner are escort threats (FOV-independent). */
+/** ownerからこの距離内の敵を護衛脅威とみなす（視野角には依存しない）。 */
 export const OWNER_PROTECT_RANGE = 8;
 
 export function isHostile(mob: { type?: string; name?: string } | null | undefined): boolean {
@@ -41,8 +41,8 @@ export function getNearestEntityWhere(
 }
 
 /**
- * Choose a visible hostile without relying on object iteration order.
- * Immediate threats to the bot come first, then threats near the owner.
+ * オブジェクトの列挙順に依存せず、見えている敵を選ぶ。
+ * Bot直近の脅威を最優先し、次にowner近傍の脅威を選ぶ。
  */
 export function chooseCombatTarget(
   bot: BotLike,
@@ -55,7 +55,7 @@ export function chooseCombatTarget(
     return distanceBetween(bot.entity.position, entity.position) < maxDistance;
   });
 
-  // Small test stubs and old protocol adapters may only expose nearestEntity.
+  // 小さなテストstubや旧protocol adapterでは nearestEntity だけの場合がある。
   if (candidates.length === 0) {
     return getNearestEntityWhere(
       bot,

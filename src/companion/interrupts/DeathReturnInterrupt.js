@@ -11,8 +11,8 @@ const DEFAULT_GRAVE_WAIT_MS = 2500;
 
 /**
  * After respawn, walk back to the death coordinates.
- * Ground drops are collected by the shared NearbyLoot/ItemCollection capability.
- * Recovery owns the strategic goal; only bounded emergency survival may pause it.
+ * 地面のドロップは共通NearbyLoot/ItemCollection Capabilityで回収する。
+ * 戦略目標はRecoveryが所有し、上限付きの緊急生存行動だけ一時停止できる。
  */
 export class DeathReturnInterrupt {
     constructor() {
@@ -53,7 +53,7 @@ export class DeathReturnInterrupt {
         const arriveRange = cfg.arrive_range ?? DEFAULT_ARRIVE_RANGE;
         const timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
-        // Do not stop pvp / silence combat — Follow yields via isControllingMovement.
+        // pvp停止や戦闘抑制は行わない。Follow側が isControllingMovement で譲る。
 
         if (!dr?.deathPos || !bot.entity) {
             completeDeathRecovery(ctx, 'missing-death-position');

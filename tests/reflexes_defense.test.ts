@@ -79,7 +79,7 @@ function yawToward(
   return Math.atan2(-(to.x - from.x), -(to.z - from.z));
 }
 
-/** Owner looking at `lookAt` (mineflayer yaw). */
+/** `lookAt` を見るowner（Mineflayer yaw）。 */
 function makeOwner(
   name: string,
   x: number,
@@ -93,7 +93,7 @@ function makeOwner(
 }
 
 type BotOpts = {
-  /** Entity names whose head ray is blocked (door/wall). */
+  /** 頭部への視線が扉・壁で遮られるエンティティ名。 */
   blockedNames?: string[];
   hostiles?: EntityStub[];
   health?: number;
@@ -184,7 +184,7 @@ function makeBot(opts: BotOpts = {}) {
     })
   };
 
-  // Replace raycast with aim-aware check: look at known tracked entities.
+  // raycastを既知の追跡対象へ向けた照準対応判定へ置き換える。
   const tracked: EntityStub[] = [];
   bot.world.raycast = (from: Vec, dir: { x: number; y: number; z: number }, maxDist: number) => {
     const aimX = from.x + dir.x * maxDist;
@@ -252,14 +252,14 @@ function makeMovement() {
 }
 
 describe('hasLineOfSight', () => {
-  it('returns true when raycast is clear', () => {
+  it('raycastが通る場合はtrueを返す', () => {
     const { bot, track } = makeBot();
     const owner = makeEntity('Alice', 'player', 2, 64, 0);
     track(owner);
     assert.equal(hasLineOfSight(bot, owner), true);
   });
 
-  it('returns false when a door blocks the ray', () => {
+  it('扉が視線を遮る場合はfalseを返す', () => {
     const { bot, track } = makeBot({ blockedNames: ['Alice'] });
     const owner = makeEntity('Alice', 'player', 2, 64, 0);
     track(owner);
@@ -267,8 +267,8 @@ describe('hasLineOfSight', () => {
   });
 });
 
-describe('Reflexes combat decisions', () => {
-  it('keeps fighting when the owner moves behind a closed door', async () => {
+describe('Reflexesの戦闘判断', () => {
+  it('ownerが閉じた扉の向こうへ移動しても戦闘を続ける', async () => {
     const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
     const owner = makeOwner('Alice', 4, 64, 0, zombie);
     const { bot, track } = makeBot({
@@ -292,8 +292,8 @@ describe('Reflexes combat decisions', () => {
     assert.equal(stats.stopCount, 0);
   });
 
-  it('does not start a new fight against an enemy behind a closed door', async () => {
-    // Beyond immediate self-defense range so owner-view LOS is required.
+  it('閉じた扉の向こうにいる敵とは新規戦闘を始めない', async () => {
+    // 即時自己防衛範囲外なので、owner側からの視線が必要。
     const zombie = makeEntity('zombie', 'hostile', 6, 64, 0);
     const owner = makeOwner('Alice', 1, 64, 0, zombie);
     const { bot, track } = makeBot({
@@ -314,7 +314,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(stats.attackTarget, null);
   });
 
-  it('attacks a visible enemy in the same space', async () => {
+  it('同じ位置にいる見える敵を攻撃する', async () => {
     const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
     const owner = makeOwner('Alice', 1, 64, 0, zombie);
     const { bot, track } = makeBot({ hostiles: [zombie] });
@@ -332,7 +332,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(stats.attackTarget, zombie);
   });
 
-  it('keeps self-defense when no owner is set and the enemy is visible', async () => {
+  it('owner未設定でも見える敵に対する自己防衛を続ける', async () => {
     const zombie = makeEntity('zombie', 'hostile', 2, 64, 0);
     const { bot, track } = makeBot({ hostiles: [zombie] });
     track(zombie);
@@ -347,7 +347,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(bot._stats().attackTarget, zombie);
   });
 
-  it('keeps the current target during a short line-of-sight loss', async () => {
+  it('短い視線喪失中は現在の対象を維持する', async () => {
     const zombie = makeEntity('zombie', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 6, 64, 0, zombie);
     const setup = makeBot({ hostiles: [zombie] });
@@ -362,7 +362,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().stopCount, 0);
   });
 
-  it('stops after line-of-sight grace and the tactical release window expire', async () => {
+  it('視線猶予と戦術解除時間の終了後に停止する', async () => {
     const zombie = makeEntity('zombie', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 6, 64, 0, zombie);
     const setup = makeBot({ hostiles: [zombie] });
@@ -385,7 +385,7 @@ describe('Reflexes combat decisions', () => {
     assert.ok(setup.bot._stats().stopCount >= 1);
   });
 
-  it('keeps a sticky immediate threat instead of switching targets', async () => {
+  it('対象を切り替えず固定済みの即時脅威を維持する', async () => {
     const immediate = makeEntity('zombie', 'hostile', 2, 64, 0);
     const ownerThreat = makeEntity('skeleton', 'hostile', 5.5, 64, 0);
     const owner = makeOwner('Alice', 6, 64, 0, ownerThreat);
@@ -397,12 +397,12 @@ describe('Reflexes combat decisions', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
     assert.equal(setup.bot._stats().attackTarget, immediate);
-    // Same target id must not re-call pvp.attack (avoids await stop() stalls).
-    // melee assist may add bot.attack swings; pvp.attack stays once.
+    // 同じ対象IDへpvp.attackを再呼び出しせず、await stop()の停滞を防ぐ。
+    // 近接補助でbot.attackが増えても、pvp.attackは1回のまま。
     assert.ok(setup.bot._stats().attackCount >= 1);
   });
 
-  it('prioritizes a threat near the owner when none is immediately adjacent', async () => {
+  it('直近脅威がなければowner近傍の脅威を優先する', async () => {
     const ownerThreat = makeEntity('skeleton', 'hostile', 5.5, 64, 0);
     const other = makeEntity('zombie', 'hostile', 7, 64, 0);
     const owner = makeOwner('Alice', 6, 64, 0, ownerThreat);
@@ -415,7 +415,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().attackTarget, ownerThreat);
   });
 
-  it('keeps fighting in guard at low health instead of fleeing to the owner', async () => {
+  it('低HPでもownerへ逃げずGuardで戦い続ける', async () => {
     const zombie = makeEntity('zombie', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 12, 64, 0, zombie);
     const setup = makeBot({ hostiles: [zombie], health: 6 });
@@ -427,12 +427,12 @@ describe('Reflexes combat decisions', () => {
 
     assert.equal(reflexes.escortMode, 'guard');
     assert.equal(setup.bot._stats().attackTarget, zombie);
-    // Must not path to owner-cover retreat destinations.
+    // ownerを盾にする退避目的地へ移動してはならない。
     assert.equal(movement._stats().destinations.length, 0);
     assert.ok(setup.bot._stats().attackCount >= 1);
   });
 
-  it('still guards at low health when the owner is next to the threat', async () => {
+  it('ownerが脅威の隣にいる場合も低HPで防御する', async () => {
     const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
     const owner = makeOwner('Alice', 3.5, 64, 0, zombie);
     const setup = makeBot({ hostiles: [zombie], health: 6 });
@@ -447,7 +447,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(movement._stats().destinations.length, 0);
   });
 
-  it('still guards at low health when no owner is available', async () => {
+  it('ownerがいない場合も低HPで防御する', async () => {
     const zombie = makeEntity('zombie', 'hostile', 2, 64, 0);
     const setup = makeBot({ hostiles: [zombie], health: 6 });
     setup.track(zombie);
@@ -461,7 +461,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(movement._stats().destinations.length, 0);
   });
 
-  it('keeps the sticky target after the entity object is replaced', async () => {
+  it('エンティティオブジェクトが置換されても固定対象を維持する', async () => {
     const first = makeEntity('zombie', 'hostile', 2, 64, 0);
     const second = makeEntity('skeleton', 'hostile', 5.5, 64, 0);
     const owner = makeOwner('Alice', 8, 64, 0, first);
@@ -480,11 +480,11 @@ describe('Reflexes combat decisions', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
     assert.equal(setup.bot._stats().attackTarget?.id, first.id);
-    // Object identity may change across ticks; match by entity id and skip re-attack.
+    // tick間でオブジェクト同一性が変わる場合があるため、entity IDで照合して再攻撃を省く。
     assert.ok(setup.bot._stats().attackCount >= 1);
   });
 
-  it('uses kite follow range for ranged enemies', async () => {
+  it('遠距離敵には引き撃ち用follow rangeを使う', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 6, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
@@ -496,7 +496,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().followRange, 3.6);
   });
 
-  it('melees a nearby creeper instead of backing off before ignition', async () => {
+  it('着火前の近いcreeperから後退せず近接攻撃する', async () => {
     const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
     const setup = makeBot({ hostiles: [creeper] });
     setup.track(creeper);
@@ -509,7 +509,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(movement._stats().destinations.length, 0);
   });
 
-  it('backs away from an ignited creeper without a shield', async () => {
+  it('盾なしで着火済みcreeperから後退する', async () => {
     const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
     creeper.metadata = [];
     creeper.metadata[16] = 1;
@@ -525,8 +525,8 @@ describe('Reflexes combat decisions', () => {
     assert.equal(movement._stats().destinations.length, 1);
   });
 
-  it('guards an enemy near the owner even when behind the owner facing', async () => {
-    // Owner looks -Z; skeleton is at +Z but within protect radius.
+  it('ownerの背面でもowner近傍の敵を防御対象にする', async () => {
+    // ownerは-Z向きだが、skeletonは護衛範囲内の+Zにいる。
     const skeleton = makeEntity('skeleton', 'hostile', 0, 64, 6);
     const owner = makeOwner('Alice', 0, 64, 0);
     owner.yaw = 0;
@@ -540,7 +540,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(reflexes.escortMode, 'guard');
   });
 
-  it('ignores an enemy far from both the owner and the bot', async () => {
+  it('ownerとBotの両方から遠い敵を無視する', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 0, 64, 10);
     const owner = makeOwner('Alice', 0, 64, 0);
     owner.yaw = 0;
@@ -556,7 +556,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(reflexes.escortMode, 'follow');
   });
 
-  it('self-defends against an immediate threat far from the owner', async () => {
+  it('ownerから遠くても直近脅威へ自己防衛する', async () => {
     const zombie = makeEntity('zombie', 'hostile', 0, 64, 2);
     const owner = makeOwner('Alice', 20, 64, 0);
     owner.yaw = 0;
@@ -570,7 +570,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(reflexes.escortMode, 'guard');
   });
 
-  it('still guards owner-near threats when owner yaw is missing', async () => {
+  it('owner yawがなくてもowner近傍の脅威を防御する', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 0, 64, -6);
     const owner = makeEntity('Alice', 'player', 0, 64, 0); // no yaw
     const setup = makeBot({ hostiles: [skeleton] });
@@ -582,7 +582,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().attackTarget, skeleton);
   });
 
-  it('returns to follow after threats disappear past grace', async () => {
+  it('脅威消失後の猶予を過ぎたらfollowへ戻る', async () => {
     const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
     const owner = makeOwner('Alice', 1, 64, 0, zombie);
     const setup = makeBot({ hostiles: [zombie] });
@@ -606,7 +606,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(reflexes.isControllingMovement, false);
   });
 
-  it('keeps single-enemy combat on the existing attack path without repositioning', async () => {
+  it('単敵戦闘では位置取りせず既存攻撃経路を維持する', async () => {
     const zombie = makeEntity('zombie', 'hostile', 0, 64, 3);
     const owner = makeOwner('Alice', 0, 64, 0, zombie);
     const setup = makeBot({ hostiles: [zombie] });
@@ -621,7 +621,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().forceStopCount, 0);
   });
 
-  it('repositions sideways for front/back threats and keeps a melee strike available', async () => {
+  it('前後脅威へ横方向に位置取りし近接攻撃も維持する', async () => {
     const front = makeEntity('zombie', 'hostile', 0, 64, 3);
     const back = makeEntity('zombie', 'hostile', 0, 64, -3);
     const owner = makeOwner('Alice', 0, 64, 0, front);
@@ -651,7 +651,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().lookTargets.at(-1).z, front.position.z);
   });
 
-  it('attacks a narrow enemy cluster without taking over pathfinder movement', async () => {
+  it('狭い敵集団ではpathfinder移動を奪わず攻撃する', async () => {
     const left = makeEntity('zombie', 'hostile', -0.4, 64, 3);
     const right = makeEntity('zombie', 'hostile', 0.4, 64, 3);
     const owner = makeOwner('Alice', 0, 64, 0, left);
@@ -667,7 +667,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().attackTarget, left);
   });
 
-  it('dodges perpendicular to a single ranged enemy in world space', async () => {
+  it('単体遠距離敵の射線と直交するワールド方向へ回避する', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 0, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
@@ -678,14 +678,14 @@ describe('Reflexes combat decisions', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
     const controls = setup.bot._stats().controls;
-    // Shot line is east/west; with this yaw, left moves along +Z.
+    // 射線は東西方向。このyawではleft入力で+Zへ動く。
     assert.equal(controls.left, true);
     assert.equal(controls.forward, false);
     assert.equal(controls.back, false);
     assert.equal(setup.bot._stats().attackTarget, skeleton);
   });
 
-  it('explicitly advances toward a ranged enemy after the dodge burst', async () => {
+  it('回避バースト後に遠距離敵へ明示的に前進する', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 0, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
@@ -704,7 +704,7 @@ describe('Reflexes combat decisions', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
     const controls = setup.bot._stats().controls;
-    // Enemy is +X. With yaw 0, +X is the right movement control.
+    // 敵は+X方向。yaw 0ではright入力で+Xへ動く。
     assert.equal(controls.right, true);
     assert.equal(controls.left, false);
     assert.equal(controls.forward, false);
@@ -712,7 +712,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().attackTarget, skeleton);
   });
 
-  it('drops the dodge latch and attacks when a ranged enemy reaches melee range', async () => {
+  it('遠距離敵が近接距離へ入ったら回避ラッチを解除して攻撃する', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 3.4, 64, 0);
     const owner = makeOwner('Alice', 0, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
@@ -736,7 +736,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal((reflexes as any).rangedDodgeLatch.advanceUntil, 0);
   });
 
-  it('prioritizes positioning for two ranged enemies in front/back', async () => {
+  it('前後にいる遠距離敵2体には位置取りを優先する', async () => {
     const front = makeEntity('skeleton', 'hostile', 0, 64, 5);
     const back = makeEntity('skeleton', 'hostile', 0, 64, -5);
     const owner = makeOwner('Alice', 0, 64, 0, front);
@@ -752,7 +752,7 @@ describe('Reflexes combat decisions', () => {
     assert.equal(setup.bot._stats().attackCount, 0);
   });
 
-  it('prioritizes positioning for two ranged enemies at 90 degrees', async () => {
+  it('90度配置の遠距離敵2体には位置取りを優先する', async () => {
     const north = makeEntity('skeleton', 'hostile', 0, 64, 5);
     const east = makeEntity('skeleton', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 0, 64, 0, north);
@@ -765,11 +765,15 @@ describe('Reflexes combat decisions', () => {
 
     const destination = movement._stats().destinations[0];
     assert.ok(destination);
-    assert.ok(destination.x < 0 && destination.z < 0);
+    const before = computeThreatArc({ x: 0, z: 0 }, [north.position, east.position]);
+    const after = computeThreatArc(destination, [north.position, east.position]);
+    assert.ok(before && after);
+    assert.ok(after.spanRad < before.spanRad);
+    assert.ok(after.spanRad <= (35 * Math.PI) / 180);
     assert.equal(setup.bot._stats().forceStopCount, 0);
   });
 
-  it('keeps shield guard active while positioning under ranged pressure', async () => {
+  it('遠距離圧下の位置取り中も盾防御を維持する', async () => {
     const north = makeEntity('skeleton', 'hostile', 0, 64, 3);
     const south = makeEntity('skeleton', 'hostile', 0, 64, -3);
     const owner = makeOwner('Alice', 0, 64, 0, north);
@@ -782,13 +786,13 @@ describe('Reflexes combat decisions', () => {
 
     assert.equal(movement._stats().destinations.length, 1);
     assert.ok(setup.bot._stats().activateCount >= 1);
-    // Attack intent exists in the pure decision, but shield wins the API conflict.
+    // 純粋判断には攻撃意図もあるが、API競合では盾を優先する。
     assert.equal(setup.bot._stats().attackCount, 0);
   });
 });
 
-describe('upper-mode combat coordination', () => {
-  it('Recovery owns movement; only a bounded survival dodge may interrupt it', async () => {
+describe('上位モードと戦闘の連携', () => {
+  it('Recoveryが移動を所有し上限付き生存回避だけ割り込める', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 2, 64, 0);
     const setup = makeBot({ hostiles: [skeleton] });
     setup.track(skeleton);
@@ -829,7 +833,7 @@ describe('upper-mode combat coordination', () => {
     assert.ok(setup.bot._stats().attackCount >= 1);
   });
 
-  it('Follow and Wait retain their upper mode but do not issue recovery controls', async () => {
+  it('FollowとWaitは上位モードを保つがRecovery制御を発行しない', async () => {
     const owner = makeEntity('Alice', 'player', 5, 64, 0);
     let followCount = 0;
     let stopCount = 0;
@@ -855,7 +859,7 @@ describe('upper-mode combat coordination', () => {
     assert.equal(stopCount, 0);
   });
 
-  it('keeps tactical ownership when combat reaches the owner position', async () => {
+  it('戦闘中にowner位置へ到着しても戦術所有権を維持する', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 0, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
@@ -889,7 +893,7 @@ describe('upper-mode combat coordination', () => {
     assert.equal(stopCount, stopsAfterCombatClaim);
   });
 
-  it('holds upper modes through a short target gap, then releases to Follow', async () => {
+  it('短い対象消失中は上位モードを抑制し、その後Followへ戻す', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 6, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
@@ -929,7 +933,7 @@ describe('upper-mode combat coordination', () => {
     assert.equal(followCount, 1);
   });
 
-  it('does not overwrite movement while combat controls it', async () => {
+  it('戦闘が所有する移動を上書きしない', async () => {
     let followCount = 0;
     const owner = makeEntity('Alice', 'player', 5, 64, 0);
     const ctx = {
@@ -953,7 +957,7 @@ describe('upper-mode combat coordination', () => {
     assert.equal(followCount, 0);
   });
 
-  it('lets tactical combat retain movement ownership while the upper mode waits', async () => {
+  it('上位モード待機中も戦術戦闘が移動所有権を維持する', async () => {
     let stopCount = 0;
     const ctx = {
       agent: { reflexes: { isControllingMovement: true } },

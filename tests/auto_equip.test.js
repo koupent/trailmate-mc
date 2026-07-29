@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { equipShield } from '../src/companion/utils/AutoEquip.js';
 
 describe('equipShield', () => {
-    it('equips an available shield in the off-hand', async () => {
+    it('使用可能な盾をオフハンドへ装備する', async () => {
         const shield = { name: 'shield' };
         const equips = [];
         const bot = {
@@ -23,7 +23,7 @@ describe('equipShield', () => {
         assert.deepEqual(equips, [{ item: shield, destination: 'off-hand' }]);
     });
 
-    it('keeps an already equipped shield', async () => {
+    it('既に装備している盾を維持する', async () => {
         let equipCount = 0;
         const slots = [];
         slots[45] = { name: 'shield' };

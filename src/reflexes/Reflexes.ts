@@ -85,13 +85,13 @@ type RecoveryContext = {
   emergencyCooldownUntil?: number;
 };
 
-/** Upper escort behavior exposed by Reflexes. */
+/** Reflexesが公開する上位護衛行動。 */
 export type EscortMode = 'follow' | 'guard';
 
 const TARGET_RANGE_BUFFER = 2;
 const RETREAT_GOAL_RANGE = 1.5;
 const RETREAT_MELEE_RANGE = 3.5;
-/** Inside this range, stop holding `back` so the bot can actually swing. */
+/** この距離内では実際に攻撃できるよう `back` 入力を解除する。 */
 const MELEE_COMMIT_RANGE = 1.8;
 
 type ThreatArcBias = {
@@ -124,7 +124,7 @@ type TraceEntity = {
 };
 
 /**
- * Escort companion reflexes: Follow / Guard / Retreat mode machine.
+ * 護衛相棒のReflexes。Follow / Guard / Retreatのモード機械。
  */
 export class Reflexes {
   private lastTorchAt = 0;
@@ -150,22 +150,22 @@ export class Reflexes {
   private readonly combatStore: CombatStateStore;
   private readonly combatTrace: CombatTrace;
   private lastPassiveStrikeAt = 0;
-  /** Throttle open-arc path nudges while repositioning. */
+  /** 位置取り中に空いた円弧へ向かう経路更新を間引く。 */
   private arcRepositionUntil = 0;
-  /** Hysteresis latch — stay in arc narrowing until span drops below exit threshold. */
+  /** spanが終了閾値を下回るまで円弧収束を続けるヒステリシスラッチ。 */
   private arcNarrowLatched = false;
-  /** Last owner seen during defend (for angle leash). */
+  /** 防衛中に最後に確認したowner（角度leash用）。 */
   private lastDefendOwner: DefendOwner = null;
-  /** After taking damage, force self-defense engage briefly. */
+  /** 被弾後の短時間は自己防衛を強制する。 */
   private recentDamageUntil = 0;
-  /** Small hysteresis latch for bounded ranged dodge -> advance cycles. */
+  /** 上限付き遠距離回避→前進サイクル用の小さなヒステリシスラッチ。 */
   private rangedDodgeLatch: RangedDodgeLatch = idleRangedDodgeLatch();
   private lastDamageAt = 0;
-  /** Combat retains movement/look ownership briefly across target flicker. */
+  /** 対象が一瞬消えても、戦闘が移動・視線所有権を短時間維持する。 */
   private combatControlUntil = 0;
   private lastCombatLookAt = 0;
   private lastTracePosition: { x: number; z: number; at: number } | null = null;
-  /** Recovery is a higher-level goal; combat may only take a short survival burst. */
+  /** Recoveryは上位目標であり、戦闘側は短い生存行動だけ割り込める。 */
   private recoveryOwned = false;
   private recoveryEmergencyWasActive = false;
   private lastRecoveryDamageHandledAt = 0;
@@ -225,20 +225,20 @@ export class Reflexes {
     });
   }
 
-  /** Persist learning state (call on shutdown). */
+  /** 学習状態を永続化する（終了時に呼ぶ）。 */
   flushLearning(): void {
     this.finishEpisode();
     this.combatOptimizer.flush();
   }
 
-  /** Current escort mode (follow / guard). */
+  /** 現在の護衛モード（follow / guard）。 */
   get escortMode(): EscortMode {
     return this.mode;
   }
 
   /**
-   * True when combat should override loot / death-return / grave.
-   * Includes recent damage so interrupts abort even before Guard is entered.
+   * 戦闘が回収・死亡地点帰還・墓処理より優先される場合に true。
+   * Guardへ入る前でも割り込みを中断できるよう、直近の被弾も含める。
    */
   get wantsCombat(): boolean {
     return this.ownsTacticalControl || Date.now() < this.recentDamageUntil;
@@ -249,11 +249,11 @@ export class Reflexes {
     isIdleish: boolean;
     owner?: DefendOwner;
     movement?: CombatMovement;
-    /** When true, skip torch / idle chores only — never skips defend. */
+    /** trueなら松明・待機作業だけを省略し、防衛は必ず実行する。 */
     nonCombatHeld?: boolean;
-    /** Unarmed + own grave nearby: pause combat so gear can be recovered. */
+    /** 未武装で自分の墓が近い場合、装備回収のため戦闘を一時停止する。 */
     preferGearRecovery?: boolean;
-    /** Higher-level death recovery context shared with companion capabilities. */
+    /** 相棒Capability間で共有する上位の死亡復旧コンテキスト。 */
     recovery?: RecoveryContext;
   }): Promise<void> {
     if (this.config.self_preservation) {
@@ -296,8 +296,8 @@ export class Reflexes {
   }
 
   /**
-   * Recovery owns movement and gaze. Only a bounded, cooldown-limited survival
-   * response may interrupt it; no target is latched and no chase is started.
+   * Recoveryが移動と視線を所有する。上限とcooldown付きの生存行動だけ
+   * 割り込みを許し、対象ラッチや追跡は開始しない。
    */
   private handleRecoverySurvival(recovery: RecoveryContext, movement?: CombatMovement): void {
     const now = Date.now();
@@ -414,7 +414,7 @@ export class Reflexes {
     return this.ownsTacticalControl;
   }
 
-  /** Cancel sticky combat state when a higher-priority interrupt takes over. */
+  /** より優先度の高い割り込みが所有権を得たら、戦闘ラッチ状態を解除する。 */
   resetCombat(): void {
     this.episodeTracker.markInterrupted();
     this.finishEpisode();
@@ -465,15 +465,15 @@ export class Reflexes {
     this.transitionMode(owner, movement, now);
 
     if (this.mode === 'follow') {
-      // Do not let upper Follow/Wait or item sharing reclaim controls during a
-      // one-tick target gap. Reacquisition continues on the next defend tick.
+      // 1tickだけ対象が消えても上位Follow/Waitや受け渡しに制御を戻さない。
+      // 次の防衛tickで再取得を続ける。
       if (this.ownsTacticalControl) return;
       this.finishEpisode();
       this.stopCombat();
       return;
     }
 
-    // Guard
+    // 防御
     const enemy = this.currentTarget;
     if (!enemy) {
       this.finishEpisode();
@@ -517,8 +517,8 @@ export class Reflexes {
   }
 
   /**
-   * Multi-threat arc: improve the common wedge before enemy-specific actions.
-   * This applies to melee, ranged, explosive, and mixed groups alike.
+   * 複数脅威の円弧。敵種別行動より先に共通の扇形を改善する。
+   * 近接・遠距離・爆発・混成のすべてに適用する。
    */
   private shouldNarrowThreatArc(arcBias: ThreatArcBias | null): boolean {
     if (!arcBias) {
@@ -554,8 +554,8 @@ export class Reflexes {
 
     if (arcBias.destination) {
       this.rangedDodgeLatch = idleRangedDodgeLatch();
-      // Stop pvp pathing before installing our world-space positioning goal.
-      // meleeAssistStrike still permits close-range attacks while repositioning.
+      // ワールド座標の位置取り目的地を設定する前にpvp経路探索を止める。
+      // 位置取り中でもmeleeAssistStrikeによる近距離攻撃は許可する。
       const releasedPvpGoal = this.bot.pvp?.target != null;
       if (releasedPvpGoal) this.bot.pvp?.forceStop?.();
       if (intent.guard) this.keepShieldUp();
@@ -585,8 +585,8 @@ export class Reflexes {
         }
       };
     } else {
-      // Once the wedge is moderate, keep fighting and use the existing
-      // arc-guided strafe rather than letting pathfinder steal the attack goal.
+      // 扇形が適度に狭まったら戦闘を続け、pathfinderに攻撃目標を奪わせず、
+      // 既存の円弧誘導横移動を使う。
       movementTrace = this.applyCombatSpacing(enemy, arcBias);
       this.ensureAttackTarget(enemy);
     }
@@ -611,7 +611,7 @@ export class Reflexes {
     });
   }
 
-  /** Keyboard fallback when no MovementController is available. */
+  /** MovementControllerがない場合の移動キーフォールバック。 */
   private applyBearingMovement(bearingRad: number): void {
     if (!this.bot.entity) return;
     const controls = movementControlsTowardBearing(bearingRad, this.bot.entity.yaw);
@@ -621,7 +621,7 @@ export class Reflexes {
     this.bot.setControlState('right', controls.right);
   }
 
-  /** Dodge in world space, perpendicular to the incoming/common threat line. */
+  /** 入射・共通脅威方向と直交するワールド座標方向へ回避する。 */
   private applyPerpendicularDodge(threatBearing: number, now: number): number {
     if (now >= this.strafeUntil) {
       this.strafeSign = this.strafeSign === 1 ? -1 : 1;
@@ -639,7 +639,7 @@ export class Reflexes {
     this.bot.setControlState('forward', false);
   }
 
-  /** Keep combat gaze on the primary threat without issuing look every tick. */
+  /** 毎tick視線命令を出さず、主脅威への戦闘視線を維持する。 */
   private maintainCombatLook(enemy: any, now: number): void {
     if (!enemy?.position || now - this.lastCombatLookAt < 250) return;
     this.lastCombatLookAt = now;
@@ -819,8 +819,8 @@ export class Reflexes {
   }
 
   /**
-   * Maintain / acquire escort targets via protect policy (no FOV).
-   * New locks need bot→enemy LOS; sticky targets get a short lost grace.
+   * 視野角を使わないprotect方針で護衛対象を維持・取得する。
+   * 新規固定にはBot→敵の視線が必要で、固定済み対象には短い見失い猶予を与える。
    */
   private refreshProtectTarget(owner: DefendOwner, now: number): void {
     const ranges = this.protectRanges();
@@ -853,9 +853,8 @@ export class Reflexes {
         const ownerEnemyDist = ownerPos && this.currentTarget.position
           ? distanceToPos(ownerPos, this.currentTarget.position)
           : 0;
-        // Escort leash: self-immediate alone must not pull the bot away from the
-        // owner forever. If both bot and enemy are outside the owner bubble,
-        // stop refreshing so lost-grace can release the chase.
+        // 護衛leash: Bot直近の脅威だけでownerから無期限に引き離されないようにする。
+        // Botと敵の両方がowner範囲外なら更新を止め、見失い猶予後に追跡を解除する。
         const leashBroken = !!(
           reason === 'self-immediate'
           && ownerPos
@@ -880,8 +879,8 @@ export class Reflexes {
 
     if (!this.currentTarget) {
       let picked = pickProtectTarget(this.bot, ownerPos, ranges, hasLos);
-      // Damage is a hard self-defense trigger: fight nearest hostile even if outside
-      // the owner bubble (brief window via recentDamageUntil).
+      // 被弾は強制的な自己防衛トリガーとし、owner範囲外でも短時間は
+      // recentDamageUntilにより最寄りの敵と戦う。
       if (!picked && now < this.recentDamageUntil) {
         picked = pickProtectTarget(
           this.bot,
@@ -922,9 +921,8 @@ export class Reflexes {
     const hasThreat = this.currentTarget != null;
     const previousMode = this.mode;
 
-    // Health-based Retreat made the bot turn its back, run to the owner, and
-    // stand still under fire (confirmed in runtime logs). Escort fights in Guard
-    // until the threat is gone — including at low HP.
+    // HP基準のRetreatでは、Botが敵へ背を向けownerへ走り、射撃下で停止した
+    // （実行ログで確認済み）。護衛は低HPでも脅威が消えるまでGuardで戦う。
     this.mode = hasThreat ? 'guard' : 'follow';
     this.combatControlUntil = refreshCombatControlUntil({
       now,
@@ -932,16 +930,16 @@ export class Reflexes {
       activeThreat: hasThreat
     });
     if (hasThreat && previousMode === 'follow') {
-      // The upper mode stays selected but releases its owner destination before
-      // pvp/positioning installs the tactical one.
+      // 上位モードの選択は維持するが、pvp・位置取りが戦術目的地を設定する前に
+      // owner目的地を解除する。
       movement?.stop?.();
     }
   }
 
   /**
-   * Start or keep mineflayer-pvp focused on `enemy` without awaiting.
-   * `pvp.attack` may await `stop()` for up to 5s when the target object changes;
-   * awaiting that here freezes the companion loop so Follow reclaims the bot.
+   * awaitせず、mineflayer-pvpの対象を `enemy` に設定・維持する。
+   * 対象オブジェクト変更時に `pvp.attack` が `stop()` を最大5秒待つ場合がある。
+   * ここでawaitすると相棒ループが止まり、FollowがBotを再取得してしまう。
    */
   private ensureAttackTarget(enemy: any): void {
     const pvp = this.bot.pvp as {
@@ -958,8 +956,8 @@ export class Reflexes {
   }
 
   /**
-   * Swing with bot.attack when already in melee so spacing/pathfinder ownership
-   * cannot leave the bot standing idle on a target.
+   * 近接距離内ではbot.attackで直接攻撃し、間合い制御やpathfinder所有権により
+   * 対象の前で棒立ちになることを防ぐ。
    */
   private meleeAssistStrike(enemy: any | null, now: number): void {
     if (!enemy?.position || !this.bot.entity) return;
@@ -972,7 +970,7 @@ export class Reflexes {
       void this.bot.lookAt?.(look, true);
       this.bot.attack?.(enemy);
     } catch {
-      /* ignore */
+      /* 失敗は無視する */
     }
   }
 
@@ -1009,7 +1007,7 @@ export class Reflexes {
     try {
       this.bot.deactivateItem();
     } catch {
-      /* ignore */
+      /* 失敗は無視する */
     }
   }
 
@@ -1017,11 +1015,11 @@ export class Reflexes {
     try {
       this.bot.activateItem?.(true);
     } catch {
-      /* ignore */
+      /* 失敗は無視する */
     }
   }
 
-  /** Step away from an immediate explosive threat without entering a mode. */
+  /** モードを増やさず、直近の爆発脅威から離れる。 */
   private moveAwayFrom(threat: any, movement?: CombatMovement): void {
     if (!movement || !threat?.position) return;
     const botPos = this.bot.entity.position;
@@ -1079,7 +1077,7 @@ export class Reflexes {
     this.bot.pvp.followRange = decision.followRange;
   }
 
-  /** Overlay spacing controls on top of mineflayer-pvp using the active preset. */
+  /** 有効なプリセットの間合い制御をmineflayer-pvpへ重ねる。 */
   private applyCombatSpacing(
     enemy: any,
     arcBias: ThreatArcBias | null = null
@@ -1141,8 +1139,8 @@ export class Reflexes {
       movementTrace.kind = 'dodge';
       movementTrace.bearingRad = this.applyPerpendicularDodge(rangedThreatBearing, now);
     } else if (rangedThreatBearing != null && dodgeBurst.phase === 'advance') {
-      // Commit toward the common threat line instead of relying on pvp to
-      // recover between ticks after we have cleared its movement controls.
+      // pvpの移動入力を解除した後、tick間の復帰に任せず共通脅威方向への
+      // 前進を明示的に確定する。
       this.applyBearingMovement(rangedThreatBearing);
       movementTrace.kind = 'advance';
       movementTrace.bearingRad = rangedThreatBearing;
@@ -1152,8 +1150,8 @@ export class Reflexes {
         z: enemy.position.z
       };
     } else if (rangedThreatBearing != null) {
-      // Attack range wins over ranged spacing; leave controls clear for the
-      // pvp target and melee assist instead of falling through to strafe.
+      // 攻撃距離では遠距離間合い制御より攻撃を優先し、横移動へ流さず
+      // pvp対象と近接補助のため移動入力を空ける。
       movementTrace.kind = 'none';
     } else if (rangedThreatBearing == null && arcGuidedStrafe && bias != null) {
       this.strafeSign = bias.sign;
@@ -1188,7 +1186,7 @@ export class Reflexes {
         this.strafeSign
       );
     }
-    // Do not hold back while already in face-hug range — that cancels swings.
+    // 密着距離で後退入力を維持すると攻撃が中断されるため、入力しない。
     if (decision.needBackstep && distance > MELEE_COMMIT_RANGE && rangedThreatBearing == null) {
       this.bot.setControlState('back', true);
     }
@@ -1197,8 +1195,8 @@ export class Reflexes {
   }
 
   /**
-   * When 2+ protect threats span a wide angle, strafe into the open side
-   * so enemies cluster into a narrower cone (owner-leashed).
+   * 2体以上の護衛脅威が広い角度にいる場合、owner leash内で敵集団を回り込み、
+   * 可能なら敵列の片端より外側へ抜ける安全な経路を選ぶ。
    */
   private collectThreatArcBias(primary: any): ThreatArcBias | null {
     if (!this.bot.entity || !primary?.position) return null;
@@ -1367,7 +1365,7 @@ export class Reflexes {
     }
     if (damage > 0) {
       this.episodeTracker.recordDamage(damage);
-      // Enter / stay in combat when punched — basic escort self-defense.
+      // 攻撃を受けたら戦闘へ入り、護衛の基本的な自己防衛を続ける。
       const now = Date.now();
       this.lastDamageAt = now;
       this.recentDamageUntil = now + 4000;

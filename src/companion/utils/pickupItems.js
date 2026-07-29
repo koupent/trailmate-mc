@@ -76,6 +76,7 @@ export async function pickupNearbyItems(ctx, options = {}) {
         if (!bot.entity || bot.interrupt_code) break;
         if (shouldAbort()) break;
 
+        // 固定起点がない場合はBot基準で追跡し、走査ごとに起点を更新する。
         const origin = options.around || bot.entity.position;
         ctx.invalidateCompanionAwareness?.();
         const snap = typeof ctx.getCompanionAwareness === 'function'

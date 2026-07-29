@@ -48,7 +48,7 @@ import {
 } from '../src/combat/TacticalOwnership.js';
 
 describe('CombatProfiles', () => {
-  it('classifies common hostiles', () => {
+  it('一般的な敵を分類する', () => {
     assert.equal(classifyEnemy('zombie'), 'melee');
     assert.equal(classifyEnemy('spider'), 'agile');
     assert.equal(classifyEnemy('skeleton'), 'ranged');
@@ -57,7 +57,7 @@ describe('CombatProfiles', () => {
     assert.equal(classifyEnemy('creeper'), 'explosive');
   });
 
-  it('clamps preset values into safety bounds', () => {
+  it('プリセット値を安全範囲内へ制限する', () => {
     const clamped = clampPreset({
       ...getPresetParams('melee-baseline'),
       followRange: 99,
@@ -67,7 +67,7 @@ describe('CombatProfiles', () => {
     assert.equal(clamped.crowdAvoidBias, PRESET_BOUNDS.crowdAvoidBias.min);
   });
 
-  it('returns class-specific preset lists without count buckets', () => {
+  it('敵数バケットを使わずクラス別プリセット一覧を返す', () => {
     const melee = listPresetsForContext({
       enemyClass: 'melee',
       hasShield: false
@@ -81,7 +81,7 @@ describe('CombatProfiles', () => {
     assert.equal(baselinePresetId({ enemyClass: 'melee', hasShield: false }), 'melee-baseline');
   });
 
-  it('lets learned profile selection change bounded dodge timing', () => {
+  it('学習済みプロファイルにより上限付き回避時間が変わる', () => {
     const baseline = getPresetParams('ranged-baseline');
     const shieldPush = getPresetParams('ranged-shield-push');
     const baselineBurst = decideRangedDodgeBurst({
@@ -109,7 +109,7 @@ describe('CombatProfiles', () => {
     );
   });
 
-  it('decides backstep when hugging a melee enemy', () => {
+  it('近接敵へ密着した場合に後退を選ぶ', () => {
     const params = getPresetParams('melee-baseline');
     const decision = decideSpacing({
       params,
@@ -121,7 +121,7 @@ describe('CombatProfiles', () => {
     assert.equal(decision.needStrafe, true);
   });
 
-  it('blends crowd-avoid direction by bias', () => {
+  it('補正値に応じて敵集団回避方向を混ぜる', () => {
     const blended = blendCrowdAvoidDirection({
       awayFromTarget: { x: 1, z: 0 },
       awayFromCrowd: { x: 0, z: 1 },
@@ -132,12 +132,12 @@ describe('CombatProfiles', () => {
   });
 });
 
-describe('threatArc positioning', () => {
+describe('threatArc位置取り', () => {
   const approximately = (actual: number, expected: number, epsilon = 1e-6) => {
     assert.ok(Math.abs(actual - expected) <= epsilon, `${actual} != ${expected}`);
   };
 
-  it('reports 180 degrees when threats flank front and back', () => {
+  it('前後から挟まれた脅威を180度と判定する', () => {
     const bot = { x: 0, z: 0 };
     const arc = computeThreatArc(bot, [
       { x: 0, z: 5 },
@@ -147,7 +147,7 @@ describe('threatArc positioning', () => {
     assert.ok(Math.abs(spanDegrees(arc!.spanRad) - 180) < 1);
   });
 
-  it('reports zero span and stays when enemies line up in one direction', () => {
+  it('敵が一方向に並ぶ場合はspan 0と判定して留まる', () => {
     const bot = { x: 0, z: 0 };
     const threats = [{ x: 0, z: 4 }, { x: 0, z: 8 }];
     const arc = computeThreatArc(bot, threats);
@@ -158,7 +158,7 @@ describe('threatArc positioning', () => {
     assert.deepEqual(selection.chosen.position, bot);
   });
 
-  it('does not reposition for one enemy', () => {
+  it('敵が1体なら位置取りしない', () => {
     const selection = chooseBestThreatPosition(
       { x: 0, z: 0 },
       [{ x: 3, z: 0 }]
@@ -166,7 +166,7 @@ describe('threatArc positioning', () => {
     assert.equal(selection.moved, false);
   });
 
-  it('chooses a perpendicular step that reduces a 180-degree flank', () => {
+  it('180度の挟撃を改善する直交方向への移動を選ぶ', () => {
     const bot = { x: 0, z: 0 };
     const threats = [
       { x: 0, z: 5 },
@@ -178,19 +178,35 @@ describe('threatArc positioning', () => {
     assert.ok(selection.chosen.spanRad < selection.current.spanRad);
   });
 
-  it('moves outside a 90-degree corner and improves the span', () => {
+  it('90度配置の外側へ移動してspanを改善する', () => {
     const selection = chooseBestThreatPosition(
       { x: 0, z: 0 },
       [{ x: 0, z: 5 }, { x: 5, z: 0 }],
       { step: 2 }
     );
     assert.equal(selection.moved, true);
-    assert.ok(selection.chosen.position.x < 0);
-    assert.ok(selection.chosen.position.z < 0);
+    assert.ok(selection.chosen.pathMinEnemyDistance >= 1.8);
     assert.ok(selection.chosen.spanRad < selection.current.spanRad);
   });
 
-  it('prefers a safe improvement over a zero-span position beside an enemy', () => {
+  it('局所的な横移動で妥協せず敵列延長上の安全な位置を選ぶ', () => {
+    const selection = chooseBestThreatPosition(
+      { x: -5, z: 6.75 },
+      [{ x: 0, z: 4 }, { x: 0, z: -4 }],
+      {
+        step: 2.25,
+        minEnemyDistance: 1.8,
+        ownerPos: { x: -5, z: 0 },
+        maxOwnerDistance: 8
+      }
+    );
+    assert.equal(selection.moved, true);
+    assert.ok(Math.abs(selection.chosen.position.z) > 4);
+    assert.ok(spanDegrees(selection.chosen.spanRad) <= 35);
+    assert.ok(selection.chosen.pathMinEnemyDistance >= 1.8);
+  });
+
+  it('敵の隣にあるspan 0の位置より安全な改善位置を優先する', () => {
     const selection = chooseBestThreatPosition(
       { x: 0, z: 0 },
       [{ x: -2, z: 0 }, { x: 2, z: 0 }],
@@ -204,7 +220,7 @@ describe('threatArc positioning', () => {
     assert.ok(selection.chosen.minEnemyDistance >= 1.8);
   });
 
-  it('handles bearings that cross the -PI/PI boundary', () => {
+  it('-PIとPIをまたぐ方位を正しく扱う', () => {
     const arc = computeThreatArc(
       { x: 0, z: 0 },
       [{ x: 0.1, z: -5 }, { x: -0.1, z: -5 }]
@@ -213,7 +229,7 @@ describe('threatArc positioning', () => {
     assert.ok(spanDegrees(arc!.spanRad) < 3);
   });
 
-  it('is invariant to threat ordering and translation', () => {
+  it('脅威の列挙順と平行移動に対して不変である', () => {
     const bot = { x: 0, z: 0 };
     const threats = [{ x: 0, z: 5 }, { x: 5, z: 0 }, { x: 2, z: -4 }];
     const first = chooseBestThreatPosition(bot, threats, { step: 2 });
@@ -232,7 +248,7 @@ describe('threatArc positioning', () => {
     approximately(translated.chosen.position.z, first.chosen.position.z + offset.z);
   });
 
-  it('rotates the chosen position with the complete fixed layout', () => {
+  it('固定配置全体の回転に合わせて選択位置も回転する', () => {
     const rotate = ({ x, z }: { x: number; z: number }) => ({ x: z, z: -x });
     const bot = { x: 0, z: 0 };
     const threats = [{ x: 0, z: 5 }, { x: 5, z: 0 }];
@@ -249,7 +265,7 @@ describe('threatArc positioning', () => {
     approximately(rotated.chosen.spanRad, first.chosen.spanRad);
   });
 
-  it('applies enter/exit hysteresis boundaries', () => {
+  it('開始・終了ヒステリシス境界を適用する', () => {
     assert.equal(
       shouldEnterArcNarrowing({
         threatCount: 2,
@@ -268,8 +284,8 @@ describe('threatArc positioning', () => {
     assert.equal(shouldExitArcNarrowing(EXIT_ARC_NARROW_SPAN_RAD * 1.1), false);
   });
 
-  it('converts world bearings using Mineflayer yaw instead of the opposite axis', () => {
-    // yaw 0 faces -Z. Moving toward +Z therefore means pressing back.
+  it('逆軸ではなくMineflayer yawでワールド方位を変換する', () => {
+    // yaw 0は-Zを向くため、+Zへの移動ではbackを押す。
     assert.deepEqual(movementControlsTowardBearing(0, 0), {
       forward: false, back: true, left: false, right: false
     });
@@ -281,7 +297,7 @@ describe('threatArc positioning', () => {
     });
   });
 
-  it('keeps single-ranged-enemy dodge perpendicular across yaw boundaries', () => {
+  it('yaw境界をまたいでも単体遠距離敵への回避を直交方向に保つ', () => {
     const movementVector = (
       controls: ReturnType<typeof movementControlsTowardBearing>,
       yaw: number
@@ -308,7 +324,7 @@ describe('threatArc positioning', () => {
     }
   });
 
-  it('dodges perpendicular to the aggregated line after multi-threat positioning', () => {
+  it('複数脅威の位置取り後は集約射線と直交する方向へ回避する', () => {
     const threats = [{ x: 0, z: 5 }, { x: 5, z: 0 }];
     const selected = chooseBestThreatPosition({ x: 0, z: 0 }, threats, { step: 2 });
     const narrowed = computeThreatArc(selected.chosen.position, threats);
@@ -320,7 +336,7 @@ describe('threatArc positioning', () => {
     approximately(line.x * movement.x + line.z * movement.z, 0);
   });
 
-  it('keeps the open-side strafe sign deterministic', () => {
+  it('空いた側への横移動方向を決定論的に選ぶ', () => {
     const bot = { x: 0, z: 0 };
     const arc = computeThreatArc(bot, [{ x: 2, z: 4 }, { x: 4, z: 2 }]);
     assert.ok(arc);
@@ -331,7 +347,7 @@ describe('threatArc positioning', () => {
     }), 1);
   });
 
-  it('exposes danger and movement costs in candidate evaluation', () => {
+  it('候補評価に危険度と移動コストを含める', () => {
     const evaluated = evaluateThreatPosition({
       origin: { x: 0, z: 0 },
       candidate: { x: 1.5, z: 0 },
@@ -339,15 +355,17 @@ describe('threatArc positioning', () => {
       minEnemyDistance: 1.8
     });
     assert.ok(evaluated.dangerPenalty > 0);
+    assert.ok(evaluated.pathDangerPenalty > 0);
     assert.ok(evaluated.movementPenalty > 0);
     assert.equal(evaluated.score,
       evaluated.spanRad + evaluated.dangerPenalty
-      + evaluated.ownerPenalty + evaluated.movementPenalty);
+      + evaluated.pathDangerPenalty + evaluated.ownerPenalty
+      + evaluated.movementPenalty);
   });
 });
 
-describe('positioning combat intent', () => {
-  it('keeps attack intent while a close target is reachable during positioning', () => {
+describe('位置取り中の戦闘意図', () => {
+  it('位置取り中でも近い対象へ届くなら攻撃意図を維持する', () => {
     const intent = decideCombatIntent({
       distanceToPrimary: 3,
       meleeAttackRange: 3.5,
@@ -360,7 +378,7 @@ describe('positioning combat intent', () => {
     assert.equal(intent.priority, 'attack');
   });
 
-  it('keeps guard under ranged pressure while retaining the possible attack intent', () => {
+  it('攻撃可能性を残しつつ遠距離圧に対する防御を維持する', () => {
     const intent = decideCombatIntent({
       distanceToPrimary: 3,
       meleeAttackRange: 3.5,
@@ -374,7 +392,7 @@ describe('positioning combat intent', () => {
     assert.equal(intent.priority, 'guard');
   });
 
-  it('keeps dodge under ranged pressure when no shield is available', () => {
+  it('盾がない場合は遠距離圧に対する回避を維持する', () => {
     const intent = decideCombatIntent({
       distanceToPrimary: 5,
       meleeAttackRange: 3.5,
@@ -387,7 +405,7 @@ describe('positioning combat intent', () => {
     assert.equal(intent.priority, 'dodge');
   });
 
-  it('lets an in-range attack break ranged dodge pressure', () => {
+  it('攻撃距離へ入ったら遠距離回避より攻撃を優先する', () => {
     const intent = decideCombatIntent({
       distanceToPrimary: 3.4,
       meleeAttackRange: 3.5,
@@ -401,7 +419,7 @@ describe('positioning combat intent', () => {
     assert.equal(intent.priority, 'attack');
   });
 
-  it('starts a bounded dodge and enters an explicit advance at the burst limit', () => {
+  it('上限付き回避を開始しバースト上限で明示的な前進へ移る', () => {
     const started = decideRangedDodgeBurst({
       now: 1000,
       underRangedPressure: true,
@@ -426,7 +444,7 @@ describe('positioning combat intent', () => {
     assert.equal(atLimit.dodge, false);
   });
 
-  it('keeps advancing while distance improves instead of chaining bursts', () => {
+  it('距離が改善している間は回避を連鎖せず前進を続ける', () => {
     const started = decideRangedDodgeBurst({
       now: 1000,
       underRangedPressure: true,
@@ -440,7 +458,7 @@ describe('positioning combat intent', () => {
     const firstAdvance = decideRangedDodgeBurst({
       now: 1600,
       underRangedPressure: true,
-      // The lateral dodge may initially increase distance.
+      // 横回避の開始直後は距離が広がることがある。
       distanceToPrimary: 9,
       meleeAttackRange: 3.5,
       latch: started.latch,
@@ -464,7 +482,7 @@ describe('positioning combat intent', () => {
     assert.equal(continued.latch.bestDistance, 7.5);
   });
 
-  it('restarts defense only after advance stalls, expires, or takes a fresh hit', () => {
+  it('前進停滞・期限・新規被弾時だけ防御を再開する', () => {
     const started = decideRangedDodgeBurst({
       now: 1000,
       underRangedPressure: true,
@@ -523,7 +541,7 @@ describe('positioning combat intent', () => {
     assert.equal(expired.phase, 'dodge');
   });
 
-  it('ends an active dodge immediately when attack range becomes available', () => {
+  it('攻撃距離へ入ったら進行中の回避を即座に終了する', () => {
     const decision = decideRangedDodgeBurst({
       now: 1200,
       underRangedPressure: true,
@@ -544,8 +562,8 @@ describe('positioning combat intent', () => {
   });
 });
 
-describe('tactical ownership latch', () => {
-  it('keeps combat ownership through a short target gap then releases it', () => {
+describe('戦術所有権ラッチ', () => {
+  it('短い対象消失中は戦闘所有権を保ち、その後解除する', () => {
     const engagedUntil = refreshCombatControlUntil({
       now: 1000,
       previousUntil: 0,
@@ -557,7 +575,7 @@ describe('tactical ownership latch', () => {
     assert.equal(combatOwnsControl(2500, engagedUntil), false);
   });
 
-  it('refreshes ownership on threat or damage but not an empty observation', () => {
+  it('脅威・被弾では所有権を更新し、空の観測では更新しない', () => {
     const unchanged = refreshCombatControlUntil({
       now: 1500,
       previousUntil: 2000,
@@ -575,8 +593,8 @@ describe('tactical ownership latch', () => {
   });
 });
 
-describe('CombatEpisodeTracker scoring', () => {
-  it('rewards kills and penalizes damage', () => {
+describe('CombatEpisodeTrackerの採点', () => {
+  it('撃破を加点し被弾を減点する', () => {
     const tracker = new CombatEpisodeTracker();
     const episode = tracker.begin({
       context: { enemyClass: 'melee', hasShield: false },
@@ -598,7 +616,7 @@ describe('CombatEpisodeTracker scoring', () => {
     assert.equal(episode.presetId, 'melee-baseline');
   });
 
-  it('updates peak enemy count without splitting the episode', () => {
+  it('エピソードを分割せず最大敵数を更新する', () => {
     const tracker = new CombatEpisodeTracker();
     tracker.begin({
       context: { enemyClass: 'melee', hasShield: false },
@@ -614,7 +632,7 @@ describe('CombatEpisodeTracker scoring', () => {
     assert.ok(tracker.current);
   });
 
-  it('marks interrupted episodes unlearnable', () => {
+  it('割り込まれたエピソードを学習対象外にする', () => {
     const tracker = new CombatEpisodeTracker();
     tracker.begin({
       context: { enemyClass: 'melee', hasShield: true },
@@ -631,14 +649,14 @@ describe('CombatEpisodeTracker scoring', () => {
   });
 });
 
-describe('CombatOptimizer + StateStore', () => {
-  it('restores defaults from corrupt JSON', () => {
+describe('CombatOptimizerとStateStore', () => {
+  it('破損したJSONから既定値へ復元する', () => {
     const state = normalizeCombatState({ version: 999, contexts: 'nope' });
     assert.equal(state.version, 2);
     assert.deepEqual(state.contexts, {});
   });
 
-  it('persists and reloads learning state atomically', () => {
+  it('学習状態を原子的に保存・再読込する', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trailmate-combat-'));
     const filePath = path.join(dir, 'combat-state.json');
     const store = new CombatStateStore(filePath);
@@ -661,7 +679,7 @@ describe('CombatOptimizer + StateStore', () => {
     assert.equal(entry.presets['melee-defensive'].trials, 1);
   });
 
-  it('rolls back an exploring preset after fatal damage', () => {
+  it('致命的被弾後に探索中プリセットをロールバックする', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trailmate-combat-'));
     const store = new CombatStateStore(path.join(dir, 'combat-state.json'));
     const optimizer = new CombatOptimizer(store, {
@@ -711,7 +729,7 @@ describe('CombatOptimizer + StateStore', () => {
     assert.equal(entry.selectedPresetId, baselinePresetId(ctx));
   });
 
-  it('skips learning updates for interrupted episodes', () => {
+  it('割り込まれたエピソードでは学習を更新しない', () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trailmate-combat-'));
     const store = new CombatStateStore(path.join(dir, 'combat-state.json'));
     const optimizer = new CombatOptimizer(store, { enabled: true });

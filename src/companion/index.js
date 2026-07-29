@@ -155,7 +155,7 @@ export async function startCompanion(agent, companionConfig = {}) {
         const preferGearRecovery = !recoveryActive && needsGearRecovery(agent.bot)
             && findOwnGravesNear(agent.bot, agent.bot.username, graveRadius).length > 0;
 
-        // Combat always ticks — even while loot/grave interrupts block the rest of the loop.
+        // 回収・墓割り込みが他処理を止めていても、戦闘tickは必ず実行する。
         try {
             await agent.reflexes?.tick?.({
                 movementHeld: !!ctx.movement?.isHeld,

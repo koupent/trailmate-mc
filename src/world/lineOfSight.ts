@@ -1,6 +1,6 @@
 /**
- * True when nothing solid sits between two entity heads.
- * Used to tell "same room" from "on the other side of a door or wall".
+ * 2つのエンティティの頭部間に固体ブロックがなければ true。
+ * 「同じ部屋」と「扉や壁の向こう側」を区別するために使う。
  */
 
 type PosOffset = {
@@ -31,7 +31,7 @@ export function hasLineOfSightFrom(
 }
 
 /**
- * Bot → target line of sight.
+ * Botから対象への視線判定。
  */
 export function hasLineOfSight(
   bot: {

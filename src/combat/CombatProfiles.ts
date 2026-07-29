@@ -1,6 +1,6 @@
 /**
- * Pure combat policy: enemy classification and safe presets.
- * Context is enemy class × shield only (no enemy-count buckets).
+ * 敵分類と安全なプリセットを定める純粋な戦闘方針。
+ * コンテキストは敵クラス×盾の有無のみ（敵数バケットは使わない）。
  */
 
 export type EnemyClass = 'melee' | 'agile' | 'ranged' | 'explosive';
@@ -21,17 +21,17 @@ export type CombatPresetParams = {
   strafeSwitchMs: number;
   creeperSoftEvadeRange: number;
   creeperFollowRange: number;
-  /** Keep the current target this long before allowing a switch. */
+  /** 対象切り替えを許可するまで、現在の対象を維持する時間。 */
   focusStickyMs: number;
-  /** 0..1 bias to step away from the crowd centroid while kiting. */
+  /** 引き撃ち時に敵集団の重心から離れる度合い（0～1）。 */
   crowdAvoidBias: number;
-  /** Maximum duration of one world-space ranged dodge burst. */
+  /** ワールド座標上で行う1回の遠距離回避バーストの最大時間。 */
   rangedDodgeBurstMs: number;
-  /** Explicit attack/advance commit window after each dodge burst. */
+  /** 各回避バースト後に確保する明示的な攻撃・前進時間。 */
   rangedDodgeReassessMs: number;
-  /** Raise shield at or above this many ranged threats. */
+  /** 盾を構える遠距離脅威数の閾値。 */
   guardRangedThreatThreshold: number;
-  /** Minimum candidate score improvement required before repositioning. */
+  /** 位置取りを開始するために必要な候補評価の最小改善量。 */
   positioningImprovementMarginDeg: number;
 };
 
@@ -64,7 +64,7 @@ const EXPLOSIVE_NAMES = new Set([
   'ghast'
 ]);
 
-/** Hard safety bounds — optimizer must never leave this box. */
+/** 最適化器が絶対に越えてはならない安全範囲。 */
 export const PRESET_BOUNDS: {
   [K in keyof CombatPresetParams]: { min: number; max: number };
 } = {
@@ -117,7 +117,7 @@ function adjust(
 }
 
 /**
- * Built-in presets keyed by id. Each context maps to a small candidate set.
+ * IDをキーとする組み込みプリセット。各コンテキストは少数の候補に対応する。
  */
 const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
   'melee-baseline': MELEE_BASELINE,
@@ -265,7 +265,7 @@ export function isExplosiveClass(enemyClass: EnemyClass): boolean {
 }
 
 /**
- * Choose followRange for pvp pathing from the active preset.
+ * 有効なプリセットからPVP経路探索の followRange を選ぶ。
  */
 export function resolveFollowRange(
   params: CombatPresetParams,
@@ -279,7 +279,7 @@ export function resolveFollowRange(
 }
 
 /**
- * Decide whether to strafe / backstep given geometry and preset.
+ * 配置とプリセットから横移動・後退の要否を決める。
  */
 export function decideSpacing(opts: {
   params: CombatPresetParams;
@@ -309,8 +309,8 @@ export function decideSpacing(opts: {
 }
 
 /**
- * Blend backstep direction away from nearby hostile centroid.
- * bias=0 keeps pure target-away vector; bias=1 fully uses clear-space vector.
+ * 後退方向へ、近傍敵の重心から離れる方向を混ぜる。
+ * bias=0 は対象から真っすぐ離れ、bias=1 は空いている方向だけを使う。
  */
 export function blendCrowdAvoidDirection(opts: {
   awayFromTarget: { x: number; z: number };
@@ -353,7 +353,7 @@ export function countNearbyHostiles(
 }
 
 /**
- * Direction away from the average position of nearby hostiles (clear-space bias).
+ * 近傍敵の平均位置から離れる方向（空間の空き方向への補正）。
  */
 export function crowdAwayDirection(
   entities: Record<string | number, any> | null | undefined,

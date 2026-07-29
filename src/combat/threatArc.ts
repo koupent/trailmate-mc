@@ -1,19 +1,19 @@
 /**
- * Pure rule-based positioning for multiple horizontal threats.
+ * 水平方向の複数脅威に対する純粋なルールベース位置取り。
  *
- * Bearings use atan2(dx, dz): 0 points toward +Z and +PI/2 toward +X.
- * Mineflayer yaw uses the opposite forward convention, so callers that need
- * keyboard controls must use movementControlsTowardBearing().
+ * 方位は atan2(dx, dz) を使い、0が+Z、+PI/2が+Xを向く。
+ * Mineflayerのyawは前方の定義が逆なので、移動キーへ変換する呼び出し側は
+ * movementControlsTowardBearing() を使うこと。
  */
 
 export type XZ = { x: number; z: number };
 
 export type ThreatArc = {
-  /** Smallest circular arc covering all usable threat bearings. */
+  /** 有効な全脅威方位を含む最小円弧。 */
   spanRad: number;
-  /** Mid-bearing of the covering arc, toward the threat cluster. */
+  /** 脅威集団を向く包含円弧の中央方位。 */
   midRad: number;
-  /** Bearing opposite the cluster midpoint, toward open space. */
+  /** 集団中央と反対側、空いている方向の方位。 */
   openRad: number;
 };
 
@@ -21,30 +21,32 @@ export type ThreatPositionEvaluation = {
   position: XZ;
   spanRad: number;
   minEnemyDistance: number;
+  pathMinEnemyDistance: number;
   moveDistance: number;
   dangerPenalty: number;
+  pathDangerPenalty: number;
   ownerPenalty: number;
   movementPenalty: number;
   score: number;
 };
 
 export type ThreatPositionOptions = {
-  /** Candidate step used when explicit candidates are not supplied. */
+  /** 明示候補がない場合に使う候補間隔。 */
   step?: number;
-  /** Avoid candidates closer than this to any enemy. */
+  /** いずれかの敵からこの距離未満の候補を避ける。 */
   minEnemyDistance?: number;
-  /** Radians of score penalty per block inside minEnemyDistance. */
+  /** 最小敵距離を下回った1ブロック当たりの評価減点（rad）。 */
   dangerWeight?: number;
-  /** Small tie-break cost per block moved. */
+  /** 同点を解消するための、移動1ブロック当たりの小さなコスト。 */
   movementWeight?: number;
   ownerPos?: XZ | null;
-  /** Soft leash; candidates beyond this radius are penalized. */
+  /** 緩いowner leash。この半径を超える候補を減点する。 */
   maxOwnerDistance?: number;
-  /** Radians of score penalty per block outside maxOwnerDistance. */
+  /** owner最大距離を超えた1ブロック当たりの評価減点（rad）。 */
   ownerWeight?: number;
-  /** Do not move for tiny/noisy score improvements. */
+  /** 小さすぎる、またはノイズ相当の改善では移動しない。 */
   minimumImprovement?: number;
-  /** Optional pre-filtered world positions (stay is always added). */
+  /** 任意の事前選別済みワールド座標（現在地は常に追加する）。 */
   candidates?: XZ[];
 };
 
@@ -62,11 +64,11 @@ export type BearingMovementControls = {
   right: boolean;
 };
 
-/** Ideal maximum threat wedge. */
+/** 理想とする脅威扇形の最大角。 */
 export const TARGET_THREAT_SPAN_RAD = (35 * Math.PI) / 180;
-/** A wide flank where positioning should take priority over ordinary strafe. */
+/** 通常の横移動より位置取りを優先する広い挟撃角。 */
 export const WIDE_THREAT_SPAN_RAD = (90 * Math.PI) / 180;
-/** Enter/exit thresholds provide hysteresis around arc repositioning. */
+/** 開始・終了閾値で円弧位置取りにヒステリシスを持たせる。 */
 export const ENTER_ARC_NARROW_SPAN_RAD = TARGET_THREAT_SPAN_RAD;
 export const EXIT_ARC_NARROW_SPAN_RAD = (25 * Math.PI) / 180;
 
@@ -85,15 +87,15 @@ export function normalizeAngleRad(angle: number): number {
   return normalized;
 }
 
-/** Bearing from from to to in the XZ plane. */
+/** XZ平面上で from から to へ向かう方位。 */
 export function threatBearingRad(from: XZ, to: XZ): number {
   return Math.atan2(to.x - from.x, to.z - from.z);
 }
 
 /**
- * Smallest circular arc that covers every usable threat bearing.
- * Returns null only when fewer than two non-colocated threats are present.
- * Two threats on the same bearing correctly produce a zero-width arc.
+ * 有効な全脅威方位を含む最小円弧。
+ * 同一点でない脅威が2体未満の場合だけ null を返す。
+ * 同じ方位にいる2脅威は、正しく幅0の円弧になる。
  */
 export function computeThreatArc(botPos: XZ, threats: XZ[]): ThreatArc | null {
   const angles: number[] = [];
@@ -127,7 +129,7 @@ export function computeThreatArc(botPos: XZ, threats: XZ[]): ThreatArc | null {
   return { spanRad, midRad, openRad };
 }
 
-/** Stay plus eight equally spaced candidates around the bot. */
+/** 現在地と、Bot周囲に等間隔で置いた8候補。 */
 export function generateThreatPositionCandidates(botPos: XZ, step = DEFAULT_STEP): XZ[] {
   const candidates: XZ[] = [{ ...botPos }];
   for (let index = 0; index < 8; index += 1) {
@@ -138,6 +140,39 @@ export function generateThreatPositionCandidates(botPos: XZ, step = DEFAULT_STEP
     });
   }
   return candidates;
+}
+
+/**
+ * 広域戦術候補。同心円と、脅威集団の外端を越えた地点を生成する。
+ * 後者により、小さな横移動のspan改善で妥協せず、敵列の片端より
+ * 外側へ回り込める。
+ */
+export function generateStrategicThreatPositionCandidates(
+  botPos: XZ,
+  threats: XZ[],
+  step = DEFAULT_STEP,
+  minEnemyDistance = DEFAULT_MIN_ENEMY_DISTANCE
+): XZ[] {
+  const rings = [1, 2, 3].flatMap((multiplier) => (
+    generateThreatPositionCandidates(botPos, step * multiplier).slice(1)
+  ));
+  const centroid = threats.reduce((sum, threat) => ({
+    x: sum.x + threat.x / threats.length,
+    z: sum.z + threat.z / threats.length
+  }), { x: 0, z: 0 });
+  const extensionDistance = minEnemyDistance + 0.5;
+  const extensions: XZ[] = [];
+  for (const threat of threats) {
+    const dx = threat.x - centroid.x;
+    const dz = threat.z - centroid.z;
+    const length = Math.hypot(dx, dz);
+    if (length < POSITION_EPSILON) continue;
+    extensions.push({
+      x: threat.x + (dx / length) * extensionDistance,
+      z: threat.z + (dz / length) * extensionDistance
+    });
+  }
+  return dedupePositions([{ ...botPos }, ...rings, ...extensions]);
 }
 
 export function evaluateThreatPosition(opts: {
@@ -156,10 +191,17 @@ export function evaluateThreatPosition(opts: {
   const minEnemyDistance = opts.threats.reduce((minimum, threat) => (
     Math.min(minimum, distance2(opts.candidate, threat))
   ), Infinity);
+  const pathMinEnemyDistance = opts.threats.reduce((minimum, threat) => (
+    Math.min(minimum, distanceToSegment(threat, opts.origin, opts.candidate))
+  ), Infinity);
   const moveDistance = distance2(opts.origin, opts.candidate);
   const safeDistance = opts.minEnemyDistance ?? DEFAULT_MIN_ENEMY_DISTANCE;
   const dangerPenalty = Number.isFinite(minEnemyDistance)
     ? Math.max(0, safeDistance - minEnemyDistance)
+      * (opts.dangerWeight ?? DEFAULT_DANGER_WEIGHT)
+    : 0;
+  const pathDangerPenalty = Number.isFinite(pathMinEnemyDistance)
+    ? Math.max(0, safeDistance - pathMinEnemyDistance)
       * (opts.dangerWeight ?? DEFAULT_DANGER_WEIGHT)
     : 0;
   const movementPenalty = moveDistance
@@ -176,18 +218,19 @@ export function evaluateThreatPosition(opts: {
     position: { ...opts.candidate },
     spanRad,
     minEnemyDistance,
+    pathMinEnemyDistance,
     moveDistance,
     dangerPenalty,
+    pathDangerPenalty,
     ownerPenalty,
     movementPenalty,
-    score: spanRad + dangerPenalty + ownerPenalty + movementPenalty
+    score: spanRad + dangerPenalty + pathDangerPenalty + ownerPenalty + movementPenalty
   };
 }
 
 /**
- * Select a nearby position with a narrower threat wedge. Angle is the primary
- * objective; danger, owner leash, movement cost, and a minimum improvement
- * prevent unsafe or jittery choices.
+ * 脅威扇形が狭くなる位置を選ぶ。角度を主評価とし、危険度、owner leash、
+ * 移動コスト、最小改善量によって危険な選択や細かな揺れを防ぐ。
  */
 export function chooseBestThreatPosition(
   botPos: XZ,
@@ -197,7 +240,12 @@ export function chooseBestThreatPosition(
   const candidates = dedupePositions([
     { ...botPos },
     ...(options.candidates
-      ?? generateThreatPositionCandidates(botPos, options.step).slice(1))
+      ?? generateStrategicThreatPositionCandidates(
+        botPos,
+        threats,
+        options.step,
+        options.minEnemyDistance
+      ).slice(1))
   ]);
   const evaluate = (candidate: XZ) => evaluateThreatPosition({
     origin: botPos,
@@ -212,7 +260,7 @@ export function chooseBestThreatPosition(
   });
   const current = evaluate(botPos);
 
-  // Single-target behavior remains under the existing combat spacing policy.
+  // 単一対象の挙動は既存の戦闘間合い方針に任せる。
   if (usableThreatCount(botPos, threats) < 2) {
     return { current, chosen: current, moved: false, improvement: 0 };
   }
@@ -232,9 +280,23 @@ export function chooseBestThreatPosition(
   return { current, chosen: best, moved: best.moveDistance > POSITION_EPSILON, improvement };
 }
 
+function distanceToSegment(point: XZ, start: XZ, end: XZ): number {
+  const dx = end.x - start.x;
+  const dz = end.z - start.z;
+  const lengthSquared = dx * dx + dz * dz;
+  if (lengthSquared < POSITION_EPSILON) return distance2(point, start);
+  const projection = Math.max(0, Math.min(1, (
+    (point.x - start.x) * dx + (point.z - start.z) * dz
+  ) / lengthSquared));
+  return Math.hypot(
+    point.x - (start.x + projection * dx),
+    point.z - (start.z + projection * dz)
+  );
+}
+
 /**
- * Convert a world bearing to movement keys for Mineflayer yaw.
- * Mineflayer yaw 0 faces -Z, while threat bearings use 0 = +Z.
+ * ワールド方位をMineflayer yaw基準の移動キーへ変換する。
+ * Mineflayerのyaw 0は-Zを向くが、脅威方位の0は+Zを向く。
  */
 export function movementControlsTowardBearing(
   bearingRad: number,
@@ -253,7 +315,7 @@ export function movementControlsTowardBearing(
   };
 }
 
-/** Pick one of the two world-space directions perpendicular to an incoming line. */
+/** 入射方向と直交するワールド座標上の2方向から一方を選ぶ。 */
 export function perpendicularDodgeBearing(
   threatBearing: number,
   side: 1 | -1

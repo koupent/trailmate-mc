@@ -32,8 +32,8 @@ import { scanCompanionAwareness } from '../src/world/companionAwareness.js';
 import { createOwnerWorkState, OWNER_WORK_PHASES } from '../src/companion/ownerWorkTracker.js';
 import { selectControlOwner } from '../src/companion/ControlPriority.js';
 
-describe('companion control priority', () => {
-    it('keeps the hierarchical ownership transition table small and explicit', () => {
+describe('相棒の制御優先順位', () => {
+    it('階層型所有権の遷移表を小さく明示的に保つ', () => {
         const cases = [
             [{ upperMode: 'follow' }, 'follow'],
             [{ upperMode: 'wait' }, 'wait'],
@@ -341,7 +341,7 @@ describe('death recovery state', () => {
         assert.equal(ctx.deathRecovery.deathPos.x, 12);
         assert.equal(ctx.deathRecovery.deathDim, 'minecraft:overworld');
         assert.equal(ctx.movement.stopped, true);
-        // Death must not silence combat reflexes via holdReflexes.
+        // 死亡処理がholdReflexes経由で戦闘Reflexesを止めてはならない。
         assert.equal(ctx.holdReflexes, false);
 
         const started = beginDeathReturnAfterSpawn(ctx);
@@ -351,7 +351,7 @@ describe('death recovery state', () => {
         assert.equal(ctx.holdReflexes, true);
     });
 
-    it('DeathReturnInterrupt retains Recovery ownership at the death site', async () => {
+    it('DeathReturnInterruptは死亡地点でもRecovery所有権を維持する', async () => {
         const ctx = makeCtx();
         captureDeathState(ctx);
         beginDeathReturnAfterSpawn(ctx);
@@ -375,7 +375,7 @@ describe('death recovery state', () => {
         assert.deepEqual(ctx.deathRecovery.collectionOrigin, { x: 12, y: 70, z: -4 });
     });
 
-    it('falls back to common ItemCollection when no grave appears', async () => {
+    it('墓が現れない場合は共通ItemCollectionへ切り替える', async () => {
         const ctx = makeCtx();
         ctx.config.death_return.grave_wait_ms = 0;
         captureDeathState(ctx);
@@ -430,7 +430,7 @@ describe('OwnGraveInterrupt gating', () => {
         assert.equal(interrupt.shouldRun(ctx), false);
     });
 
-    it('shouldRun is true for own named grave within awareness radius', () => {
+    it('10ブロック以内に自分名義の墓があればshouldRunがtrueになる', () => {
         const interrupt = new OwnGraveInterrupt();
         const ctx = withAwareness({
             bot: {
@@ -569,12 +569,12 @@ describe('NearbyLootInterrupt', () => {
         return ctx;
     }
 
-    it('shouldRun is true when ground items are within awareness radius', () => {
+    it('半径内に地面アイテムがあればshouldRunがtrueになる', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx()), true);
     });
 
-    it('does not let ordinary nearby loot steal a recovery travel destination', () => {
+    it('通常の近傍回収がRecovery移動目的地を奪わない', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
             itemPos: new Vec3(2, 64, 0),
@@ -582,7 +582,7 @@ describe('NearbyLootInterrupt', () => {
         })), false);
     });
 
-    it('shouldRun picks up drops near the owner when not deferring', () => {
+    it('作業退避中でなければowner近傍のドロップも回収する', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
             botPos: new Vec3(2, 64, 0),
@@ -591,7 +591,7 @@ describe('NearbyLootInterrupt', () => {
         })), true);
     });
 
-    it('shouldRun is false while owner work is deferring', () => {
+    it('owner作業から退避中はshouldRunがfalseになる', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
             itemPos: new Vec3(3, 64, 0),
@@ -599,7 +599,7 @@ describe('NearbyLootInterrupt', () => {
         })), false);
     });
 
-    it('shouldRun is false while owner work is in cooldown', () => {
+    it('owner作業後のcooldown中はshouldRunがfalseになる', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
             itemPos: new Vec3(3, 64, 0),
@@ -607,7 +607,7 @@ describe('NearbyLootInterrupt', () => {
         })), false);
     });
 
-    it('shouldRun still loots during death recovery even if owner work is deferring', () => {
+    it('owner作業から退避中でもdeathRecoveryの回収を続ける', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
             botPos: new Vec3(2, 64, 0),
@@ -635,7 +635,7 @@ describe('NearbyLootInterrupt', () => {
         })), true);
     });
 
-    it('shouldRun is false when a protect threat is near the owner', () => {
+    it('owner近傍に護衛脅威がいればshouldRunがfalseになる', () => {
         const interrupt = new NearbyLootInterrupt();
         const ctx = makeLootCtx({
             botPos: new Vec3(0, 64, 0),
@@ -663,6 +663,7 @@ describe('NearbyLootInterrupt', () => {
         };
         ctx.getCompanionAwareness = () => scanCompanionAwareness(ctx.bot, 10, ctx.bot.entity.position);
         ctx.invalidateCompanionAwareness = () => {};
+        // アイテムがなければgrace+quiet後、最大時間より十分早く終了する。
         const started = Date.now();
         const attempts = await pickupNearbyItems(ctx, {
             radius: 5,
@@ -677,7 +678,7 @@ describe('NearbyLootInterrupt', () => {
         assert.ok(elapsed < 2000, `expected early clear, elapsed=${elapsed}`);
     });
 
-    it('Recovery reuses ItemCollection, owns grave drops despite combat, then equips', async () => {
+    it('RecoveryがItemCollectionを再利用し戦闘中も墓ドロップを所有して装備する', async () => {
         let equipped = 0;
         const ctx = makeLootCtx({ deathActive: true, deathPhase: 'items' });
         ctx.deathRecovery = {

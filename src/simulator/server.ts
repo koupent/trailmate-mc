@@ -26,7 +26,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET') {
       const file = url.pathname === '/' ? 'index.html' : url.pathname.slice(1);
       if (!['index.html', 'app.js', 'styles.css'].includes(file)) {
-        return json(response, 404, { error: 'not found' });
+        return json(response, 404, { error: '見つかりません' });
       }
       const body = await fs.readFile(path.join(publicDir, file));
       response.writeHead(200, {
@@ -39,7 +39,7 @@ const server = http.createServer(async (request, response) => {
       response.end(body);
       return;
     }
-    json(response, 405, { error: 'method not allowed' });
+    json(response, 405, { error: '許可されていないメソッドです' });
   } catch (error) {
     json(response, 500, { error: error instanceof Error ? error.message : String(error) });
   }
@@ -55,7 +55,7 @@ async function readJson<T>(request: http.IncomingMessage): Promise<T> {
   for await (const chunk of request) {
     const buffer = Buffer.from(chunk);
     size += buffer.length;
-    if (size > 1_000_000) throw new Error('request too large');
+    if (size > 1_000_000) throw new Error('リクエストが大きすぎます');
     chunks.push(buffer);
   }
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T;

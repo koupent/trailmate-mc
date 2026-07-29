@@ -25,8 +25,7 @@ const DEFAULT_RECOVERY_QUIET_MS = 750;
 /**
  * Pick up ground-item entities near the bot.
  * Independent from grave digging / death-return travel — those only get the bot near loot.
- * Suspended while the owner is working (deferring / post-work cooldown).
- * Yields to escort combat (never freezes self-defense).
+ * オーナーの作業中は通常回収を止め、護衛戦闘へ制御を譲る。
  */
 export class NearbyLootInterrupt {
     constructor() {
@@ -85,8 +84,8 @@ export class NearbyLootInterrupt {
         const graceMs = cfg.grace_ms ?? DEFAULT_GRACE_MS;
 
         if (recovering && !recovery.collectionDeadlineAt) {
-            // Backward-compatible initialization for an in-flight recovery from
-            // an older state shape or a test fixture.
+            // 旧形式の状態やテストfixtureから進行中Recoveryを引き継ぐための
+            // 後方互換初期化。
             requestRecoveryItemCollection(
                 ctx,
                 recovery.collectionOrigin || recovery.deathPos,
@@ -111,14 +110,14 @@ export class NearbyLootInterrupt {
 
         ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
         ctx.nearbyLoot.active = true;
-        // Soft hold: torch / idle chores only. Combat reflexes still tick.
+        // 軽い保留は松明・待機作業だけに適用し、戦闘Reflexesは継続する。
         ctx.holdReflexes = true;
 
         try {
             await pickupNearbyItems(ctx, {
                 radius,
                 durationMs,
-                // Recovery has its own capture/quiet/deadline completion rule.
+                // Recovery固有のcapture・quiet・deadline完了規則に従う。
                 untilClear: !recovering,
                 quietMs: recovering ? Math.max(quietMs, recoveryQuietMs) : quietMs,
                 graceMs: recovering

@@ -1,6 +1,6 @@
 /**
- * Small hierarchical ownership policy. Capabilities keep their own local
- * scoring; this only decides which context may issue movement/look/actions.
+ * 小さな階層型所有権方針。各Capabilityは固有の評価を維持し、ここでは
+ * 移動・視線・行動を発行できるコンテキストだけを決める。
  *
  * @param {{
  *   recoveryActive?: boolean,
@@ -19,7 +19,7 @@ export function selectControlOwner(input = {}) {
     return input.upperMode === 'wait' ? 'wait' : 'follow';
 }
 
-/** Resolve the policy from live CompanionContext state. */
+/** 現在の CompanionContext 状態から所有権方針を解決する。 */
 export function currentControlOwner(ctx, upperMode = 'follow', now = Date.now()) {
     const reflexes = ctx?.agent?.reflexes;
     const combatActive = Boolean(

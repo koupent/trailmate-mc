@@ -130,8 +130,8 @@ export async function approachPlayer(ctx, player, shouldAbort) {
     const start = Date.now();
     while (Date.now() - start < APPROACH_TIMEOUT_MS) {
         if (shouldAbort?.()) {
-            // Release only our owner goal. If combat already installed a pvp
-            // goal, MovementController.hasGoal is false and we leave it alone.
+            // この処理が設定したowner目的地だけを解除する。戦闘側が既にpvp目的地を
+            // 設定している場合、MovementController.hasGoalはfalseなので触れない。
             if (ctx.movement?.hasGoal) ctx.movement.stop?.();
             return 'deferred';
         }

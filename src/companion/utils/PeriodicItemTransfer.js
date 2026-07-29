@@ -103,8 +103,8 @@ export class PeriodicItemTransfer {
         }
 
         const result = await this._transfer(ctx, stacks);
-        // Combat preemption is not a completed share attempt. Retry after the
-        // tactical release latch clears rather than waiting a full interval.
+        // 戦闘による中断は受け渡し完了ではない。通常間隔を待たず、
+        // 戦術所有権ラッチの解除後に再試行する。
         if (result !== 'deferred') this._lastRunAt = Date.now();
     }
 

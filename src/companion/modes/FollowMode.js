@@ -56,7 +56,7 @@ export class FollowMode extends Mode {
 
         ctx.movement.tickHoldWatchdog();
 
-        // Recovery supplies the destination; Follow only retains owner context.
+        // 目的地はRecoveryが供給し、Followはownerコンテキストだけを保持する。
         if (currentControlOwner(ctx, 'follow') !== 'follow') {
             const owner = ctx.ownerEntity;
             if (owner) this._rememberOwner(ctx, owner);

@@ -152,12 +152,12 @@ export class MovementController {
         try {
             this.bot.pathfinder.setGoal(null);
         } catch {
-            // pathfinder may not be ready yet
+            // pathfinderがまだ準備できていない場合がある
         }
     }
 
     /**
-     * Toggle pathfinder sprint. Follow stays walk-only; combat retreat enables sprint.
+     * pathfinderのダッシュを切り替える。Followは歩行を維持し、戦闘退避時だけ有効にする。
      * @param {boolean} allowed
      */
     setSprintAllowed(allowed) {
@@ -167,7 +167,7 @@ export class MovementController {
         try {
             this.bot.pathfinder.setMovements(this.movements);
         } catch {
-            // pathfinder may not be ready yet
+            // pathfinderがまだ準備できていない場合がある
         }
     }
 

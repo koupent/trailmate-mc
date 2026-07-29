@@ -17,6 +17,7 @@ import {
     createDeathRecoveryState,
     requestRecoveryItemCollection
 } from '../src/companion/deathRecovery.js';
+import { scanCompanionAwareness } from '../src/world/companionAwareness.js';
 
 const REFLEX_CONFIG = {
     self_defense: true,
@@ -38,8 +39,8 @@ const REFLEX_CONFIG = {
 };
 
 /**
- * Deterministic minimal 3D world. It models only the Mineflayer boundaries used
- * by tactical movement, upper ownership, grave recovery and ItemCollection.
+ * 決定論的な最小3Dワールド。戦術移動、上位所有権、墓復旧、ItemCollectionが
+ * 利用するMineflayer境界だけをモデル化する。
  */
 class VirtualWorld {
     constructor() {
@@ -183,6 +184,12 @@ class VirtualWorld {
             itemTransfer: { active: false },
             holdReflexes: false
         };
+        this.ctx.getCompanionAwareness = () => scanCompanionAwareness(
+            this.bot,
+            this.config.awareness_radius ?? 10,
+            this.bot.entity.position
+        );
+        this.ctx.invalidateCompanionAwareness = () => {};
         Object.defineProperty(this.ctx, 'ownerEntity', {
             get: () => this.ctx.ownerName ? this.bot.players[this.ctx.ownerName]?.entity || null : null
         });
@@ -291,6 +298,21 @@ class VirtualWorld {
         this.moveTo(this.bot.entity.position.offset(dx / norm * distance, 0, dz / norm * distance));
     }
 
+    advanceDestination(distance = 0.55) {
+        if (!this.pendingDestination) return;
+        const delta = this.pendingDestination.minus(this.bot.entity.position);
+        const remaining = delta.norm();
+        if (remaining <= distance) {
+            this.moveTo(this.pendingDestination);
+            return;
+        }
+        this.moveTo(this.bot.entity.position.offset(
+            (this.pendingDestination.x - this.bot.entity.position.x) / remaining * distance,
+            0,
+            (this.pendingDestination.z - this.bot.entity.position.z) / remaining * distance
+        ));
+    }
+
     async combatTick() {
         await this.reflexes.tick({
             movementHeld: false,
@@ -318,8 +340,8 @@ class VirtualWorld {
     }
 }
 
-describe('deterministic virtual 3D companion scenarios', () => {
-    it('single ranged threat: dodge -> advance -> attack', async () => {
+describe('決定論的な仮想3D相棒シナリオ', () => {
+    it('単体遠距離脅威: 回避→前進→攻撃', async () => {
         const world = new VirtualWorld();
         world.setOwner(0);
         const skeleton = world.addEnemy('skeleton', 6);
@@ -343,23 +365,42 @@ describe('deterministic virtual 3D companion scenarios', () => {
         assert.equal(world.reflexes.rangedDodgeLatch.advanceUntil, 0);
     });
 
-    it('multiple threats: positioning improves arc while attack intent remains live', async () => {
+    it('複数脅威: 敵列の外側へ移動し35度未満へ収束する', async () => {
         const world = new VirtualWorld();
-        world.setOwner(0);
-        const front = world.addEnemy('zombie', 0, 64, 3);
-        const back = world.addEnemy('zombie', 0, 64, -3);
+        const owner = world.setOwner(-5);
+        const front = world.addEnemy('zombie', 0, 64, 4);
+        const back = world.addEnemy('zombie', 0, 64, -4);
         const before = computeThreatArc(world.bot.entity.position, [front.position, back.position]);
+        let reached = false;
 
-        await world.combatTick();
-        const destination = world.destinations.at(-1);
-        const after = computeThreatArc(destination, [front.position, back.position]);
-        assert.ok(destination);
+        for (let tick = 0; tick < 30; tick += 1) {
+            world.reflexes.arcRepositionUntil = 0;
+            await world.combatTick();
+            assert.equal(currentControlOwner(world.ctx), 'combat');
+            assert.ok(world.pendingDestination);
+            world.advanceDestination();
+
+            const minEnemyDistance = Math.min(
+                world.bot.entity.position.distanceTo(front.position),
+                world.bot.entity.position.distanceTo(back.position)
+            );
+            const ownerDistance = world.bot.entity.position.distanceTo(owner.position);
+            const current = computeThreatArc(world.bot.entity.position, [front.position, back.position]);
+            assert.ok(minEnemyDistance >= 1.8 - 1e-6);
+            assert.ok(ownerDistance <= 8 + 1e-6);
+            if (current && current.spanRad <= (35 * Math.PI) / 180
+                && Math.abs(world.bot.entity.position.z) > 4) {
+                reached = true;
+                break;
+            }
+        }
+
+        const after = computeThreatArc(world.bot.entity.position, [front.position, back.position]);
         assert.ok(before && after && after.spanRad < before.spanRad);
-        assert.ok(world.directAttacks >= 1);
-        assert.equal(currentControlOwner(world.ctx), 'combat');
+        assert.ok(reached);
     });
 
-    it('combat ownership suppresses Follow and item transfer movement/look', async () => {
+    it('戦闘所有権がFollowと受け渡しの移動・視線を抑制する', async () => {
         const world = new VirtualWorld();
         world.setOwner(6);
         world.addEnemy('skeleton', 5);
@@ -381,7 +422,7 @@ describe('deterministic virtual 3D companion scenarios', () => {
         assert.equal(world.destinations.length, destinationCount);
     });
 
-    it('death -> grave -> shared ItemCollection -> equip -> combat', async () => {
+    it('死亡→墓→共通ItemCollection→装備→戦闘と遷移する', async () => {
         const world = new VirtualWorld();
         world.setOwner(15);
         world.bot.entity.position = new Vec3(15, 64, 0);
@@ -416,7 +457,7 @@ describe('deterministic virtual 3D companion scenarios', () => {
         assert.ok(world.directAttacks >= 1, 'Combat must attack on the tick after Recovery completes');
     });
 
-    it('repeated emergency aborts do not extend the absolute collection deadline', async () => {
+    it('緊急中断を繰り返しても回収の絶対期限を延長しない', async () => {
         const world = new VirtualWorld();
         world.setOwner(0);
         world.addInventory('iron_sword');
@@ -463,7 +504,7 @@ describe('deterministic virtual 3D companion scenarios', () => {
         assert.ok(world.directAttacks >= 1);
     });
 
-    it('bounded danger interruption returns to the Recovery destination', async () => {
+    it('上限付き危険割り込み後にRecovery目的地へ戻る', async () => {
         const world = new VirtualWorld();
         world.setOwner(0);
         world.bot.entity.position = new Vec3(12, 64, 0);
@@ -486,7 +527,7 @@ describe('deterministic virtual 3D companion scenarios', () => {
         assert.equal(world.ctx.deathRecovery.phase, 'travel');
     });
 
-    it('after the combat stability window, Follow and transfer safely resume', async () => {
+    it('戦闘安定時間後にFollowと受け渡しを安全に再開する', async () => {
         const world = new VirtualWorld();
         world.setOwner(6);
         const zombie = world.addEnemy('zombie', 3);
