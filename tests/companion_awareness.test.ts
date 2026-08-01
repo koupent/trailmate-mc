@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import {
+    dropDistanceFrom,
     findNearestDrop,
     scanCompanionAwareness,
     type CompanionAwarenessSnapshot
@@ -22,6 +23,17 @@ describe('scanCompanionAwareness', () => {
         assert.equal(snap.dropItems.length, 1);
         assert.equal(snap.dropItems[0], bot.entities[1]);
         assert.ok(snap.entities.length >= 2);
+    });
+
+    it('uses horizontal distance for drops so slope items are not missed', () => {
+        const bot = {
+            entity: { position: new Vec3(0, 64, 0) },
+            entities: {
+                1: { name: 'item', position: new Vec3(9.5, 62, 0) }
+            }
+        };
+        const snap = scanCompanionAwareness(bot, 10, bot.entity.position);
+        assert.equal(snap.dropItems.length, 1);
     });
 
     it('resolves grave blocks from nearby holograms', () => {
@@ -65,5 +77,24 @@ describe('findNearestDrop', () => {
         } satisfies CompanionAwarenessSnapshot;
         const nearest = findNearestDrop(snap, new Vec3(0, 64, 0));
         assert.equal(nearest, snap.dropItems[1]);
+    });
+
+    it('prefers horizontally closer drops over vertically offset ones', () => {
+        const snap = {
+            scannedAt: 0,
+            origin: { x: 0, y: 64, z: 0 },
+            radius: 10,
+            dropItems: [
+                { name: 'item', position: new Vec3(3, 64, 0) },
+                { name: 'item', position: new Vec3(1, 62, 0) }
+            ],
+            displayEntities: [],
+            blocks: [],
+            entities: []
+        } satisfies CompanionAwarenessSnapshot;
+        const nearest = findNearestDrop(snap, new Vec3(0, 64, 0));
+        assert.equal(nearest, snap.dropItems[1]);
+        assert.ok(dropDistanceFrom(new Vec3(0, 64, 0), snap.dropItems[1].position)
+            < dropDistanceFrom(new Vec3(0, 64, 0), snap.dropItems[0].position));
     });
 });

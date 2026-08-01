@@ -46,6 +46,9 @@ export function scanSurroundings(bot, target) {
         stepUps: toward
             .filter((c) => c.rise === 1)
             .sort((a, b) => alignment(b, facing) - alignment(a, facing)),
+        stepDowns: toward
+            .filter((c) => c.rise === -1)
+            .sort((a, b) => alignment(b, facing) - alignment(a, facing)),
         // Escaping a hole may need a step that points away from the owner.
         escapes: neighbours
             .filter((c) => c.rise === 1)

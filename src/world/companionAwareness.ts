@@ -36,11 +36,17 @@ export type CompanionAwarenessSnapshot = {
  * Scan entities (and grave-related blocks) within `radius` of the companion.
  * Perception only — no pickup / dig policy.
  */
+export type CompanionAwarenessScanOptions = {
+  maxVerticalDy?: number;
+};
+
 export function scanCompanionAwareness(
   bot: BotLike,
   radius: number,
-  origin?: Pos
+  origin?: Pos,
+  options?: CompanionAwarenessScanOptions
 ): CompanionAwarenessSnapshot {
+  const maxVerticalDy = options?.maxVerticalDy ?? MAX_PICKUP_DY;
   const scannedAt = Date.now();
   const center = origin || bot.entity?.position;
   if (!bot || !center || !(radius > 0)) {
@@ -55,7 +61,7 @@ export function scanCompanionAwareness(
 
   for (const entity of Object.values(bot.entities || {})) {
     if (!entity?.position) continue;
-    if (distanceBetween(originPos, entity.position) > radius) continue;
+    if (!isWithinPickupRange(originPos, entity.position, radius, maxVerticalDy)) continue;
     entities.push(entity);
     if (isGroundItem(entity)) {
       dropItems.push(entity);
@@ -80,6 +86,7 @@ export function scanCompanionAwareness(
 
 /**
  * Nearest drop in the snapshot relative to `around` (defaults to snapshot.origin).
+ * Uses horizontal distance so nearby items on slopes are preferred over farther flats.
  */
 export function findNearestDrop(
   snapshot: CompanionAwarenessSnapshot | null | undefined,
@@ -94,13 +101,19 @@ export function findNearestDrop(
   let bestDist = Infinity;
   for (const item of items) {
     if (!item?.position) continue;
-    const dist = distanceBetween(origin, item.position);
+    const dist = dropDistanceFrom(origin, item.position);
     if (dist < bestDist) {
       best = item;
       bestDist = dist;
     }
   }
   return best;
+}
+
+/** Horizontal distance used for pickup ordering (matches scan radius). */
+export function dropDistanceFrom(origin: Pos, itemPos: Pos): number {
+  if (Math.abs(origin.y - itemPos.y) > MAX_PICKUP_DY) return Infinity;
+  return Math.hypot(origin.x - itemPos.x, origin.z - itemPos.z);
 }
 
 function resolveBlocksNearDisplays(bot: BotLike, displayEntities: any[]): AwareBlock[] {
@@ -164,7 +177,15 @@ function blockKey(pos: Pos): string {
   return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
 }
 
-function distanceBetween(a: Pos, b: Pos): number {
-  if (typeof a.distanceTo === 'function') return a.distanceTo(b);
-  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+const MAX_PICKUP_DY = 4;
+
+/** Horizontal range for drops — avoids missing items on slopes due to 3D distance. */
+function isWithinPickupRange(
+  origin: Pos,
+  target: Pos,
+  radius: number,
+  maxVerticalDy: number = MAX_PICKUP_DY
+): boolean {
+  if (Math.abs(origin.y - target.y) > maxVerticalDy) return false;
+  return Math.hypot(origin.x - target.x, origin.z - target.z) <= radius;
 }

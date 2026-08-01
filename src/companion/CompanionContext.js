@@ -3,9 +3,7 @@ import { StuckMonitor } from './movement/StuckMonitor.js';
 import { DoorTracker } from './movement/DoorTracker.js';
 import { createDeathRecoveryState } from './deathRecovery.js';
 import { scanCompanionAwareness } from '../world/companionAwareness.js';
-import { createOwnerWorkState } from './ownerWorkTracker.js';
-
-const DEFAULT_AWARENESS_RADIUS = 10;
+import { resolvePickupRadius } from './utils/pickupItems.js';
 
 /**
  * Shared context passed to modes and interrupts.
@@ -32,12 +30,12 @@ export class CompanionContext {
         this.deathRecovery = createDeathRecoveryState();
         /** @type {{ active: boolean, targetKey: string|null }} */
         this.graveLoot = { active: false, targetKey: null };
-        /** @type {{ active: boolean, suppressUntil: number }} nearby ground-item scavenging */
-        this.nearbyLoot = { active: false, suppressUntil: 0 };
+        /** @type {{ active: boolean, suppressUntil: number, priorityUntil?: number, priorityOrigin?: { x: number, y: number, z: number } | null }} nearby ground-item scavenging */
+        this.nearbyLoot = { active: false, suppressUntil: 0, priorityUntil: 0, priorityOrigin: null };
         /** @type {{ active: boolean }} periodic surplus item transfer to owner */
         this.itemTransfer = { active: false };
-        /** @type {import('./ownerWorkTracker.js').OwnerWorkState} */
-        this.ownerWork = createOwnerWorkState();
+        /** @type {Map<number, import('./ownerWorkTracker.js').OwnerWorkState>} */
+        this.playerWorkById = new Map();
         /** When true, companion loop skips combat reflexes. */
         this.holdReflexes = false;
         /** @type {import('../world/companionAwareness.js').CompanionAwarenessSnapshot|null} */
@@ -60,7 +58,7 @@ export class CompanionContext {
      */
     getCompanionAwareness() {
         if (this._awareness) return this._awareness;
-        const radius = this.config?.awareness_radius ?? DEFAULT_AWARENESS_RADIUS;
+        const radius = resolvePickupRadius(this);
         this._awareness = scanCompanionAwareness(this.bot, radius, this.bot?.entity?.position);
         return this._awareness;
     }

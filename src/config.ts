@@ -20,17 +20,32 @@ export type ChatConfig = {
   hostile_range: number;
 };
 
+export type CombatLearningConfig = {
+  enabled: boolean;
+  explore_rate: number;
+  min_trials: number;
+  min_health_to_explore: number;
+  explore_damage_abort: number;
+  state_path: string;
+};
+
 export type ReflexConfig = {
   self_defense: boolean;
   torch_placing: boolean;
   self_preservation: boolean;
   hostile_range: number;
+  combat_lost_grace_ms: number;
+  retreat_health: number;
+  resume_health: number;
+  retreat_distance: number;
+  combat_learning: CombatLearningConfig;
 };
 
 export type DeathReturnConfig = {
   enabled: boolean;
   arrive_range: number;
   timeout_ms: number;
+  grave_wait_ms?: number;
 };
 
 export type OwnGraveConfig = {
@@ -40,6 +55,11 @@ export type OwnGraveConfig = {
 
 export type NearbyLootConfig = {
   enabled: boolean;
+  radius: number;
+  recovery_radius?: number;
+  recovery_capture_ms?: number;
+  recovery_deadline_ms?: number;
+  recovery_quiet_ms?: number;
   max_ms: number;
   quiet_ms: number;
   grace_ms: number;
@@ -48,6 +68,8 @@ export type NearbyLootConfig = {
 
 export type OwnerWorkConfig = {
   enabled: boolean;
+  /** When true (default), avoid any player's work FOV. When false, only the locked owner. */
+  all_players?: boolean;
   fov_degrees: number;
   swing_idle_ms: number;
   post_work_cooldown_ms: number;
@@ -103,6 +125,7 @@ const DEFAULT_COMPANION: CompanionConfig = {
   awareness_radius: 10,
   owner_work: {
     enabled: true,
+    all_players: true,
     fov_degrees: 100,
     swing_idle_ms: 1000,
     post_work_cooldown_ms: 4000
@@ -118,6 +141,11 @@ const DEFAULT_COMPANION: CompanionConfig = {
   },
   nearby_loot: {
     enabled: true,
+    radius: 8,
+    recovery_radius: 12,
+    recovery_capture_ms: 1000,
+    recovery_deadline_ms: 12000,
+    recovery_quiet_ms: 750,
     max_ms: 15000,
     quiet_ms: 1500,
     grace_ms: 2500,
@@ -134,7 +162,19 @@ const DEFAULT_COMPANION: CompanionConfig = {
     self_defense: true,
     torch_placing: true,
     self_preservation: true,
-    hostile_range: 8
+    hostile_range: 12,
+    combat_lost_grace_ms: 1500,
+    retreat_health: 8,
+    resume_health: 14,
+    retreat_distance: 6,
+    combat_learning: {
+      enabled: true,
+      explore_rate: 0.12,
+      min_trials: 3,
+      min_health_to_explore: 12,
+      explore_damage_abort: 8,
+      state_path: 'data/combat-state.json'
+    }
   },
   chat: {
     enabled: true,
@@ -165,9 +205,14 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.chat,
     ...(companionFile.chat || {})
   };
+  const reflexesFile = (companionFile.reflexes || {}) as Partial<ReflexConfig>;
   const reflexes = {
     ...DEFAULT_COMPANION.reflexes,
-    ...(companionFile.reflexes || {})
+    ...reflexesFile,
+    combat_learning: {
+      ...DEFAULT_COMPANION.reflexes.combat_learning,
+      ...(reflexesFile.combat_learning || {})
+    }
   };
   const death_return = {
     ...DEFAULT_COMPANION.death_return,

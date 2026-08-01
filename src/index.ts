@@ -9,6 +9,7 @@ async function main() {
   const shutdown = (signal: string) => {
     console.log(`[trailmate] shutting down (${signal})`);
     try {
+      host.reflexes?.flushLearning?.();
       if (host.companion?._interval) clearInterval(host.companion._interval);
       host.bot.quit('trailmate shutdown');
     } catch {

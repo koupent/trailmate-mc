@@ -3,8 +3,10 @@
  */
 
 import { isPlayerEligible } from '../ownerLock.js';
+import { currentControlOwner } from '../ControlPriority.js';
 import { listGiveableStacks, DEFAULT_RETENTION } from './itemRetention.js';
 import { giveStacksToPlayer } from './giveAllItems.js';
+import { DEFAULT_GIVE_SUPPRESS_MS } from './nearbyLootConstants.js';
 
 export const DEFAULT_ITEM_SHARE_CONFIG = {
     enabled: true,
@@ -13,8 +15,6 @@ export const DEFAULT_ITEM_SHARE_CONFIG = {
     keep_food_stacks: DEFAULT_RETENTION.keep_food_stacks,
     keep_equipment_sets: DEFAULT_RETENTION.keep_equipment_sets
 };
-
-const DEFAULT_GIVE_SUPPRESS_MS = 12_000;
 
 /**
  * @param {object} [config]
@@ -39,10 +39,9 @@ export function shouldTransferNow(ctx, opts = {}) {
     if (!ctx.ownerName) return false;
     if (opts.dialogueBusy) return false;
     if (ctx.itemTransfer?.active) return false;
-    if (ctx.deathRecovery?.active) return false;
     if (ctx.graveLoot?.active) return false;
     if (ctx.nearbyLoot?.active) return false;
-    if (ctx.bot.pvp?.target) return false;
+    if (!['follow', 'wait'].includes(currentControlOwner(ctx))) return false;
     if (!isPlayerEligible(ctx, ctx.ownerName)) return false;
 
     const now = opts.now ?? Date.now();
@@ -97,10 +96,15 @@ export class PeriodicItemTransfer {
         }
 
         const stacks = listGiveableStacks(ctx.bot, this._retentionPolicy());
-        this._lastRunAt = Date.now();
-        if (stacks.length === 0) return;
+        if (stacks.length === 0) {
+            this._lastRunAt = Date.now();
+            return;
+        }
 
-        await this._transfer(ctx, stacks);
+        const result = await this._transfer(ctx, stacks);
+        // 戦闘による中断は受け渡し完了ではない。通常間隔を待たず、
+        // 戦術所有権ラッチの解除後に再試行する。
+        if (result !== 'deferred') this._lastRunAt = Date.now();
     }
 
     /**
@@ -122,20 +126,25 @@ export class PeriodicItemTransfer {
                 /* ignore */
             }
 
-            const result = await giveStacksToPlayer(ctx, ctx.ownerName, stacks);
+            const result = await giveStacksToPlayer(ctx, ctx.ownerName, stacks, {
+                shouldAbort: () => currentControlOwner(ctx) !== 'transfer'
+            });
             if (result === 'ok') {
                 console.log(
                     `[companion] item-share: gave ${stacks.length} stack(s) to ${ctx.ownerName}`
                 );
+                const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
+                ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
+                ctx.nearbyLoot.suppressUntil = Date.now() + ms;
+            } else if (result === 'deferred') {
+                console.log('[companion] item-share: deferred for combat');
             } else if (result !== 'empty') {
                 console.warn(`[companion] item-share: transfer result=${result}`);
             }
+            return result;
         } catch (err) {
             console.warn('[companion] item-share failed:', err.message || err);
         } finally {
-            const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
-            ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
-            ctx.nearbyLoot.suppressUntil = Date.now() + ms;
             this.autoEquip?.resume?.();
             this.manager?.resume?.();
             ctx.itemTransfer.active = false;

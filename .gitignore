@@ -8,6 +8,8 @@ keys.json
 .idea/
 .vscode/
 .cursor/
+data/*
+!data/.gitkeep
 
 # Runtime / local debug dumps
 data/

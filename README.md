@@ -162,6 +162,51 @@ docker compose up -d --build
 - `locales/ja.json` … 独り言・コマンド返答（英語を足すなら `locales/en.json`）
 - `services/viaproxy/viaproxy.yml` … **実際の Minecraft サーバー**（`target-address`）
 
+### 戦闘
+
+`config.json` の `companion.reflexes` 配下:
+
+| キー | 意味 | 既定 |
+|---|---|---|
+| `self_defense` | 近くの敵と自動で戦う | `true` |
+| `hostile_range` | 敵を検知する距離（ブロック） | `12` |
+| `combat_lost_grace_ms` | 護衛対象が一時的に外れても戦闘を維持する時間 | `1500` |
+| `retreat_health` | （未使用・互換用）旧撤退体力閾値 | `8` |
+| `resume_health` | （未使用・互換用）旧復帰体力閾値 | `14` |
+| `retreat_distance` | （未使用・互換用）旧撤退距離 | `6` |
+| `combat_learning.enabled` | 戦闘プリセットのオンライン学習 | `true` |
+| `combat_learning.explore_rate` | プリセット探索率 | `0.12` |
+| `combat_learning.min_trials` | 採用判定に必要な最低試行数 | `3` |
+| `combat_learning.state_path` | 学習状態の保存先 | `data/combat-state.json` |
+
+護衛は **Follow（追従）/ Guard（防衛）** が主モードです（低体力でも逃走Retreatには入りません）。プレイヤー近傍（既定8ブロック）の敵対モブ、またはBot至近（既定3.5ブロック）の敵を護衛対象とし、視野角は交戦の開始条件にしません。遠すぎる敵や壁越しの新規固定は避け、一度狙った敵は短い猶予時間だけ維持します。
+
+- **Follow（追従）** … プレイヤーに付く（戦闘しない）
+- **Guard（防衛）** … 護衛対象を優先して倒す／追い払う。複数敵がいるときは、敵の水平角度spanが狭くなる側へ横移動して囲まれを避ける
+
+学習が有効なときは、敵の種類（近接 / 機敏 / 遠距離 / 爆発）と盾の有無ごとに安全な立ち回りプリセットを比較します。悪化した候補は自動で戻し、結果は `data/combat-state.json` に保存されます（敵数バケットは使いません）。
+
+### ローカル戦闘シミュレータ
+
+Minecraftを起動せず、固定配置をtick単位で操作・可視化できます。
+
+```bash
+npx tsx src/simulator/server.ts
+# ブラウザで http://127.0.0.1:4173
+```
+
+- 静的な `single-ranged`、`multi-positioning`、`recovery` に加え、`dynamic-melee-pincer`、`dynamic-ranged-pressure`、`dynamic-mixed` の動的ケースを同梱しています。
+- `敵AI` を有効にすると、近接敵はBotを追尾し、遠距離敵は射程を保ちながら横移動・射撃圧を加えます。AI速度は0.25～2倍で調整でき、各tickの挙動・速度・射撃を平面と判断欄で確認できます。
+- 複数脅威の位置取りは近傍1リングで止めず、同心円候補と敵列の延長候補を評価します。敵との安全距離、移動経路、owner追従制約を守りながら、可能なら片方の敵の後ろへ回り込み、35度以下の攻撃方向へ集約します。
+- 平面をクリックしてBot、owner、敵、ドロップ、障害物を移動できます。敵・ドロップ・障害物の追加、tick・自動進行、期待する制御所有者・戦闘意図・spanの検証、ケースのブラウザ保存とJSON入出力が可能です。
+- 判断は表示専用の再実装ではなく、`threatArc`、`CombatIntent`、`CombatProfiles`、`ControlPriority`、墓由来ID用のRecovery補助関数を直接利用します。Minecraft固有のMineflayer移動・PVP・ブロック操作はシミュレータadapterの後段です。
+
+戦闘改善の受け入れ順序:
+
+1. **シミュレータ・テスト** — ケースを配置・保存し、期待する制御所有者、戦闘意図、span、Recovery遷移を決定論的テストにする。
+2. **Bot統合** — 合格した純粋ルールだけをMineflayer adapterへ接続する。
+3. **Minecraft動作確認** — 最後に固定した敵配置で移動、視線、被弾、攻撃結果を確認する。
+
 ### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し・作業退避
 
 `config.json` の `companion` 配下:
@@ -169,8 +214,9 @@ docker compose up -d --build
 | キー | 意味 | 既定 |
 |---|---|---|
 | `awareness_radius` | 相棒が周囲のエンティティ／墓を把握する半径（SSOT） | `10` |
-| `owner_work.enabled` | オーナー作業中に視界外へ退避する | `true` |
-| `owner_work.fov_degrees` | 退避判定に使うオーナー視界の水平角度 | `100` |
+| `owner_work.enabled` | プレイヤー作業中に視界外へ退避する | `true` |
+| `owner_work.all_players` | オーナー以外のプレイヤー作業にも退避する | `true` |
+| `owner_work.fov_degrees` | 退避判定に使う作業プレイヤー視界の水平角度 | `100` |
 | `owner_work.swing_idle_ms` | スイング停止後、作業終了とみなすまでの待ち | `1000` |
 | `owner_work.post_work_cooldown_ms` | 作業終了後も視界外を維持する時間 | `4000` |
 | `death_return.enabled` | リスポーン後に死亡座標へ戻る | `true` |
@@ -179,6 +225,11 @@ docker compose up -d --build
 | `own_grave.enabled` | 近くの自分の墓を壊す | `true` |
 | `own_grave.dig_range` | 墓破壊に入る距離 | `3.5` |
 | `nearby_loot.enabled` | 周辺の地面ドロップを拾う | `true` |
+| `nearby_loot.radius` | 拾いに行く半径（ブロック） | `8` |
+| `nearby_loot.recovery_radius` | 墓由来ドロップを追跡する半径 | `12` |
+| `nearby_loot.recovery_capture_ms` | 墓破壊後に墓由来entity IDを確定する時間 | `1000` |
+| `nearby_loot.recovery_deadline_ms` | 緊急回避でも延長しないRecovery回収期限 | `12000` |
+| `nearby_loot.recovery_quiet_ms` | owned ID消失後の安定待ち | `750` |
 | `nearby_loot.max_ms` | 1回の拾いの上限時間 | `15000` |
 | `nearby_loot.quiet_ms` | ドロップが消えてから終了するまでの待ち | `1500` |
 | `nearby_loot.grace_ms` | 拾い開始直後の出現待ち | `2500` |
@@ -197,8 +248,9 @@ docker compose up -d --build
 3. 墓はホログラム等の表示名から持ち主を判定します。ボット自身のユーザー名と一致しない墓、名前が読めない墓は**壊しません**（他人の墓破壊によるゾンビ出現を防ぐため）。
 4. ViaProxy 経由などで名前表示が読めない環境では、安全のため墓は破壊しません（死亡座標への移動と地面ドロップの拾得のみ有効）。
 5. ネザー / エンドなど**別ワールド種別**への自動ポータル移動はしません。同じワールド種別に戻った時点で死亡復帰を続けます。
-6. `awareness_radius` 内のドロップは基本すべて拾います。オーナーが採掘・設置などで腕を振っている間は視界外（後方）へ退避し、作業終了後も `post_work_cooldown_ms` の間は戻らず回収 interrupt も止めます。振り向いただけでは退避しません。死亡復帰・墓回収中は例外で回収を続けます。全回収・余剰受け渡し直後は `give_suppress_ms` の間拾いません。ドロップ回収は墓破壊より優先し、散らばったアイテムの取りこぼしを減らします。
-7. `item_share` はロック済みオーナーが近く、戦闘・回収中でないときに余剰を渡します。松明・食料は各指定スタック、装備は部位ごとに性能上位の指定セット数を残し、それ以外を渡します。チャットの「全回収」は従来どおり全アイテムを渡します。
+6. 通常の `nearby_loot` は `awareness_radius` 内のドロップを拾い続けます。Recoveryでは墓破壊前の既存IDを除外し、破壊直後の短い取得期間で確定した墓由来IDだけを優先します。無関係なドロップはRecoveryを妨げず、通常収集へ戻った後に扱います。
+7. オーナーが採掘・設置などで腕を振っている間は視界外（後方）へ退避し、作業終了後も `post_work_cooldown_ms` の間は戻らず通常回収 interrupt も止めます。振り向いただけでは退避しません。死亡復帰・墓回収中は例外で回収を続けます。全回収・余剰受け渡し直後は `give_suppress_ms` の間拾いません。
+8. `item_share` はロック済みオーナーが近く、戦闘・回収中でないときに余剰を渡します。松明・食料は各指定スタック、装備は部位ごとに性能上位の指定セット数を残し、それ以外を渡します。チャットの「全回収」は従来どおり全アイテムを渡します。
 
 **秘密情報（`.env`、実 `viaproxy.yml`、`saves.json`）はコミットしないでください。**
 
