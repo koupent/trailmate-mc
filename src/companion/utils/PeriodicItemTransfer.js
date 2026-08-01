@@ -6,6 +6,7 @@ import { isPlayerEligible } from '../ownerLock.js';
 import { currentControlOwner } from '../ControlPriority.js';
 import { listGiveableStacks, DEFAULT_RETENTION } from './itemRetention.js';
 import { giveStacksToPlayer } from './giveAllItems.js';
+import { DEFAULT_GIVE_SUPPRESS_MS } from './nearbyLootConstants.js';
 
 export const DEFAULT_ITEM_SHARE_CONFIG = {
     enabled: true,
@@ -14,8 +15,6 @@ export const DEFAULT_ITEM_SHARE_CONFIG = {
     keep_food_stacks: DEFAULT_RETENTION.keep_food_stacks,
     keep_equipment_sets: DEFAULT_RETENTION.keep_equipment_sets
 };
-
-const DEFAULT_GIVE_SUPPRESS_MS = 12_000;
 
 /**
  * @param {object} [config]

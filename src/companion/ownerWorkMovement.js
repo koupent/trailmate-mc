@@ -3,10 +3,13 @@ import {
     isOwnerWorkDeferring
 } from './ownerWorkTracker.js';
 import { computeOutOfSightAnchor, isBotInOwnerFov } from './followPosition.js';
+import {
+    DEFAULT_FOLLOW_DISTANCE,
+    FOLLOW_GOAL_RANGE,
+    SAME_FLOOR_DY
+} from './movement/followConstants.js';
+import { horizontalDistanceBetween } from './movement/followGeometry.js';
 
-const FOLLOW_GOAL_RANGE = 1;
-const SAME_FLOOR_DY = 2;
-const DEFAULT_FOLLOW_DISTANCE = 3;
 const DEFAULT_OWNER_WORK_FOV = 100;
 
 function ownerWorkEnabled(ctx) {
@@ -118,11 +121,6 @@ function distanceBetween(a, b) {
     return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }
 
-/** @param {{ x: number, y: number, z: number }} a @param {{ x: number, y: number, z: number }} b */
-function horizontalDistanceBetween(a, b) {
-    return Math.hypot(a.x - b.x, a.z - b.z);
-}
-
 /**
  * Pick the working player the bot should retreat from this tick.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
@@ -170,10 +168,7 @@ export function applyOwnerWorkRetreat(ctx) {
     }
 
     const anchor = computeOutOfSightAnchor(worker, followDistance);
-    const distToAnchor = Math.hypot(
-        bot.entity.position.x - anchor.x,
-        bot.entity.position.z - anchor.z
-    );
+    const distToAnchor = horizontalDistanceBetween(bot.entity.position, anchor);
     if (distToAnchor < FOLLOW_GOAL_RANGE && sameFloor) {
         ctx.movement.stop();
         return true;

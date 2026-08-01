@@ -1,11 +1,8 @@
 import { approachPosition } from './approachPosition.js';
-import { jumpOntoStep, sleep } from '../movement/climb.js';
+import { jumpOntoStep, sleep, MANUAL_JUMP_DISTANCE, CLIMB_HOLD_MS } from '../movement/climb.js';
 import { scanSurroundings } from '../movement/surroundings.js';
 
 const DEFAULT_POLL_MS = 250;
-const DEFAULT_CLIMB_HOLD_MS = 2000;
-/** Lip distance at which a manual jump is preferred over GoalNear climb. */
-const MANUAL_JUMP_DISTANCE = 1.35;
 /** Extra slack beyond dig_range for center-to-center reach checks. */
 const DIG_REACH_SLACK = 1;
 
@@ -118,12 +115,12 @@ async function tryClimbTowardGrave(ctx, blockCenter, pollMs) {
             await jumpOntoStep(bot, step.center);
             return true;
         }
-        ctx.movement.climbTo(step.center, DEFAULT_CLIMB_HOLD_MS);
+        ctx.movement.climbTo(step.center, CLIMB_HOLD_MS);
         await sleep(pollMs);
         return true;
     }
 
-    ctx.movement.climbTo(blockCenter, DEFAULT_CLIMB_HOLD_MS);
+    ctx.movement.climbTo(blockCenter, CLIMB_HOLD_MS);
     await sleep(pollMs);
     return true;
 }

@@ -9,8 +9,7 @@ import { isPlayerEligible, lockOwner } from './ownerLock.js';
 import { giveAllItemsToPlayer, countAllItems } from './utils/giveAllItems.js';
 import { tCommand } from '../i18n/index.js';
 import { shouldDeferToCombat } from './combatGate.js';
-
-const DEFAULT_GIVE_SUPPRESS_MS = 12000;
+import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
 
 export const DEFAULT_CHAT_CONFIG = {
     enabled: true,

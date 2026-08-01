@@ -1,4 +1,4 @@
-import { jumpOntoStep, sleep } from '../movement/climb.js';
+import { jumpOntoStep, sleep, MANUAL_JUMP_DISTANCE, CLIMB_HOLD_MS } from '../movement/climb.js';
 import { scanSurroundings } from '../movement/surroundings.js';
 import { isCloseablePassage } from '../movement/DoorTracker.js';
 
@@ -10,12 +10,8 @@ const HOLE_RAISED_MIN = 2;
 const DEFAULT_FOLLOW_MIN_DISTANCE = 2;
 /** Retry the same ledge this many times before picking a new one. */
 const MAX_CLIMB_STICKY_ATTEMPTS = 4;
-/** Prefer a manual jump when this close to the ledge lip. */
-const MANUAL_JUMP_DISTANCE = 1.35;
 /** After this many sticky attempts, always jump manually. */
 const MANUAL_JUMP_AFTER_ATTEMPTS = 2;
-/** Hold duration for climbTo pathfinder goals (ms). */
-const CLIMB_HOLD_MS = 2000;
 /** Brief pause after stopping pathfinder before a manual jump (ms). */
 const PRE_JUMP_PAUSE_MS = 60;
 

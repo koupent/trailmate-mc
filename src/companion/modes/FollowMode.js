@@ -3,18 +3,12 @@ import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
 import { hasLineOfSight } from '../../world/lineOfSight.js';
 import { applyOwnerWorkRetreat } from '../ownerWorkMovement.js';
 import { currentControlOwner } from '../ControlPriority.js';
-
-/**
- * GoalFollow only measures straight-line distance, so a loose range counts as
- * arrived through walls and floors. Keep it tight and stop from Follow instead.
- */
-const FOLLOW_GOAL_RANGE = 1;
-/** Above this height gap the owner is on another floor: keep pathing. */
-const SAME_FLOOR_DY = 2;
-/** Stop and wait once within this distance of the last-known owner position. */
-const LAST_KNOWN_ARRIVE_RANGE = 3;
-/** Fallback when config omits follow_distance. */
-const DEFAULT_FOLLOW_DISTANCE = 3;
+import {
+    DEFAULT_FOLLOW_DISTANCE,
+    FOLLOW_GOAL_RANGE,
+    LAST_KNOWN_ARRIVE_RANGE
+} from '../movement/followConstants.js';
+import { isNearOwnerHorizontally } from '../movement/followGeometry.js';
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -77,11 +71,6 @@ export class FollowMode extends Mode {
         this._waitingAtLastKnown = false;
 
         const followDistance = config.follow_distance ?? DEFAULT_FOLLOW_DISTANCE;
-        const ownerDy = owner.position.y - bot.entity.position.y;
-        const horizDist = Math.hypot(
-            owner.position.x - bot.entity.position.x,
-            owner.position.z - bot.entity.position.z
-        );
 
         // Skip Follow only while a climb hold is still making progress.
         if (ctx.movement.isHeld) return;
@@ -92,7 +81,11 @@ export class FollowMode extends Mode {
 
         // Close enough only counts when the owner is actually reachable from
         // here — a wall between them means the bot is parked outside the room.
-        const nearOwner = horizDist < followDistance && Math.abs(ownerDy) < SAME_FLOOR_DY;
+        const nearOwner = isNearOwnerHorizontally(
+            bot.entity.position,
+            owner.position,
+            followDistance
+        );
         if (nearOwner && hasLineOfSight(bot, owner)) {
             ctx.movement.stop();
             return;

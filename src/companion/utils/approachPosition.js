@@ -1,5 +1,7 @@
 /** Shared helpers to walk toward a fixed world position. */
 
+import { sleep } from '../movement/climb.js';
+
 const DEFAULT_RANGE = 2;
 const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_POLL_MS = 250;
@@ -76,9 +78,3 @@ export async function approachPosition(ctx, pos, options = {}) {
     return finalDist <= range + Math.max(arrivalSlack, horizontalArrival ? 0.25 : 1);
 }
 
-/**
- * @param {number} ms
- */
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}

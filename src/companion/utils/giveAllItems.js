@@ -4,6 +4,9 @@
  * Equipment is tossed from its slot via tossStack (no unequip — empty unequip hangs ~4s/slot).
  */
 
+import { approachPosition } from './approachPosition.js';
+import { listOccupiedStacks } from './itemRetention.js';
+
 const APPROACH_RANGE = 3;
 const APPROACH_TIMEOUT_MS = 8000;
 const APPROACH_POLL_MS = 250;
@@ -20,7 +23,7 @@ export async function giveAllItemsToPlayer(ctx, username, opts = {}) {
     const countsBefore = countAllItems(bot);
     if (Object.keys(countsBefore).length === 0) return 'empty';
 
-    const stacks = snapshotOccupiedStacks(bot);
+    const stacks = listOccupiedStacks(bot);
     return giveStacksToPlayer(ctx, username, stacks, {
         ...opts,
         countsBefore,
@@ -79,25 +82,10 @@ export async function giveStacksToPlayer(ctx, username, stacks, opts = {}) {
 
 /**
  * @param {import('mineflayer').Bot} bot
- * @returns {Array<{ slot: number, type: number, count: number, name: string }>}
- */
-function snapshotOccupiedStacks(bot) {
-    return (bot.inventory.slots || [])
-        .filter((slot) => slot && slot.name)
-        .map((slot) => ({
-            slot: slot.slot,
-            type: slot.type,
-            count: slot.count,
-            name: slot.name
-        }));
-}
-
-/**
- * @param {import('mineflayer').Bot} bot
  * @returns {Record<string, number>}
  */
 export function countAllItems(bot) {
-    return countStacks(snapshotOccupiedStacks(bot));
+    return countStacks(listOccupiedStacks(bot));
 }
 
 /**
@@ -120,32 +108,35 @@ function countStacks(stacks) {
  */
 export async function approachPlayer(ctx, player, shouldAbort) {
     const bot = ctx.bot;
+    if (!player?.position || !bot?.entity) return false;
+
+    const target = {
+        x: player.position.x,
+        y: player.position.y,
+        z: player.position.z
+    };
     const distance = () => bot.entity.position.distanceTo(player.position);
     if (distance() <= APPROACH_RANGE + 1) return true;
 
-    if (ctx.movement?.goToward) {
-        ctx.movement.goToward(player.position, APPROACH_RANGE);
-    }
-
-    const start = Date.now();
-    while (Date.now() - start < APPROACH_TIMEOUT_MS) {
-        if (shouldAbort?.()) {
-            // この処理が設定したowner目的地だけを解除する。戦闘側が既にpvp目的地を
-            // 設定している場合、MovementController.hasGoalはfalseなので触れない。
-            if (ctx.movement?.hasGoal) ctx.movement.stop?.();
-            return 'deferred';
+    const arrived = await approachPosition(ctx, target, {
+        range: APPROACH_RANGE,
+        pathRange: APPROACH_RANGE,
+        horizontalArrival: false,
+        arrivalSlack: 1,
+        timeoutMs: APPROACH_TIMEOUT_MS,
+        pollMs: APPROACH_POLL_MS,
+        abort: () => {
+            if (shouldAbort?.()) {
+                if (ctx.movement?.hasGoal) ctx.movement.stop?.();
+                return true;
+            }
+            return Boolean(bot.interrupt_code) || !player.position;
         }
-        if (bot.interrupt_code) return false;
-        if (!player.position) return false;
-        if (distance() <= APPROACH_RANGE + 1) {
-            ctx.movement?.stop?.();
-            return true;
-        }
-        ctx.movement?.goToward?.(player.position, APPROACH_RANGE);
-        await sleep(APPROACH_POLL_MS);
-    }
+    });
 
-    ctx.movement?.stop?.();
+    if (shouldAbort?.()) return 'deferred';
+    if (bot.interrupt_code || !player.position) return false;
+    if (arrived) return true;
     return distance() <= APPROACH_RANGE + 2;
 }
 
@@ -208,11 +199,4 @@ async function tossOneStack(bot, item) {
         console.warn('[companion] tossStack failed:', item.name, err.message || err);
         return false;
     }
-}
-
-/**
- * @param {number} ms
- */
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
 }

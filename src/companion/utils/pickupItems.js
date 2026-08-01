@@ -1,5 +1,7 @@
 import { approachPosition } from './approachPosition.js';
 import { scanSurroundings } from '../movement/surroundings.js';
+import { sleep } from '../movement/climb.js';
+import { horizontalDistanceBetween } from '../movement/followGeometry.js';
 import {
     dropDistanceFrom,
     findNearestDrop,
@@ -30,6 +32,20 @@ const PICKUP_SETTLE_MS = 350;
 const DEFAULT_OWNER_WORK_LOOT_CLEARANCE = 4;
 /** Item Y this far below the bot's feet needs a step-down approach, not magnet pickup. */
 const ITEM_BELOW_FEET_DY = 0.4;
+/** Switch pickup target when a nearer drop is this much closer (blocks). */
+const RETARGET_CLOSER_MARGIN = 1.5;
+const APPROACH_MIN_MS = 600;
+const APPROACH_NEAR_MS = 2000;
+const APPROACH_FAR_MS = 4000;
+const APPROACH_STEP_DOWN_MS = 3500;
+const APPROACH_NEAR_DIST = 4;
+const STEP_DOWN_LEDGE_RANGE = 0.6;
+const STEP_DOWN_LEDGE_PATH = 1;
+const STEP_DOWN_LEDGE_SLACK = 0.2;
+const STEP_DOWN_LEDGE_TIMEOUT_MS = 2000;
+const STEP_DOWN_ITEM_RANGE_FACTOR = 0.5;
+const STEP_DOWN_ITEM_PATH_MIN = 1.5;
+const STEP_DOWN_ITEM_SLACK = 0.15;
 
 /**
  * Walk toward nearby ground item entities so vanilla pickup can collect them.
@@ -114,8 +130,7 @@ export async function pickupNearbyItems(ctx, options = {}) {
         if (
             candidates.length === 0
             && snap.dropItems.length > 0
-            && !ctx.deathRecovery?.active
-            && !ctx.graveLoot?.active
+            && !isOnDedicatedLootMission(ctx)
         ) {
             break;
         }
@@ -137,8 +152,7 @@ export async function pickupNearbyItems(ctx, options = {}) {
             ctx.movement?.stop?.();
             if (
                 snap.dropItems.length === 0
-                && !ctx.deathRecovery?.active
-                && !ctx.graveLoot?.active
+                && !isOnDedicatedLootMission(ctx)
             ) {
                 break;
             }
@@ -175,29 +189,20 @@ export async function pickupNearbyItems(ctx, options = {}) {
             y: item.position.y,
             z: item.position.z
         };
-        const approachAbort = () => {
-            if (shouldAbort()) return true;
-            if (!bot.entity) return true;
-            if (isWithinMagnetPickup(bot.entity.position, item.position, magnetRange)) {
-                return true;
-            }
-            ctx.invalidateCompanionAwareness?.();
-            const freshSnap = typeof ctx.getCompanionAwareness === 'function'
-                ? ctx.getCompanionAwareness()
-                : scanCompanionAwareness(bot, radius, bot.entity.position);
-            const freshCandidates = freshSnap.dropItems.filter((entity) => !exclude(entity));
-            if (!freshCandidates.some((entity) => (entity.id ?? entity) === targetKey)) {
-                return true;
-            }
-            const nearer = findNearestDrop(freshSnap, bot.entity.position, freshCandidates);
-            if (!nearer?.position || (nearer.id ?? nearer) === targetKey) return false;
-            const nearerDist = dropDistanceFrom(bot.entity.position, nearer.position);
-            return nearerDist + 1.5 < dropDistanceFrom(bot.entity.position, item.position);
-        };
+        const approachAbort = createPickupApproachAbort({
+            shouldAbort,
+            bot,
+            item,
+            magnetRange,
+            radius,
+            targetKey,
+            exclude,
+            ctx
+        });
         const approachTimeoutMs = Math.max(
-            600,
+            APPROACH_MIN_MS,
             Math.min(
-                needsStepDown ? 3500 : (itemDist <= 4 ? 2000 : 4000),
+                needsStepDown ? APPROACH_STEP_DOWN_MS : (itemDist <= APPROACH_NEAR_DIST ? APPROACH_NEAR_MS : APPROACH_FAR_MS),
                 durationMs - (Date.now() - start)
             )
         );
@@ -299,8 +304,15 @@ export function resolveOwnerWorkLootClearance(ctx) {
  */
 function shouldExcludePickupDuringOwnerWork(ctx, itemPos, _magnetRange) {
     if (!isOwnerWorkDeferring(ctx)) return false;
-    if (ctx?.deathRecovery?.active || ctx?.graveLoot?.active) return false;
+    if (isOnDedicatedLootMission(ctx)) return false;
     return isPositionInOwnerWorkFov(ctx, itemPos);
+}
+
+/**
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ */
+export function isOnDedicatedLootMission(ctx) {
+    return Boolean(ctx?.deathRecovery?.active || ctx?.graveLoot?.active);
 }
 
 /**
@@ -328,6 +340,42 @@ function hasMagnetPickup(candidates, botPos, magnetRange) {
 }
 
 /**
+ * @param {{
+ *   shouldAbort: () => boolean,
+ *   bot: import('mineflayer').Bot,
+ *   item: { position: { x: number, y: number, z: number }, id?: number },
+ *   magnetRange: number,
+ *   radius: number,
+ *   targetKey: number | string,
+ *   exclude: (entity: any) => boolean,
+ *   ctx: import('../CompanionContext.js').CompanionContext
+ * }} params
+ */
+function createPickupApproachAbort(params) {
+    const { shouldAbort, bot, item, magnetRange, radius, targetKey, exclude, ctx } = params;
+    return () => {
+        if (shouldAbort()) return true;
+        if (!bot.entity) return true;
+        if (isWithinMagnetPickup(bot.entity.position, item.position, magnetRange)) {
+            return true;
+        }
+        ctx.invalidateCompanionAwareness?.();
+        const freshSnap = typeof ctx.getCompanionAwareness === 'function'
+            ? ctx.getCompanionAwareness()
+            : scanCompanionAwareness(bot, radius, bot.entity.position);
+        const freshCandidates = freshSnap.dropItems.filter((entity) => !exclude(entity));
+        if (!freshCandidates.some((entity) => (entity.id ?? entity) === targetKey)) {
+            return true;
+        }
+        const nearer = findNearestDrop(freshSnap, bot.entity.position, freshCandidates);
+        if (!nearer?.position || (nearer.id ?? nearer) === targetKey) return false;
+        const nearerDist = dropDistanceFrom(bot.entity.position, nearer.position);
+        return nearerDist + RETARGET_CLOSER_MARGIN
+            < dropDistanceFrom(bot.entity.position, item.position);
+    };
+}
+
+/**
  * Walk toward a drop that sits below the bot's feet (ledge pickup).
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} itemPos
@@ -342,11 +390,11 @@ async function approachDropBelowFeet(ctx, itemPos, options) {
     const stepDown = scan.stepDowns?.[0];
     if (stepDown?.center) {
         await approachPosition(ctx, stepDown.center, {
-            range: 0.6,
-            pathRange: 1,
+            range: STEP_DOWN_LEDGE_RANGE,
+            pathRange: STEP_DOWN_LEDGE_PATH,
             horizontalArrival: false,
-            arrivalSlack: 0.2,
-            timeoutMs: Math.min(timeoutMs, 2000),
+            arrivalSlack: STEP_DOWN_LEDGE_SLACK,
+            timeoutMs: Math.min(timeoutMs, STEP_DOWN_LEDGE_TIMEOUT_MS),
             pollMs,
             abort
         });
@@ -354,10 +402,10 @@ async function approachDropBelowFeet(ctx, itemPos, options) {
     }
 
     return approachPosition(ctx, itemPos, {
-        range: magnetRange * 0.5,
-        pathRange: Math.max(magnetRange, 1.5),
+        range: magnetRange * STEP_DOWN_ITEM_RANGE_FACTOR,
+        pathRange: Math.max(magnetRange, STEP_DOWN_ITEM_PATH_MIN),
         horizontalArrival: false,
-        arrivalSlack: 0.15,
+        arrivalSlack: STEP_DOWN_ITEM_SLACK,
         timeoutMs,
         pollMs,
         abort
@@ -386,7 +434,7 @@ export function isWithinMagnetPickup(botPos, itemPos, magnetRange) {
  * @param {number} clearance
  */
 export function isExcludedNearOwner(ctx, itemPos, clearance) {
-    if (ctx?.deathRecovery?.active || ctx?.graveLoot?.active) return false;
+    if (isOnDedicatedLootMission(ctx)) return false;
     if (!itemPos) return false;
 
     let effectiveClearance = clearance;
@@ -409,14 +457,3 @@ export function isExcludedNearOwner(ctx, itemPos, clearance) {
     return false;
 }
 
-/** @param {{ x: number, y: number, z: number, distanceTo?: Function }} a @param {{ x: number, y: number, z: number }} b */
-function horizontalDistanceBetween(a, b) {
-    return Math.hypot(a.x - b.x, a.z - b.z);
-}
-
-/**
- * @param {number} ms
- */
-function sleep(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}

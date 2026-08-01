@@ -76,3 +76,12 @@ export function shouldDeferRecoveryForCombat(ctx) {
   if (needsGearRecovery(ctx.bot)) return false;
   return shouldDeferToCombat(ctx);
 }
+
+/**
+ * 通常の地上アイテム回収を中断すべきか。
+ * Reflexes 未初期化時でも護衛脅威は hasProtectThreats で検知する。
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ */
+export function shouldAbortPickupForCombat(ctx) {
+  return shouldDeferToCombat(ctx) || hasProtectThreats(ctx);
+}

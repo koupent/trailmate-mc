@@ -2,6 +2,11 @@
  * Death / respawn recovery state shared via CompanionContext.
  */
 
+import {
+    hasEssentialWeaponEquipped,
+    needsGearRecovery
+} from './combatGate.js';
+
 /**
  * @typedef {{
  *   pending: boolean,
@@ -256,12 +261,86 @@ export function observeRecoveryItemCollection(ctx, now = Date.now()) {
     };
 }
 
+/**
+ * Recovery 回収ループを抜けるべきか（pickup shouldStop 用）。
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ * @param {import('mineflayer').Bot} bot
+ * @param {number} recoveryQuietMs
+ */
+export function shouldStopRecoveryItemCollection(ctx, bot, recoveryQuietMs) {
+    const status = observeRecoveryItemCollection(ctx);
+    if (!status) return true;
+    if (status.deadlineReached) return true;
+    if (status.remainingIds.length > 0) return false;
+    return status.captureComplete
+        && status.quietForMs >= recoveryQuietMs
+        && !needsGearRecovery(bot);
+}
+
+/**
+ * Recovery 回収ループ終了後の装備・完了判定。
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ * @param {import('mineflayer').Bot} bot
+ * @param {object} cfg
+ * @param {number} recoveryQuietMs
+ */
+export async function finishRecoveryAfterItemCollection(ctx, bot, cfg, recoveryQuietMs) {
+    const status = observeRecoveryItemCollection(ctx);
+    if (!status) return;
+
+    if (status.remainingIds.length > 0) {
+        if (status.deadlineReached) {
+            setLootPickupPriority(
+                ctx,
+                ctx.deathRecovery.collectionOrigin,
+                resolvePriorityLootMs(cfg)
+            );
+            completeDeathRecovery(ctx, 'owned-items-unreachable-deadline');
+            return;
+        }
+        ctx.deathRecovery.phase = 'items';
+        return;
+    }
+
+    const earlyReady = status.captureComplete
+        && status.quietForMs >= recoveryQuietMs
+        && !needsGearRecovery(bot);
+    if (!earlyReady && !status.deadlineReached) return;
+
+    ctx.deathRecovery.phase = 'equip';
+    await ctx.agent?.companion?.autoEquip?.equipBest?.();
+    const weaponEquipped = hasEssentialWeaponEquipped(bot);
+    if (!status.deadlineReached && !weaponEquipped) {
+        ctx.deathRecovery.phase = 'items';
+        return;
+    }
+    completeDeathRecovery(
+        ctx,
+        status.deadlineReached
+            ? (weaponEquipped
+                ? 'collection-deadline-equipped'
+                : 'essential-gear-missing-deadline')
+            : 'owned-items-collected-equipped'
+    );
+}
+
 function uniqueFiniteIds(ids) {
     return [...new Set(ids.map(Number).filter(Number.isFinite))];
 }
 
 export function isRecoveryActive(ctx) {
     return Boolean(ctx.deathRecovery?.active);
+}
+
+/**
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ * @param {number} [now]
+ */
+export function isRecoveryTimedOut(ctx, now = Date.now()) {
+    const dr = ctx.deathRecovery;
+    if (!dr?.active) return false;
+    const timeoutMs = ctx.config?.death_return?.timeout_ms ?? 90_000;
+    return now - (dr.startedAt || now) > timeoutMs;
 }
 
 export function isRecoveryEmergencyActive(ctx, now = Date.now()) {

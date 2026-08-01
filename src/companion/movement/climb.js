@@ -1,5 +1,10 @@
 import Vec3 from 'vec3';
 
+/** Lip distance at which a manual jump is preferred over GoalNear climb. */
+export const MANUAL_JUMP_DISTANCE = 1.35;
+/** Hold duration for climbTo pathfinder goals (ms). */
+export const CLIMB_HOLD_MS = 2000;
+
 /** Vanilla jump impulse (approx). Used only as a Via fallback. */
 const JUMP_IMPULSE = 0.42;
 const FORWARD_IMPULSE = 0.22;

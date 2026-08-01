@@ -5,6 +5,7 @@ import { approachGraveForDig, isGraveWithinDigReach } from '../utils/graveApproa
 import {
     completeDeathRecovery,
     isRecoveryEmergencyActive,
+    isRecoveryTimedOut,
     markDeathReturnArrived,
     releaseHoldReflexesIfIdle,
     requestRecoveryItemCollection
@@ -62,11 +63,7 @@ export class OwnGraveInterrupt {
         const cfg = ctx.config?.own_grave || {};
         const digRange = cfg.dig_range ?? DEFAULT_DIG_RANGE;
         const recovery = ctx.deathRecovery;
-        const recoveryTimeoutMs = ctx.config?.death_return?.timeout_ms ?? 90000;
-        if (
-            recovery?.active
-            && Date.now() - (recovery.startedAt || Date.now()) > recoveryTimeoutMs
-        ) {
+        if (recovery?.active && isRecoveryTimedOut(ctx)) {
             completeDeathRecovery(ctx, 'grave-unreachable-timeout');
             return;
         }

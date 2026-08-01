@@ -1,20 +1,15 @@
 import { pickupNearbyItems, resolvePickupRadius, hasNearbyDrops, hasPriorityLootNearby } from '../utils/pickupItems.js';
 import {
-    completeDeathRecovery,
+    finishRecoveryAfterItemCollection,
     isRecoveryEmergencyActive,
-    observeRecoveryItemCollection,
     releaseHoldReflexesIfIdle,
     requestRecoveryItemCollection,
-    resolvePriorityLootMs,
-    setLootPickupPriority,
+    shouldStopRecoveryItemCollection,
     trackRecoveryItem
 } from '../deathRecovery.js';
 import {
-    hasEssentialWeaponEquipped,
-    hasProtectThreats,
-    needsGearRecovery,
-    shouldDeferRecoveryForCombat,
-    shouldDeferToCombat
+    shouldAbortPickupForCombat,
+    shouldDeferRecoveryForCombat
 } from '../combatGate.js';
 
 const DEFAULT_MAX_MS = 8000;
@@ -100,79 +95,24 @@ export class NearbyLootInterrupt {
                 onItemSeen: recovering ? (entity) => trackRecoveryItem(ctx, entity) : undefined,
                 candidateFilter: recoveryCandidate,
                 shouldStop: recovering
-                    ? () => {
-                        const status = observeRecoveryItemCollection(ctx);
-                        if (!status) return true;
-                        if (status.deadlineReached) return true;
-                        if (status.remainingIds.length > 0) return false;
-                        return status.captureComplete
-                            && status.quietForMs >= recoveryQuietMs
-                            && !needsGearRecovery(bot);
-                    }
+                    ? () => shouldStopRecoveryItemCollection(ctx, bot, recoveryQuietMs)
                     : undefined,
                 shouldAbort: recovering
                     ? () => {
                         if (isRecoveryEmergencyActive(ctx) || !ctx.deathRecovery?.active) return true;
                         return shouldDeferRecoveryForCombat(ctx);
                     }
-                    : () => shouldDeferToCombat(ctx) || hasProtectThreats(ctx)
+                    : () => shouldAbortPickupForCombat(ctx)
             });
 
             if (recovering && ctx.deathRecovery?.active && !isRecoveryEmergencyActive(ctx)) {
-                await finishRecoveryItemCollection(ctx, bot, cfg, recoveryQuietMs);
+                await finishRecoveryAfterItemCollection(ctx, bot, cfg, recoveryQuietMs);
             }
         } finally {
             ctx.nearbyLoot.active = false;
             releaseHoldReflexesIfIdle(ctx);
         }
     }
-}
-
-/**
- * Recovery回収ループ後の装備・完了判定。
- * @param {import('../CompanionContext.js').CompanionContext} ctx
- * @param {import('mineflayer').Bot} bot
- * @param {object} cfg
- * @param {number} recoveryQuietMs
- */
-async function finishRecoveryItemCollection(ctx, bot, cfg, recoveryQuietMs) {
-    const status = observeRecoveryItemCollection(ctx);
-    if (!status) return;
-
-    if (status.remainingIds.length > 0) {
-        if (status.deadlineReached) {
-            setLootPickupPriority(
-                ctx,
-                ctx.deathRecovery.collectionOrigin,
-                resolvePriorityLootMs(cfg)
-            );
-            completeDeathRecovery(ctx, 'owned-items-unreachable-deadline');
-            return;
-        }
-        ctx.deathRecovery.phase = 'items';
-        return;
-    }
-
-    const earlyReady = status.captureComplete
-        && status.quietForMs >= recoveryQuietMs
-        && !needsGearRecovery(bot);
-    if (!earlyReady && !status.deadlineReached) return;
-
-    ctx.deathRecovery.phase = 'equip';
-    await ctx.agent?.companion?.autoEquip?.equipBest?.();
-    const weaponEquipped = hasEssentialWeaponEquipped(bot);
-    if (!status.deadlineReached && !weaponEquipped) {
-        ctx.deathRecovery.phase = 'items';
-        return;
-    }
-    completeDeathRecovery(
-        ctx,
-        status.deadlineReached
-            ? (weaponEquipped
-                ? 'collection-deadline-equipped'
-                : 'essential-gear-missing-deadline')
-            : 'owned-items-collected-equipped'
-    );
 }
 
 /**
@@ -194,7 +134,7 @@ function evaluateLootShouldRun(ctx) {
 
     const suppressUntil = ctx.nearbyLoot?.suppressUntil || 0;
     if (Date.now() < suppressUntil) return false;
-    if (shouldDeferToCombat(ctx) || hasProtectThreats(ctx)) return false;
+    if (shouldAbortPickupForCombat(ctx)) return false;
 
     return hasNearbyDrops(ctx);
 }
