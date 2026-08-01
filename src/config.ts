@@ -68,6 +68,8 @@ export type NearbyLootConfig = {
 
 export type OwnerWorkConfig = {
   enabled: boolean;
+  /** When true (default), avoid any player's work FOV. When false, only the locked owner. */
+  all_players?: boolean;
   fov_degrees: number;
   swing_idle_ms: number;
   post_work_cooldown_ms: number;
@@ -123,6 +125,7 @@ const DEFAULT_COMPANION: CompanionConfig = {
   awareness_radius: 10,
   owner_work: {
     enabled: true,
+    all_players: true,
     fov_degrees: 100,
     swing_idle_ms: 1000,
     post_work_cooldown_ms: 4000

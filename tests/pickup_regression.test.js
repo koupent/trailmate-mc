@@ -1,0 +1,452 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert/strict';
+import { Vec3 } from 'vec3';
+import { scanCompanionAwareness } from '../src/world/companionAwareness.js';
+import { NearbyLootInterrupt } from '../src/companion/interrupts/NearbyLootInterrupt.js';
+import {
+    applyOwnerWorkRetreat,
+    isBotInOwnerWorkFov,
+    isPositionInOwnerWorkFov,
+    wouldEnterOwnerWorkFov
+} from '../src/companion/ownerWorkMovement.js';
+import {
+    OWNER_WORK_PHASES,
+    seedPlayerWorkPhase
+} from '../src/companion/ownerWorkTracker.js';
+import {
+    pickupNearbyItems,
+    PICKUP_MAGNET_RANGE,
+    resolvePickupRadius,
+    resolveOwnerWorkLootClearance,
+    hasNearbyDrops,
+    buildPickupExclude
+} from '../src/companion/utils/pickupItems.js';
+
+function mockMovement() {
+    const calls = [];
+    return {
+        calls,
+        isHeld: false,
+        stop() {},
+        goToward(pos, range) {
+            calls.push({ x: pos.x, y: pos.y, z: pos.z, range });
+            return true;
+        }
+    };
+}
+
+/**
+ * @param {Partial<{
+ *   botPos: import('vec3').Vec3,
+ *   itemPos: import('vec3').Vec3,
+ *   ownerPos: import('vec3').Vec3 | null,
+ *   ownerYaw: number,
+ *   ownerWorkPhase: string,
+ *   workerEntityId: number,
+ *   awarenessRadius: number,
+ *   nearbyLootRadius: number,
+ *   movement: ReturnType<typeof mockMovement>
+ * }>} [opts]
+ */
+function makePickupCtx(opts = {}) {
+    const botPos = opts.botPos || new Vec3(0, 64, 0);
+    const itemPos = opts.itemPos || new Vec3(1, 64, 0);
+    const movement = opts.movement || mockMovement();
+    const ownerId = 7;
+    const bot = {
+        entity: { position: botPos },
+        entities: {
+            1: { id: 1, name: 'item', position: itemPos }
+        },
+        players: opts.ownerPos
+            ? { Steve: { entity: { id: ownerId, position: opts.ownerPos, yaw: opts.ownerYaw ?? 0 } } }
+            : {},
+        interrupt_code: false
+    };
+    if (opts.ownerPos) {
+        bot.entities[ownerId] = bot.players.Steve.entity;
+    }
+    const ctx = {
+        bot,
+        movement,
+        ownerName: opts.ownerPos ? 'Steve' : null,
+        ownerEntity: opts.ownerPos
+            ? bot.players.Steve.entity
+            : null,
+        config: {
+            awareness_radius: opts.awarenessRadius ?? 10,
+            owner_near_radius: opts.ownerNearRadius ?? 12,
+            nearby_loot: { enabled: true, radius: opts.nearbyLootRadius ?? 8 },
+            owner_work: { enabled: true, all_players: true, fov_degrees: 100 }
+        },
+        playerWorkById: new Map(),
+        deathRecovery: { active: false },
+        graveLoot: { active: false },
+        nearbyLoot: { active: false, suppressUntil: 0 },
+        holdReflexes: false
+    };
+    const workPhase = opts.ownerWorkPhase || OWNER_WORK_PHASES.idle;
+    if (workPhase !== OWNER_WORK_PHASES.idle) {
+        const workerId = opts.workerEntityId ?? ownerId;
+        seedPlayerWorkPhase(ctx, workerId, workPhase);
+        if (workerId !== ownerId && !bot.entities[workerId]) {
+            bot.entities[workerId] = {
+                id: workerId,
+                type: 'player',
+                position: opts.ownerPos || new Vec3(0, 64, 0),
+                yaw: opts.ownerYaw ?? 0
+            };
+            bot.players.Worker = { entity: bot.entities[workerId] };
+        }
+    }
+    const radius = resolvePickupRadius(ctx);
+    ctx.getCompanionAwareness = () => scanCompanionAwareness(bot, radius, botPos);
+    ctx.invalidateCompanionAwareness = () => {};
+    return ctx;
+}
+
+describe('pickup regression', () => {
+    it('resolvePickupRadius uses the larger of awareness and nearby_loot.radius', () => {
+        assert.equal(resolvePickupRadius({
+            config: { awareness_radius: 10, nearby_loot: { radius: 8 } }
+        }), 10);
+        assert.equal(resolvePickupRadius({
+            config: { awareness_radius: 6, nearby_loot: { radius: 12 } }
+        }), 12);
+    });
+
+    it('approaches the nearest visible drop first when several are present', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(8, 64, 0),
+            movement
+        });
+        ctx.bot.entities[2] = { id: 2, name: 'item', position: new Vec3(2, 64, 0) };
+
+        await pickupNearbyItems(ctx, {
+            durationMs: 120,
+            pollMs: 20,
+            untilClear: false
+        });
+
+        assert.ok(movement.calls.length >= 1, 'expected movement toward nearest drop');
+        const first = movement.calls[0];
+        assert.ok(Math.abs(first.x - 2) < Math.abs(first.x - 8));
+    });
+
+    it('re-targets to a closer drop instead of committing to a distant one', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(8, 64, 0),
+            movement
+        });
+        ctx.bot.entities[2] = { id: 2, name: 'item', position: new Vec3(2, 64, 0) };
+
+        await pickupNearbyItems(ctx, {
+            durationMs: 200,
+            pollMs: 30,
+            untilClear: false
+        });
+
+        const towardNear = movement.calls.some((call) => Math.abs(call.x - 2) < 1);
+        assert.equal(towardNear, true);
+        const onlyFar = movement.calls.every((call) => Math.abs(call.x - 8) < 1);
+        assert.equal(onlyFar, false);
+    });
+
+    it('moves toward items that are nearby but outside magnet range', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(0, 64, 1.5),
+            movement
+        });
+
+        await pickupNearbyItems(ctx, {
+            durationMs: 400,
+            pollMs: 20,
+            untilClear: false
+        });
+
+        assert.ok(movement.calls.length >= 1, 'expected pathfinder movement before magnet range');
+    });
+
+    it('approaches a nearby drop when owner work is idle', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(2, 64, 0),
+            movement
+        });
+        const attempts = await pickupNearbyItems(ctx, {
+            durationMs: 300,
+            pollMs: 20,
+            untilClear: false
+        });
+        assert.ok(attempts >= 1);
+        assert.ok(movement.calls.length >= 1);
+    });
+
+    it('owner作業中でもドロップがあればshouldRunがtrueになる', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = makePickupCtx({ ownerWorkPhase: OWNER_WORK_PHASES.deferring });
+        assert.equal(interrupt.shouldRun(ctx), true);
+    });
+
+    it('owner作業中は視界内の遠方ドロップへは近づかない', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 6),
+            itemPos: new Vec3(0, 64, -3),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            movement
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(wouldEnterOwnerWorkFov(ctx, { x: 0, y: 64, z: -3 }), true);
+
+        const attempts = await pickupNearbyItems(ctx, {
+            durationMs: 300,
+            pollMs: 20,
+            untilClear: false
+        });
+        assert.equal(attempts, 0);
+        assert.equal(movement.calls.length, 0);
+    });
+
+    it('owner作業中はオーナー視界内のドロップを横取りしない', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, -3),
+            itemPos: new Vec3(0, 64, -3),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            movement
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(hasNearbyDrops(ctx), false);
+
+        const attempts = await pickupNearbyItems(ctx, {
+            durationMs: 300,
+            pollMs: 20,
+            untilClear: false
+        });
+        assert.equal(attempts, 0);
+        assert.equal(movement.calls.length, 0);
+    });
+
+    it('owner作業中はオーナー近傍のドロップだけではshouldRunがfalse', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, -3),
+            itemPos: new Vec3(0, 64, -1),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(interrupt.shouldRun(ctx), false);
+    });
+
+    it('owner作業中でもオーナー視界外のドロップがあればshouldRunがtrue', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 6),
+            itemPos: new Vec3(0, 64, 7),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(interrupt.shouldRun(ctx), true);
+    });
+
+    it('exits immediately after the last drop is gone instead of waiting grace+quiet', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(2, 64, 0),
+            movement
+        });
+        let scans = 0;
+        const baseAwareness = ctx.getCompanionAwareness;
+        ctx.getCompanionAwareness = () => {
+            const snap = baseAwareness();
+            scans += 1;
+            if (scans >= 3) {
+                return { ...snap, dropItems: [] };
+            }
+            return snap;
+        };
+        const started = Date.now();
+        await pickupNearbyItems(ctx, {
+            durationMs: 15000,
+            pollMs: 20,
+            untilClear: true,
+            graceMs: 2500,
+            quietMs: 1500
+        });
+        const elapsed = Date.now() - started;
+        assert.ok(elapsed < 1500, `expected fast release after pickup, elapsed=${elapsed}`);
+    });
+
+    it('拾えないドロップだけのときは長時間ブロックしない', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, -3),
+            itemPos: new Vec3(0, 64, -1),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            movement
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        const started = Date.now();
+        await pickupNearbyItems(ctx, {
+            durationMs: 15000,
+            pollMs: 20,
+            untilClear: true,
+            graceMs: 2500,
+            quietMs: 1500
+        });
+        const elapsed = Date.now() - started;
+        assert.ok(elapsed < 1000, `expected quick exit, elapsed=${elapsed}`);
+    });
+
+    it('resolveOwnerWorkLootClearance prefers nearby_loot.owner_clearance', () => {
+        assert.equal(resolveOwnerWorkLootClearance({
+            config: { nearby_loot: { owner_clearance: 5 }, owner_near_radius: 12 }
+        }), 5);
+        assert.equal(resolveOwnerWorkLootClearance({
+            config: { follow_distance: 3, owner_near_radius: 12 }
+        }), 4);
+    });
+
+    it('buildPickupExclude blocks owner-FOV drops during deferring', () => {
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, -3),
+            itemPos: new Vec3(0, 64, -1),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        const exclude = buildPickupExclude(ctx, { magnetRange: PICKUP_MAGNET_RANGE });
+        assert.equal(exclude(ctx.bot.entities[1]), true);
+    });
+
+    it('keeps approaching a drop outside worker FOV even when path crosses FOV', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 6),
+            itemPos: new Vec3(0, 64, 8),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            movement
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(isBotInOwnerWorkFov(ctx), false);
+        assert.equal(isPositionInOwnerWorkFov(ctx, { x: 0, y: 64, z: 8 }), false);
+
+        const attempts = await pickupNearbyItems(ctx, {
+            durationMs: 300,
+            pollMs: 20,
+            untilClear: false
+        });
+        assert.ok(attempts >= 1);
+        assert.ok(movement.calls.length >= 1);
+    });
+
+    it('owner作業中は視界外の近傍ドロップへ近づく', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 4),
+            itemPos: new Vec3(0, 64, 8),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            movement
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(wouldEnterOwnerWorkFov(ctx, { x: 0, y: 64, z: 8 }), false);
+
+        const attempts = await pickupNearbyItems(ctx, {
+            durationMs: 300,
+            pollMs: 20,
+            untilClear: false
+        });
+        assert.ok(attempts >= 1);
+        assert.ok(movement.calls.length >= 1);
+    });
+
+    it('magnet range allows pickup beside owner FOV without entering it', () => {
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 6),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        const besideBot = { x: 0, y: 64, z: 6.5 };
+        assert.ok(
+            wouldEnterOwnerWorkFov(ctx, besideBot, { withinPickupRange: PICKUP_MAGNET_RANGE }) === false
+        );
+    });
+
+    it('hasNearbyDrops ignores blocked owner-work drops', () => {
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, -3),
+            itemPos: new Vec3(0, 64, -1),
+            ownerPos: new Vec3(0, 64, 0),
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            movement: mockMovement()
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(hasNearbyDrops(ctx), false);
+    });
+
+    it('hasNearbyDrops rescans instead of trusting an empty cached snapshot', () => {
+        const botPos = new Vec3(0, 64, 0);
+        const bot = {
+            entity: { position: botPos },
+            entities: {}
+        };
+        const ctx = makePickupCtx({ botPos, movement: mockMovement() });
+        ctx._awareness = { dropItems: [], radius: 12 };
+        bot.entities[1] = { name: 'item', position: new Vec3(2, 64, 0) };
+        assert.equal(hasNearbyDrops(ctx), true);
+    });
+
+    it('オーナー未設定でも他プレイヤー作業中は視界内ドロップを横取りしない', async () => {
+        const movement = mockMovement();
+        const workerPos = new Vec3(0, 64, 0);
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, -3),
+            itemPos: new Vec3(0, 64, -1),
+            ownerPos: null,
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            workerEntityId: 42,
+            movement
+        });
+        ctx.bot.entities[42] = { id: 42, type: 'player', position: workerPos, yaw: 0 };
+        ctx.bot.players.Worker = { entity: ctx.bot.entities[42] };
+        seedPlayerWorkPhase(ctx, 42, OWNER_WORK_PHASES.deferring);
+
+        const attempts = await pickupNearbyItems(ctx, {
+            durationMs: 300,
+            pollMs: 20,
+            untilClear: false
+        });
+        assert.equal(attempts, 0);
+        assert.equal(hasNearbyDrops(ctx), false);
+    });
+
+    it('detects drops out to the configured pickup radius', () => {
+        const botPos = new Vec3(0, 64, 0);
+        const bot = {
+            entity: { position: botPos },
+            entities: {
+                1: { name: 'item', position: new Vec3(9.5, 64, 0) },
+                2: { name: 'item', position: new Vec3(10.5, 64, 0) }
+            }
+        };
+        const snap = scanCompanionAwareness(bot, 10, botPos);
+        assert.equal(snap.dropItems.length, 1);
+    });
+});

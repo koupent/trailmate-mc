@@ -45,6 +45,11 @@ import { CombatOptimizer } from '../combat/CombatOptimizer.js';
 import { CombatStateStore } from '../combat/CombatStateStore.js';
 import { CombatTrace } from '../combat/CombatTrace.js';
 import {
+  collectTacticalThreatObservations,
+  DEFAULT_TACTICAL_OBSERVATION_RADIUS,
+  type TacticalThreatObservation
+} from '../combat/TacticalObservation.js';
+import {
   combatOwnsControl,
   refreshCombatControlUntil
 } from '../combat/TacticalOwnership.js';
@@ -93,6 +98,7 @@ const RETREAT_GOAL_RANGE = 1.5;
 const RETREAT_MELEE_RANGE = 3.5;
 /** この距離内では実際に攻撃できるよう `back` 入力を解除する。 */
 const MELEE_COMMIT_RANGE = 1.8;
+const WIDE_REPOSITION_OWNER_ALLOWANCE = 2.25;
 
 type ThreatArcBias = {
   sign: 1 | -1;
@@ -101,6 +107,7 @@ type ThreatArcBias = {
   destination: { x: number; z: number } | null;
   threatCount: number;
   rangedThreatCount: number;
+  observations: TacticalThreatObservation[];
   selection: ReturnType<typeof chooseBestThreatPosition>;
 };
 
@@ -672,18 +679,13 @@ export class Reflexes {
     if (!this.combatTrace.enabled || !this.bot.entity || !intent) return;
     const botPos = this.bot.entity.position;
     const ownerPos = this.lastDefendOwner?.position ?? null;
-    const ranges = this.protectRanges();
-    const threats = Object.values(this.bot.entities || {})
-      .map((entity: any) => ({
-        entity,
-        reason: isProtectThreat(botPos, ownerPos, entity, ranges)
-      }))
-      .filter((entry) => entry.reason != null)
-      .map(({ entity, reason }) => {
+    const observations = arcBias?.observations ?? this.collectTacticalObservations(primary);
+    const threats = observations
+      .map(({ entity, source }) => {
         const traced = this.traceEntity(entity);
         return traced ? {
           ...traced,
-          reason,
+          source,
           enemyClass: classifyEnemy(entity?.name),
           ranged: isRangedEntity(entity)
         } : null;
@@ -704,6 +706,7 @@ export class Reflexes {
       mode: this.mode,
       primary: primary?.id ?? primary?.name ?? null,
       threats: threats.map((threat) => threat.id ?? threat.name),
+      owner: ownerPos ? this.tracePosition(ownerPos) : null,
       latch: this.arcNarrowLatched,
       moved: selection?.moved ?? false,
       intent: intent.priority,
@@ -718,12 +721,15 @@ export class Reflexes {
         yawDeg: traceDegrees(this.bot.entity.yaw),
         health: traceNumber(this.bot.health)
       },
+      owner: ownerPos ? this.tracePosition(ownerPos) : null,
       primary: this.traceEntity(primary),
       threats,
       arc: arcBias ? {
         spanDeg: traceDegrees(arcBias.spanRad, false),
         midBearingDeg: traceDegrees(arcBias.midRad),
         latched: this.arcNarrowLatched,
+        threatCount: arcBias.threatCount,
+        tacticalRadius: this.tacticalObservationRadius(),
         rangedThreatCount: arcBias.rangedThreatCount
       } : null,
       candidate: selection ? {
@@ -1203,19 +1209,24 @@ export class Reflexes {
     const botPos = this.bot.entity.position;
     const ownerPos = this.lastDefendOwner?.position ?? null;
     const ranges = this.protectRanges();
-    const threats: Array<{ x: number; z: number }> = [];
-    let rangedThreatCount = 0;
-    for (const entity of Object.values(this.bot.entities || {})) {
-      if (!isProtectThreat(botPos, ownerPos, entity, ranges)) continue;
-      if (!entity?.position) continue;
-      if (isRangedEntity(entity)) rangedThreatCount += 1;
-      threats.push({ x: entity.position.x, z: entity.position.z });
-    }
+    const observations = this.collectTacticalObservations(primary);
+    const threats = observations.map(({ entity }) => ({
+      x: entity.position.x,
+      z: entity.position.z
+    }));
+    const rangedThreatCount = observations.filter(({ entity }) => isRangedEntity(entity)).length;
     const arc = computeThreatArc(
       { x: botPos.x, z: botPos.z },
       threats
     );
     if (!arc) return null;
+    const currentOwnerDistance = ownerPos ? distanceToPos(botPos, ownerPos) : 0;
+    const tacticalOwnerLeash = arc.spanRad >= WIDE_THREAT_SPAN_RAD
+      ? Math.max(
+          ranges.ownerProtectRange,
+          currentOwnerDistance + WIDE_REPOSITION_OWNER_ALLOWANCE
+        )
+      : ranges.ownerProtectRange;
 
     const selection = chooseBestThreatPosition(
       { x: botPos.x, z: botPos.z },
@@ -1226,7 +1237,7 @@ export class Reflexes {
         minimumImprovement:
           (this.activePresetParams.positioningImprovementMarginDeg * Math.PI) / 180,
         ownerPos: ownerPos ? { x: ownerPos.x, z: ownerPos.z } : null,
-        maxOwnerDistance: ranges.ownerProtectRange
+        maxOwnerDistance: tacticalOwnerLeash
       }
     );
 
@@ -1245,8 +1256,27 @@ export class Reflexes {
       destination: selection.moved ? selection.chosen.position : null,
       threatCount: threats.length,
       rangedThreatCount,
+      observations,
       selection
     };
+  }
+
+  private collectTacticalObservations(primary: any): TacticalThreatObservation[] {
+    if (!this.bot.entity) return [];
+    return collectTacticalThreatObservations({
+      botPos: this.bot.entity.position,
+      primary,
+      entities: Object.values(this.bot.entities || {}),
+      radius: this.tacticalObservationRadius(),
+      hasLineOfSight: (entity) => hasLineOfSight(this.bot, entity)
+    });
+  }
+
+  private tacticalObservationRadius(): number {
+    return Math.min(
+      DEFAULT_TACTICAL_OBSERVATION_RADIUS,
+      Math.max(0, this.config.hostile_range)
+    );
   }
 
   private hasShieldEquipped(): boolean {

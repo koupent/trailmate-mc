@@ -1,5 +1,4 @@
-import { pickupNearbyItems } from '../utils/pickupItems.js';
-import { isOwnerWorkDeferring } from '../ownerWorkTracker.js';
+import { pickupNearbyItems, resolvePickupRadius, hasNearbyDrops } from '../utils/pickupItems.js';
 import {
     completeDeathRecovery,
     isRecoveryEmergencyActive,
@@ -16,16 +15,16 @@ import {
 } from '../combatGate.js';
 
 const DEFAULT_AWARENESS_RADIUS = 10;
-const DEFAULT_MAX_MS = 15000;
-const DEFAULT_QUIET_MS = 1500;
-const DEFAULT_GRACE_MS = 2500;
+const DEFAULT_MAX_MS = 8000;
+const DEFAULT_QUIET_MS = 400;
+const DEFAULT_GRACE_MS = 500;
 const DEFAULT_RECOVERY_RADIUS = 12;
 const DEFAULT_RECOVERY_QUIET_MS = 750;
 
 /**
  * Pick up ground-item entities near the bot.
  * Independent from grave digging / death-return travel — those only get the bot near loot.
- * オーナーの作業中は通常回収を止め、護衛戦闘へ制御を譲る。
+ * 回収は常時有効。オーナー作業中の視界退避は ownerWorkMovement が移動を制御する。
  */
 export class NearbyLootInterrupt {
     constructor() {
@@ -36,36 +35,7 @@ export class NearbyLootInterrupt {
      * @param {import('../CompanionContext.js').CompanionContext} ctx
      */
     shouldRun(ctx) {
-        const cfg = ctx.config?.nearby_loot;
-        if (cfg?.enabled === false) return false;
-        if (!ctx.bot?.entity) return false;
-        const recovery = ctx.deathRecovery;
-        if (recovery?.active) {
-            if (isRecoveryEmergencyActive(ctx)) return false;
-            return recovery.phase === 'items';
-        }
-        if (Date.now() < (ctx.nearbyLoot?.suppressUntil || 0)) return false;
-        if (shouldDeferToCombat(ctx) || hasProtectThreats(ctx)) return false;
-
-        // Stay out of the owner's work area; death/grave recovery still loots.
-        if (
-            isOwnerWorkDeferring(ctx)
-            && !ctx.deathRecovery?.active
-            && !ctx.graveLoot?.active
-        ) {
-            return false;
-        }
-
-        const snap = ctx.getCompanionAwareness?.();
-        if (snap) return snap.dropItems.length > 0;
-
-        const radius = ctx.config?.awareness_radius ?? DEFAULT_AWARENESS_RADIUS;
-        return Object.values(ctx.bot.entities || {}).some((entity) => {
-            if (!entity?.position || !entity.name) return false;
-            const name = String(entity.name).toLowerCase();
-            if (name !== 'item' && name !== 'item_entity') return false;
-            return ctx.bot.entity.position.distanceTo(entity.position) <= radius;
-        });
+        return evaluateLootShouldRun(ctx);
     }
 
     /**
@@ -77,8 +47,8 @@ export class NearbyLootInterrupt {
         const recovery = ctx.deathRecovery;
         const recovering = Boolean(recovery?.active && recovery.phase === 'items');
         const radius = recovering
-            ? (cfg.recovery_radius ?? Math.max(cfg.radius ?? DEFAULT_AWARENESS_RADIUS, DEFAULT_RECOVERY_RADIUS))
-            : (ctx.config?.awareness_radius ?? DEFAULT_AWARENESS_RADIUS);
+            ? (cfg.recovery_radius ?? Math.max(resolvePickupRadius(ctx), DEFAULT_RECOVERY_RADIUS))
+            : resolvePickupRadius(ctx);
         const maxMs = cfg.max_ms ?? DEFAULT_MAX_MS;
         const quietMs = cfg.quiet_ms ?? DEFAULT_QUIET_MS;
         const graceMs = cfg.grace_ms ?? DEFAULT_GRACE_MS;
@@ -140,8 +110,7 @@ export class NearbyLootInterrupt {
                     : undefined,
                 shouldAbort: recovering
                     ? () => isRecoveryEmergencyActive(ctx) || !ctx.deathRecovery?.active
-                    : () => isOwnerWorkDeferring(ctx)
-                        || shouldDeferToCombat(ctx)
+                    : () => shouldDeferToCombat(ctx)
                         || hasProtectThreats(ctx)
             });
 
@@ -177,4 +146,25 @@ export class NearbyLootInterrupt {
             releaseHoldReflexesIfIdle(ctx);
         }
     }
+}
+
+/**
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ */
+function evaluateLootShouldRun(ctx) {
+    const cfg = ctx.config?.nearby_loot;
+    if (cfg?.enabled === false) return false;
+    if (!ctx.bot?.entity) return false;
+
+    const recovery = ctx.deathRecovery;
+    if (recovery?.active) {
+        if (isRecoveryEmergencyActive(ctx)) return false;
+        return recovery.phase === 'items';
+    }
+
+    const suppressUntil = ctx.nearbyLoot?.suppressUntil || 0;
+    if (Date.now() < suppressUntil) return false;
+    if (shouldDeferToCombat(ctx) || hasProtectThreats(ctx)) return false;
+
+    return hasNearbyDrops(ctx);
 }

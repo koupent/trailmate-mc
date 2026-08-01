@@ -5,6 +5,11 @@ import { FollowMode } from '../src/companion/modes/FollowMode.js';
 import { WaitMode } from '../src/companion/modes/WaitMode.js';
 import { hasLineOfSight } from '../src/world/lineOfSight.js';
 import { computeThreatArc } from '../src/combat/threatArc.js';
+import {
+  collectTacticalThreatObservations,
+  DEFAULT_TACTICAL_OBSERVATION_RADIUS
+} from '../src/combat/TacticalObservation.js';
+import { CombatTrace } from '../src/combat/CombatTrace.js';
 import type { ReflexConfig } from '../src/config.js';
 
 type Vec = {
@@ -264,6 +269,29 @@ describe('hasLineOfSight', () => {
     const owner = makeEntity('Alice', 'player', 2, 64, 0);
     track(owner);
     assert.equal(hasLineOfSight(bot, owner), false);
+  });
+});
+
+describe('交戦中の戦術観測境界', () => {
+  it('primaryと8m以内の可視hostileだけを収集する', () => {
+    const primary = makeEntity('zombie', 'hostile', 10, 64, 0);
+    const visible = makeEntity('skeleton', 'hostile', -7, 64, 0);
+    const blocked = makeEntity('spider', 'hostile', 0, 64, 6);
+    const far = makeEntity('creeper', 'hostile', 9, 64, 0);
+    const passive = makeEntity('cow', 'animal', 2, 64, 0);
+
+    const observations = collectTacticalThreatObservations({
+      botPos: vec3(0, 64, 0),
+      primary,
+      entities: [primary, visible, blocked, far, passive],
+      radius: DEFAULT_TACTICAL_OBSERVATION_RADIUS,
+      hasLineOfSight: (entity) => entity !== blocked
+    });
+
+    assert.deepEqual(observations.map(({ entity, source }) => [entity.name, source]), [
+      ['zombie', 'primary'],
+      ['skeleton', 'nearby-visible']
+    ]);
   });
 });
 
@@ -619,6 +647,78 @@ describe('Reflexesの戦闘判断', () => {
     assert.equal(movement._stats().destinations.length, 0);
     assert.equal(setup.bot._stats().attackTarget, zombie);
     assert.equal(setup.bot._stats().forceStopCount, 0);
+  });
+
+  it('owner遠方でも左右4mのゾンビ2体を戦術観測し位置取りする', async () => {
+    const left = makeEntity('zombie', 'hostile', -4, 64, 0);
+    const right = makeEntity('zombie', 'hostile', 4, 64, 0);
+    const owner = makeOwner('Alice', 30, 64, 0, left);
+    const setup = makeBot({ hostiles: [left, right] });
+    setup.track(left, right, owner);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+    const traceLines: string[] = [];
+    (reflexes as any).combatTrace = new CombatTrace({
+      enabled: true,
+      logger: (line) => traceLines.push(line)
+    });
+    (reflexes as any).currentTarget = left;
+    (reflexes as any).lastTargetSeenAt = Date.now();
+
+    const bias = (reflexes as any).collectThreatArcBias(left);
+    assert.equal(bias?.threatCount, 2);
+    assert.equal(bias?.rangedThreatCount, 0);
+    assert.equal(bias?.selection.moved, true);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+
+    assert.equal(movement._stats().destinations.length, 1);
+    assert.equal(setup.bot._stats().attackCount, 0);
+    const trace = JSON.parse(traceLines.at(-1)!.slice('[combat-trace] '.length));
+    assert.equal(trace.event, 'decision');
+    assert.deepEqual(trace.owner, { x: 30, y: 64, z: 0 });
+    assert.equal(trace.arc.threatCount, 2);
+    assert.equal(trace.arc.tacticalRadius, 8);
+    assert.equal(trace.threats.length, 2);
+    assert.ok(trace.destination);
+    assert.equal(trace.candidate.moved, true);
+  });
+
+  it('owner遠方の左右3mゾンビ2体へ位置取りしながら近接攻撃する', async () => {
+    const left = makeEntity('zombie', 'hostile', -3, 64, 0);
+    const right = makeEntity('zombie', 'hostile', 3, 64, 0);
+    const owner = makeOwner('Alice', 30, 64, 0, left);
+    const setup = makeBot({ hostiles: [left, right] });
+    setup.track(left, right, owner);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+
+    assert.equal(movement._stats().destinations.length, 1);
+    assert.ok(setup.bot._stats().attackCount >= 1);
+    assert.equal(setup.bot._stats().attackTarget, left);
+  });
+
+  it('owner遠方の近接＋遠距離混成も共通arcへ集約する', async () => {
+    const zombie = makeEntity('zombie', 'hostile', -4, 64, 0);
+    const skeleton = makeEntity('skeleton', 'hostile', 4, 64, 0);
+    const owner = makeOwner('Alice', 30, 64, 0, zombie);
+    const setup = makeBot({ hostiles: [zombie, skeleton] });
+    setup.track(zombie, skeleton, owner);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+    (reflexes as any).currentTarget = zombie;
+    (reflexes as any).lastTargetSeenAt = Date.now();
+
+    const bias = (reflexes as any).collectThreatArcBias(zombie);
+    assert.equal(bias?.threatCount, 2);
+    assert.equal(bias?.rangedThreatCount, 1);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+
+    assert.equal(movement._stats().destinations.length, 1);
+    assert.equal(setup.bot._stats().attackCount, 0);
   });
 
   it('前後脅威へ横方向に位置取りし近接攻撃も維持する', async () => {

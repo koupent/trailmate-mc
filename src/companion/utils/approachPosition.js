@@ -5,14 +5,24 @@ const DEFAULT_TIMEOUT_MS = 8000;
 const DEFAULT_POLL_MS = 250;
 
 /**
+ * @param {{ x: number, y: number, z: number }} a
+ * @param {{ x: number, y: number, z: number }} b
+ */
+function horizontalDistance(a, b) {
+    return Math.hypot(a.x - b.x, a.z - b.z);
+}
+
+/**
  * Walk toward a fixed position until within range or timeout.
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} pos
  * @param {{
  *   range?: number,
+ *   pathRange?: number,
  *   timeoutMs?: number,
  *   pollMs?: number,
  *   arrivalSlack?: number,
+ *   horizontalArrival?: boolean,
  *   abort?: () => boolean
  * }} [options]
  * @returns {Promise<boolean>}
@@ -22,15 +32,22 @@ export async function approachPosition(ctx, pos, options = {}) {
     if (!bot?.entity || !pos) return false;
 
     const range = options.range ?? DEFAULT_RANGE;
+    const pathRange = options.pathRange ?? range;
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     const arrivalSlack = options.arrivalSlack ?? 0.5;
+    const horizontalArrival = options.horizontalArrival === true;
     const shouldAbort = typeof options.abort === 'function' ? options.abort : null;
-    const arrived = () => bot.entity.position.distanceTo(pos) <= range + arrivalSlack;
+    const distanceTo = (from) => (
+        horizontalArrival
+            ? horizontalDistance(from, pos)
+            : from.distanceTo(pos)
+    );
+    const arrived = () => distanceTo(bot.entity.position) <= range + arrivalSlack;
 
     if (arrived()) return true;
 
-    ctx.movement?.goToward?.(pos, range);
+    ctx.movement?.goToward?.(pos, pathRange);
 
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -50,12 +67,13 @@ export async function approachPosition(ctx, pos, options = {}) {
             ctx.movement?.stop?.();
             return true;
         }
-        ctx.movement?.goToward?.(pos, range);
+        ctx.movement?.goToward?.(pos, pathRange);
         await sleep(pollMs);
     }
 
     ctx.movement?.stop?.();
-    return bot.entity ? bot.entity.position.distanceTo(pos) <= range + Math.max(arrivalSlack, 1) : false;
+    const finalDist = bot.entity ? distanceTo(bot.entity.position) : Infinity;
+    return finalDist <= range + Math.max(arrivalSlack, horizontalArrival ? 0.25 : 1);
 }
 
 /**

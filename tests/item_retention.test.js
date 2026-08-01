@@ -451,6 +451,7 @@ describe('PeriodicItemTransfer', () => {
         assert.ok(events.includes('resume'));
         assert.ok(events.includes('equip-resume'));
         assert.equal(ctx.itemTransfer.active, false);
+        assert.equal(ctx.nearbyLoot.suppressUntil, 0);
     });
 
     it('skips when there is nothing giveable after interval check', async () => {

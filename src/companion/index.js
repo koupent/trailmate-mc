@@ -32,9 +32,10 @@ const DEFAULT_CONFIG = {
     stuck_detect_seconds: 1.5,
     tick_ms: 250,
     torch_light_threshold: DEFAULT_TORCH_LIGHT_THRESHOLD,
-    awareness_radius: 10,
+    awareness_radius: 12,
     owner_work: {
         enabled: true,
+        all_players: true,
         fov_degrees: 100,
         swing_idle_ms: 1000,
         post_work_cooldown_ms: 4000
@@ -51,14 +52,14 @@ const DEFAULT_CONFIG = {
     },
     nearby_loot: {
         enabled: true,
-        radius: 8,
+        radius: 12,
         recovery_radius: 12,
         recovery_capture_ms: 1000,
         recovery_deadline_ms: 12000,
         recovery_quiet_ms: 750,
-        max_ms: 15000,
-        quiet_ms: 1500,
-        grace_ms: 2500,
+        max_ms: 8000,
+        quiet_ms: 400,
+        grace_ms: 500,
         give_suppress_ms: 12000
     },
     item_share: createItemShareConfig(),

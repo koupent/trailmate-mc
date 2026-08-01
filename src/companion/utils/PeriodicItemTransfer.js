@@ -134,6 +134,9 @@ export class PeriodicItemTransfer {
                 console.log(
                     `[companion] item-share: gave ${stacks.length} stack(s) to ${ctx.ownerName}`
                 );
+                const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
+                ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
+                ctx.nearbyLoot.suppressUntil = Date.now() + ms;
             } else if (result === 'deferred') {
                 console.log('[companion] item-share: deferred for combat');
             } else if (result !== 'empty') {
@@ -143,9 +146,6 @@ export class PeriodicItemTransfer {
         } catch (err) {
             console.warn('[companion] item-share failed:', err.message || err);
         } finally {
-            const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
-            ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
-            ctx.nearbyLoot.suppressUntil = Date.now() + ms;
             this.autoEquip?.resume?.();
             this.manager?.resume?.();
             ctx.itemTransfer.active = false;

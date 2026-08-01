@@ -214,8 +214,9 @@ npx tsx src/simulator/server.ts
 | キー | 意味 | 既定 |
 |---|---|---|
 | `awareness_radius` | 相棒が周囲のエンティティ／墓を把握する半径（SSOT） | `10` |
-| `owner_work.enabled` | オーナー作業中に視界外へ退避する | `true` |
-| `owner_work.fov_degrees` | 退避判定に使うオーナー視界の水平角度 | `100` |
+| `owner_work.enabled` | プレイヤー作業中に視界外へ退避する | `true` |
+| `owner_work.all_players` | オーナー以外のプレイヤー作業にも退避する | `true` |
+| `owner_work.fov_degrees` | 退避判定に使う作業プレイヤー視界の水平角度 | `100` |
 | `owner_work.swing_idle_ms` | スイング停止後、作業終了とみなすまでの待ち | `1000` |
 | `owner_work.post_work_cooldown_ms` | 作業終了後も視界外を維持する時間 | `4000` |
 | `death_return.enabled` | リスポーン後に死亡座標へ戻る | `true` |

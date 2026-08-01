@@ -29,7 +29,7 @@ import { OwnGraveInterrupt } from '../src/companion/interrupts/OwnGraveInterrupt
 import { NearbyLootInterrupt } from '../src/companion/interrupts/NearbyLootInterrupt.js';
 import { pickupNearbyItems } from '../src/companion/utils/pickupItems.js';
 import { scanCompanionAwareness } from '../src/world/companionAwareness.js';
-import { createOwnerWorkState, OWNER_WORK_PHASES } from '../src/companion/ownerWorkTracker.js';
+import { OWNER_WORK_PHASES, seedPlayerWorkPhase } from '../src/companion/ownerWorkTracker.js';
 import { selectControlOwner } from '../src/companion/ControlPriority.js';
 
 describe('相棒の制御優先順位', () => {
@@ -538,19 +538,27 @@ describe('NearbyLootInterrupt', () => {
     function makeLootCtx(opts = {}) {
         const botPos = opts.botPos || new Vec3(0, 64, 0);
         const itemPos = opts.itemPos || new Vec3(3, 64, 0);
+        const ownerId = 99;
         const bot = {
             entity: { position: botPos },
             entities: {
                 1: { name: 'item', position: itemPos }
-            }
+            },
+            players: opts.ownerPos
+                ? { Steve: { entity: { id: ownerId, position: opts.ownerPos, yaw: opts.ownerYaw ?? 0 } } }
+                : {}
         };
+        if (opts.ownerPos) {
+            bot.entities[ownerId] = bot.players.Steve.entity;
+        }
         const ctx = {
             bot,
-            ownerEntity: opts.ownerPos ? { position: opts.ownerPos, yaw: 0 } : undefined,
+            ownerName: opts.ownerPos ? 'Steve' : null,
+            ownerEntity: opts.ownerPos ? bot.players.Steve.entity : undefined,
             config: {
                 awareness_radius: 10,
                 nearby_loot: { enabled: true },
-                owner_work: { enabled: true, fov_degrees: 100, swing_idle_ms: 1000, post_work_cooldown_ms: 4000 }
+                owner_work: { enabled: true, all_players: true, fov_degrees: 100, swing_idle_ms: 1000, post_work_cooldown_ms: 4000 }
             },
             deathRecovery: {
                 active: opts.deathActive === true,
@@ -559,11 +567,12 @@ describe('NearbyLootInterrupt', () => {
             },
             graveLoot: { active: opts.graveActive === true },
             nearbyLoot: { active: false, suppressUntil: opts.suppressUntil ?? 0 },
-            ownerWork: {
-                ...createOwnerWorkState(),
-                phase: opts.ownerWorkPhase || OWNER_WORK_PHASES.idle
-            }
+            playerWorkById: new Map()
         };
+        const workPhase = opts.ownerWorkPhase || OWNER_WORK_PHASES.idle;
+        if (workPhase !== OWNER_WORK_PHASES.idle && opts.ownerPos) {
+            seedPlayerWorkPhase(ctx, ownerId, workPhase);
+        }
         ctx.getCompanionAwareness = () => scanCompanionAwareness(bot, 10, botPos);
         ctx.invalidateCompanionAwareness = () => {};
         return ctx;
@@ -591,20 +600,24 @@ describe('NearbyLootInterrupt', () => {
         })), true);
     });
 
-    it('owner作業から退避中はshouldRunがfalseになる', () => {
+    it('owner作業中でもドロップがあればshouldRunがtrueになる', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
-            itemPos: new Vec3(3, 64, 0),
+            botPos: new Vec3(0, 64, 8),
+            itemPos: new Vec3(0, 64, 8),
+            ownerPos: new Vec3(0, 64, 0),
             ownerWorkPhase: OWNER_WORK_PHASES.deferring
-        })), false);
+        })), true);
     });
 
-    it('owner作業後のcooldown中はshouldRunがfalseになる', () => {
+    it('owner作業後のcooldown中でもドロップがあればshouldRunがtrueになる', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
-            itemPos: new Vec3(3, 64, 0),
+            botPos: new Vec3(0, 64, 6),
+            itemPos: new Vec3(0, 64, 6),
+            ownerPos: new Vec3(0, 64, 0),
             ownerWorkPhase: OWNER_WORK_PHASES.cooldown
-        })), false);
+        })), true);
     });
 
     it('owner作業から退避中でもdeathRecoveryの回収を続ける', () => {
