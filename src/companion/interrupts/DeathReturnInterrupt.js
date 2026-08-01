@@ -4,20 +4,10 @@ import {
     markDeathReturnArrived,
     requestRecoveryItemCollection
 } from '../deathRecovery.js';
+import { hasReachedRecoveryDeathSite } from '../utils/graveAwareness.js';
 
-const DEFAULT_ARRIVE_RANGE = 3;
 const DEFAULT_TIMEOUT_MS = 90000;
 const DEFAULT_GRAVE_WAIT_MS = 2500;
-/** Allow arrival when the bot is on a ledge above/below the recorded death Y. */
-const ARRIVAL_MAX_VERTICAL_GAP = 8;
-
-/**
- * @param {{ x: number, y: number, z: number }} a
- * @param {{ x: number, y: number, z: number }} b
- */
-function horizontalDistance(a, b) {
-    return Math.hypot(a.x - b.x, a.z - b.z);
-}
 
 /**
  * After respawn, walk back to the death coordinates.
@@ -60,8 +50,6 @@ export class DeathReturnInterrupt {
         const bot = ctx.bot;
         const dr = ctx.deathRecovery;
         const cfg = ctx.config?.death_return || {};
-        const arriveRange = cfg.arrive_range ?? DEFAULT_ARRIVE_RANGE;
-        const timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
         // pvp停止や戦闘抑制は行わない。Follow側が isControllingMovement で譲る。
 
@@ -70,6 +58,7 @@ export class DeathReturnInterrupt {
             return;
         }
 
+        const timeoutMs = cfg.timeout_ms ?? DEFAULT_TIMEOUT_MS;
         if (Date.now() - (dr.startedAt || Date.now()) > timeoutMs) {
             console.log('[companion] death return timed out');
             ctx.movement.stop();
@@ -86,15 +75,14 @@ export class DeathReturnInterrupt {
             return;
         }
 
-        const dist = horizontalDistance(bot.entity.position, dr.deathPos);
-        const verticalGap = Math.abs(bot.entity.position.y - dr.deathPos.y);
-        if (dist <= arriveRange && verticalGap <= ARRIVAL_MAX_VERTICAL_GAP) {
+        if (hasReachedRecoveryDeathSite(ctx)) {
             ctx.movement.stop();
             markDeathReturnArrived(ctx);
             console.log('[companion] death return arrived; waiting for grave/item recovery');
             return;
         }
 
+        const arriveRange = cfg.arrive_range ?? 3;
         ctx.movement.goToward(dr.deathPos, arriveRange);
     }
 }

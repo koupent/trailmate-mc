@@ -74,5 +74,5 @@ export function hasProtectThreats(ctx) {
 export function shouldDeferRecoveryForCombat(ctx) {
   if (!ctx.deathRecovery?.active) return false;
   if (needsGearRecovery(ctx.bot)) return false;
-  return shouldDeferToCombat(ctx) || hasProtectThreats(ctx);
+  return shouldDeferToCombat(ctx);
 }

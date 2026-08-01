@@ -1,4 +1,5 @@
 import { scanCompanionAwareness } from '../../world/companionAwareness.js';
+import { findOwnGravesFromAwareness } from '../../world/graves.js';
 import { resolvePickupRadius } from './pickupItems.js';
 
 const DEFAULT_GRAVE_SCAN_RADIUS = 10;
@@ -53,4 +54,26 @@ export function hasReachedRecoveryDeathSite(ctx) {
     const horizontal = Math.hypot(botPos.x - deathPos.x, botPos.z - deathPos.z);
     const verticalGap = Math.abs(botPos.y - deathPos.y);
     return horizontal <= arriveRange && verticalGap <= GRAVE_VERTICAL_SCAN_DY;
+}
+
+/**
+ * Recovery中に墓処理へ進めるフェーズか。
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ */
+export function canProcessGraveDuringRecovery(ctx) {
+    if (!ctx.deathRecovery?.active) return true;
+    const phase = ctx.deathRecovery.phase;
+    if (phase === 'grave') return true;
+    if (phase === 'travel') return hasReachedRecoveryDeathSite(ctx);
+    return false;
+}
+
+/**
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ */
+export function findOwnGravesInContext(ctx) {
+    const snap = getGraveAwarenessSnapshot(ctx);
+    const username = ctx.bot?.username;
+    if (!snap || !username) return [];
+    return findOwnGravesFromAwareness(ctx.bot, username, snap);
 }

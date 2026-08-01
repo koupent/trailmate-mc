@@ -194,8 +194,7 @@ function evaluateLootShouldRun(ctx) {
 
     const suppressUntil = ctx.nearbyLoot?.suppressUntil || 0;
     if (Date.now() < suppressUntil) return false;
-    if (shouldDeferToCombat(ctx)) return false;
-    if (hasProtectThreats(ctx)) return false;
+    if (shouldDeferToCombat(ctx) || hasProtectThreats(ctx)) return false;
 
     return hasNearbyDrops(ctx);
 }

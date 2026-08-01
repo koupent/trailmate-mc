@@ -1,5 +1,5 @@
 import { Vec3 } from 'vec3';
-import { findOwnGravesFromAwareness, isGraveCandidateBlock } from '../../world/graves.js';
+import { isGraveCandidateBlock } from '../../world/graves.js';
 import { isGroundItem } from '../../world/entities.js';
 import { approachGraveForDig, isGraveWithinDigReach } from '../utils/graveApproach.js';
 import {
@@ -11,8 +11,8 @@ import {
 } from '../deathRecovery.js';
 import { needsGearRecovery, shouldDeferToCombat } from '../combatGate.js';
 import {
-    getGraveAwarenessSnapshot,
-    hasReachedRecoveryDeathSite
+    canProcessGraveDuringRecovery,
+    findOwnGravesInContext
 } from '../utils/graveAwareness.js';
 import {
     allowDigAt,
@@ -43,19 +43,15 @@ export class OwnGraveInterrupt {
         if (cfg?.enabled === false) return false;
         if (!ctx.bot?.entity) return false;
         const recovery = Boolean(ctx.deathRecovery?.active);
-        if (recovery && isRecoveryEmergencyActive(ctx)) return false;
-        if (recovery) {
-            const phase = ctx.deathRecovery.phase;
-            if (phase !== 'grave' && phase !== 'travel') return false;
-            if (phase === 'travel' && !hasReachedRecoveryDeathSite(ctx)) return false;
+        if (recovery && (isRecoveryEmergencyActive(ctx) || !canProcessGraveDuringRecovery(ctx))) {
+            return false;
         }
         const unarmed = needsGearRecovery(ctx.bot);
         // 武装済みなら戦闘へ譲るが、未武装なら先に装備を復旧する。
         if (!recovery && shouldDeferToCombat(ctx) && !unarmed) return false;
         if (ctx.graveLoot?.active) return true;
 
-        const snap = getGraveAwarenessSnapshot(ctx);
-        return findOwnGravesFromAwareness(ctx.bot, ctx.bot.username, snap).length > 0;
+        return findOwnGravesInContext(ctx).length > 0;
     }
 
     /**
@@ -90,8 +86,7 @@ export class OwnGraveInterrupt {
                 markDeathReturnArrived(ctx);
             }
             ctx.invalidateCompanionAwareness?.();
-            const snap = getGraveAwarenessSnapshot(ctx);
-            const graves = findOwnGravesFromAwareness(bot, bot.username, snap);
+            const graves = findOwnGravesInContext(ctx);
             if (graves.length === 0) return;
 
             const target = graves[0];
