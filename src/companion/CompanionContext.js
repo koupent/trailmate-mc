@@ -30,8 +30,8 @@ export class CompanionContext {
         this.deathRecovery = createDeathRecoveryState();
         /** @type {{ active: boolean, targetKey: string|null }} */
         this.graveLoot = { active: false, targetKey: null };
-        /** @type {{ active: boolean, suppressUntil: number }} nearby ground-item scavenging */
-        this.nearbyLoot = { active: false, suppressUntil: 0 };
+        /** @type {{ active: boolean, suppressUntil: number, priorityUntil?: number, priorityOrigin?: { x: number, y: number, z: number } | null }} nearby ground-item scavenging */
+        this.nearbyLoot = { active: false, suppressUntil: 0, priorityUntil: 0, priorityOrigin: null };
         /** @type {{ active: boolean }} periodic surplus item transfer to owner */
         this.itemTransfer = { active: false };
         /** @type {Map<number, import('./ownerWorkTracker.js').OwnerWorkState>} */

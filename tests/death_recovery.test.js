@@ -22,7 +22,8 @@ import {
     beginDeathReturnAfterSpawn,
     captureDeathState,
     clearDeathReturn,
-    createDeathRecoveryState
+    createDeathRecoveryState,
+    requestRecoveryItemCollection
 } from '../src/companion/deathRecovery.js';
 import { DeathReturnInterrupt } from '../src/companion/interrupts/DeathReturnInterrupt.js';
 import { OwnGraveInterrupt } from '../src/companion/interrupts/OwnGraveInterrupt.js';
@@ -646,6 +647,109 @@ describe('NearbyLootInterrupt', () => {
             itemPos: new Vec3(6, 64, 0),
             suppressUntil: Date.now() - 1
         })), true);
+    });
+
+    it('墓ドロップ優先中はgive抑制中でもshouldRunがtrueになる', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const gravePos = new Vec3(10, 64, 10);
+        const ctx = makeLootCtx({
+            botPos: new Vec3(12, 64, 12),
+            itemPos: new Vec3(10.5, 64, 10.5),
+            suppressUntil: Date.now() + 60_000
+        });
+        ctx.nearbyLoot.priorityUntil = Date.now() + 60_000;
+        ctx.nearbyLoot.priorityOrigin = { x: gravePos.x, y: gravePos.y, z: gravePos.z };
+        ctx.getCompanionAwareness = () => scanCompanionAwareness(ctx.bot, 12, gravePos);
+        assert.equal(interrupt.shouldRun(ctx), true);
+    });
+
+    it('墓ドロップ優先中は戦闘中でもshouldRunがtrueになる', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const gravePos = new Vec3(10, 64, 10);
+        const ctx = makeLootCtx({
+            botPos: new Vec3(12, 64, 12),
+            itemPos: new Vec3(10.5, 64, 10.5),
+            ownerPos: new Vec3(0, 64, 0)
+        });
+        ctx.nearbyLoot.priorityUntil = Date.now() + 60_000;
+        ctx.nearbyLoot.priorityOrigin = { x: gravePos.x, y: gravePos.y, z: gravePos.z };
+        ctx.bot.entities[2] = {
+            name: 'zombie',
+            type: 'hostile',
+            position: new Vec3(11, 64, 11)
+        };
+        ctx.agent = { reflexes: { wantsCombat: true, isControllingMovement: true } };
+        ctx.getCompanionAwareness = () => scanCompanionAwareness(ctx.bot, 12, gravePos);
+        assert.equal(interrupt.shouldRun(ctx), true);
+    });
+
+    it('墓破壊時にcapture/deadlineをリセットする', () => {
+        const ctx = makeLootCtx({ deathActive: true, deathPhase: 'grave' });
+        const now = Date.now();
+        ctx.deathRecovery = {
+            ...createDeathRecoveryState(),
+            active: true,
+            phase: 'grave',
+            collectionStartedAt: now - 20_000,
+            collectionCaptureUntil: now - 15_000,
+            collectionDeadlineAt: now - 5_000,
+            ownedItemIds: [99],
+            ownedItemIdsFrozen: true
+        };
+        requestRecoveryItemCollection(
+            ctx,
+            new Vec3(2, 64, 0),
+            now,
+            'grave',
+            { preexistingItemIds: [1] }
+        );
+        assert.ok(ctx.deathRecovery.collectionCaptureUntil > now);
+        assert.ok(ctx.deathRecovery.collectionDeadlineAt > now);
+        assert.deepEqual(ctx.deathRecovery.ownedItemIds, []);
+        assert.equal(ctx.deathRecovery.ownedItemIdsFrozen, false);
+        assert.ok(ctx.nearbyLoot.priorityUntil > now);
+    });
+
+    it('deadline到達後は優先回収フラグを立てて通常回収へ引き継ぐ', async () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = makeLootCtx({ deathActive: true, deathPhase: 'items' });
+        const now = Date.now();
+        ctx.deathRecovery = {
+            ...createDeathRecoveryState(),
+            active: true,
+            phase: 'items',
+            startedAt: now,
+            deathPos: { x: 0, y: 64, z: 0 },
+            collectionOrigin: { x: 0, y: 64, z: 0 },
+            collectionCaptureUntil: now - 1,
+            collectionDeadlineAt: now - 1,
+            ownedItemIds: [12],
+            ownedItemIdsFrozen: true
+        };
+        ctx.config.nearby_loot = {
+            enabled: true,
+            radius: 8,
+            recovery_capture_ms: 0,
+            recovery_deadline_ms: 80,
+            recovery_quiet_ms: 0,
+            max_ms: 80,
+            quiet_ms: 0,
+            grace_ms: 0
+        };
+        ctx.bot.entities = {
+            12: { id: 12, name: 'item', position: new Vec3(0.5, 64, 0.5) }
+        };
+        ctx.bot.nearestEntity = () => ctx.bot.entities[12] || null;
+        ctx.movement = { stop() {} };
+        ctx.holdReflexes = true;
+        ctx.graveLoot = { active: false };
+        ctx.agent = { companion: { autoEquip: { async equipBest() {} } } };
+
+        await interrupt.run(ctx);
+
+        assert.equal(ctx.deathRecovery.active, false);
+        assert.ok((ctx.nearbyLoot.priorityUntil || 0) > now);
+        assert.deepEqual(ctx.nearbyLoot.priorityOrigin, { x: 0, y: 64, z: 0 });
     });
 
     it('owner近傍に護衛脅威がいればshouldRunがfalseになる', () => {

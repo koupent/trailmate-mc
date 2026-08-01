@@ -12,6 +12,7 @@ import {
     wouldEnterOwnerWorkFov
 } from '../ownerWorkMovement.js';
 import { isOwnerWorkDeferring } from '../ownerWorkTracker.js';
+import { hasActiveLootPickupPriority } from '../deathRecovery.js';
 
 const DEFAULT_AWARENESS_RADIUS = 10;
 /** Close enough for vanilla item magnet / pickup (horizontal). */
@@ -209,10 +210,32 @@ export function hasNearbyDrops(ctx) {
     const bot = ctx?.bot;
     if (!bot?.entity?.position) return false;
     const radius = resolvePickupRadius(ctx);
+    return hasNearbyDropsAt(ctx, bot.entity.position, radius);
+}
+
+/**
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @param {{ x: number, y: number, z: number }} origin
+ * @param {number} radius
+ */
+export function hasNearbyDropsAt(ctx, origin, radius) {
+    const bot = ctx?.bot;
+    if (!bot?.entity || !origin) return false;
     ctx.invalidateCompanionAwareness?.();
-    const snap = scanCompanionAwareness(bot, radius, bot.entity.position);
+    const snap = scanCompanionAwareness(bot, radius, origin);
     const exclude = buildPickupExclude(ctx, { magnetRange: PICKUP_MAGNET_RANGE });
     return snap.dropItems.some((entity) => !exclude(entity));
+}
+
+/**
+ * 墓・死亡地点の優先回収対象がまだ地上に残っているか。
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @param {number} [now]
+ */
+export function hasPriorityLootNearby(ctx, now = Date.now()) {
+    if (!hasActiveLootPickupPriority(ctx, now)) return false;
+    const radius = ctx.config?.nearby_loot?.recovery_radius ?? 12;
+    return hasNearbyDropsAt(ctx, ctx.nearbyLoot.priorityOrigin, radius);
 }
 
 /**

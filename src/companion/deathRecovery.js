@@ -27,6 +27,8 @@
  * }} DeathRecoveryState
  */
 
+const DEFAULT_PRIORITY_LOOT_MS = 45_000;
+
 /** @returns {DeathRecoveryState} */
 export function createDeathRecoveryState() {
     return {
@@ -151,25 +153,66 @@ export function requestRecoveryItemCollection(
     const captureMs = Math.max(1, cfg.recovery_capture_ms ?? 1000);
     const deadlineMs = Math.max(captureMs, cfg.recovery_deadline_ms ?? 12000);
     dr.phase = 'items';
-    // これらの時刻は復旧ミッション全体に属する。緊急生存行動による
-    // 回収の一時停止は許すが、再試行で絶対期限を延長してはならない。
-    if (!dr.collectionStartedAt) dr.collectionStartedAt = now;
-    if (!dr.collectionCaptureUntil) dr.collectionCaptureUntil = now + captureMs;
-    if (!dr.collectionDeadlineAt) dr.collectionDeadlineAt = now + deadlineMs;
-    if (!dr.collectionSnapshotInitialized) {
-        dr.preexistingItemIds = uniqueFiniteIds(options.preexistingItemIds || []);
-        dr.collectionSnapshotInitialized = true;
-    }
-    if (!Array.isArray(dr.ownedItemIds)) dr.ownedItemIds = [];
-    dr.ownedItemIdsFrozen = false;
-    dr.collectionQuietSince = 0;
-    dr.collectionSource = source === 'grave' ? 'grave' : 'death-site';
-    if (source === 'grave') dr.graveBrokenAt = now;
     dr.collectionOrigin = position
         ? { x: position.x, y: position.y, z: position.z }
         : (dr.collectionOrigin || dr.deathPos);
+    dr.collectionSource = source === 'grave' ? 'grave' : 'death-site';
+
+    if (source === 'grave') {
+        // 墓破壊は新しい回収ラウンド。以前のcapture/deadline/owned集合を引き継がない。
+        dr.collectionStartedAt = now;
+        dr.collectionCaptureUntil = now + captureMs;
+        dr.collectionDeadlineAt = now + deadlineMs;
+        dr.preexistingItemIds = uniqueFiniteIds(options.preexistingItemIds || []);
+        dr.collectionSnapshotInitialized = true;
+        dr.ownedItemIds = [];
+        dr.ownedItemIdsFrozen = false;
+        dr.graveBrokenAt = now;
+        setLootPickupPriority(ctx, dr.collectionOrigin, resolvePriorityLootMs(cfg));
+    } else {
+        // これらの時刻は復旧ミッション全体に属する。緊急生存行動による
+        // 回収の一時停止は許すが、再試行で絶対期限を延長してはならない。
+        if (!dr.collectionStartedAt) dr.collectionStartedAt = now;
+        if (!dr.collectionCaptureUntil) dr.collectionCaptureUntil = now + captureMs;
+        if (!dr.collectionDeadlineAt) dr.collectionDeadlineAt = now + deadlineMs;
+        if (!dr.collectionSnapshotInitialized) {
+            dr.preexistingItemIds = uniqueFiniteIds(options.preexistingItemIds || []);
+            dr.collectionSnapshotInitialized = true;
+        }
+        if (!Array.isArray(dr.ownedItemIds)) dr.ownedItemIds = [];
+        dr.ownedItemIdsFrozen = false;
+    }
+
+    dr.collectionQuietSince = 0;
     ctx.holdReflexes = true;
     return true;
+}
+
+/**
+ * 墓・死亡地点のドロップを戦闘・give抑制より優先して回収する。
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ * @param {{ x: number, y: number, z: number } | null | undefined} origin
+ * @param {number} [durationMs]
+ */
+export function setLootPickupPriority(ctx, origin, durationMs = DEFAULT_PRIORITY_LOOT_MS) {
+    if (!origin) return;
+    ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
+    ctx.nearbyLoot.priorityUntil = Date.now() + durationMs;
+    ctx.nearbyLoot.priorityOrigin = { x: origin.x, y: origin.y, z: origin.z };
+}
+
+/**
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ * @param {number} [now]
+ */
+export function hasActiveLootPickupPriority(ctx, now = Date.now()) {
+    const nl = ctx?.nearbyLoot;
+    return Boolean(nl?.priorityUntil && now < nl.priorityUntil && nl.priorityOrigin);
+}
+
+/** @param {object} [cfg] */
+export function resolvePriorityLootMs(cfg = {}) {
+    return cfg.priority_loot_ms ?? DEFAULT_PRIORITY_LOOT_MS;
 }
 
 /** 復旧起点の周囲で共通回収機構が観測したアイテムを追跡する。 */

@@ -1,10 +1,12 @@
-import { pickupNearbyItems, resolvePickupRadius, hasNearbyDrops } from '../utils/pickupItems.js';
+import { pickupNearbyItems, resolvePickupRadius, hasNearbyDrops, hasPriorityLootNearby } from '../utils/pickupItems.js';
 import {
     completeDeathRecovery,
     isRecoveryEmergencyActive,
     observeRecoveryItemCollection,
     releaseHoldReflexesIfIdle,
     requestRecoveryItemCollection,
+    resolvePriorityLootMs,
+    setLootPickupPriority,
     trackRecoveryItem
 } from '../deathRecovery.js';
 import {
@@ -14,7 +16,6 @@ import {
     shouldDeferToCombat
 } from '../combatGate.js';
 
-const DEFAULT_AWARENESS_RADIUS = 10;
 const DEFAULT_MAX_MS = 8000;
 const DEFAULT_QUIET_MS = 400;
 const DEFAULT_GRACE_MS = 500;
@@ -102,50 +103,75 @@ export class NearbyLootInterrupt {
                         const status = observeRecoveryItemCollection(ctx);
                         if (!status) return true;
                         if (status.deadlineReached) return true;
+                        if (status.remainingIds.length > 0) return false;
                         return status.captureComplete
-                            && status.remainingIds.length === 0
                             && status.quietForMs >= recoveryQuietMs
                             && !needsGearRecovery(bot);
                     }
                     : undefined,
                 shouldAbort: recovering
                     ? () => isRecoveryEmergencyActive(ctx) || !ctx.deathRecovery?.active
-                    : () => shouldDeferToCombat(ctx)
-                        || hasProtectThreats(ctx)
+                    : () => {
+                        if (hasPriorityLootNearby(ctx)) return false;
+                        return shouldDeferToCombat(ctx) || hasProtectThreats(ctx);
+                    }
             });
 
             if (recovering && ctx.deathRecovery?.active && !isRecoveryEmergencyActive(ctx)) {
-                const status = observeRecoveryItemCollection(ctx);
-                if (!status) return;
-                const earlyReady = status.captureComplete
-                    && status.remainingIds.length === 0
-                    && status.quietForMs >= recoveryQuietMs
-                    && !needsGearRecovery(bot);
-                if (!earlyReady && !status.deadlineReached) return;
-
-                ctx.deathRecovery.phase = 'equip';
-                await ctx.agent?.companion?.autoEquip?.equipBest?.();
-                const weaponEquipped = hasEssentialWeaponEquipped(bot);
-                if (!status.deadlineReached && !weaponEquipped) {
-                    ctx.deathRecovery.phase = 'items';
-                    return;
-                }
-                completeDeathRecovery(
-                    ctx,
-                    status.deadlineReached
-                        ? (status.remainingIds.length > 0
-                            ? 'owned-items-unreachable-deadline'
-                            : weaponEquipped
-                                ? 'collection-deadline-equipped'
-                                : 'essential-gear-missing-deadline')
-                        : 'owned-items-collected-equipped'
-                );
+                await finishRecoveryItemCollection(ctx, bot, cfg, recoveryQuietMs);
             }
         } finally {
             ctx.nearbyLoot.active = false;
             releaseHoldReflexesIfIdle(ctx);
         }
     }
+}
+
+/**
+ * Recovery回収ループ後の装備・完了判定。
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @param {import('mineflayer').Bot} bot
+ * @param {object} cfg
+ * @param {number} recoveryQuietMs
+ */
+async function finishRecoveryItemCollection(ctx, bot, cfg, recoveryQuietMs) {
+    const status = observeRecoveryItemCollection(ctx);
+    if (!status) return;
+
+    if (status.remainingIds.length > 0) {
+        if (status.deadlineReached) {
+            setLootPickupPriority(
+                ctx,
+                ctx.deathRecovery.collectionOrigin,
+                resolvePriorityLootMs(cfg)
+            );
+            completeDeathRecovery(ctx, 'owned-items-unreachable-deadline');
+            return;
+        }
+        ctx.deathRecovery.phase = 'items';
+        return;
+    }
+
+    const earlyReady = status.captureComplete
+        && status.quietForMs >= recoveryQuietMs
+        && !needsGearRecovery(bot);
+    if (!earlyReady && !status.deadlineReached) return;
+
+    ctx.deathRecovery.phase = 'equip';
+    await ctx.agent?.companion?.autoEquip?.equipBest?.();
+    const weaponEquipped = hasEssentialWeaponEquipped(bot);
+    if (!status.deadlineReached && !weaponEquipped) {
+        ctx.deathRecovery.phase = 'items';
+        return;
+    }
+    completeDeathRecovery(
+        ctx,
+        status.deadlineReached
+            ? (weaponEquipped
+                ? 'collection-deadline-equipped'
+                : 'essential-gear-missing-deadline')
+            : 'owned-items-collected-equipped'
+    );
 }
 
 /**
@@ -162,9 +188,12 @@ function evaluateLootShouldRun(ctx) {
         return recovery.phase === 'items';
     }
 
+    if (hasPriorityLootNearby(ctx)) return true;
+
     const suppressUntil = ctx.nearbyLoot?.suppressUntil || 0;
     if (Date.now() < suppressUntil) return false;
-    if (shouldDeferToCombat(ctx) || hasProtectThreats(ctx)) return false;
+    if (shouldDeferToCombat(ctx)) return false;
+    if (hasProtectThreats(ctx)) return false;
 
     return hasNearbyDrops(ctx);
 }
