@@ -50,6 +50,10 @@ import {
   type TacticalThreatObservation
 } from '../combat/TacticalObservation.js';
 import {
+  applyCombatStepAssist,
+  stepAheadAlongBearing
+} from '../combat/combatStepAssist.js';
+import {
   combatOwnsControl,
   refreshCombatControlUntil
 } from '../combat/TacticalOwnership.js';
@@ -75,6 +79,7 @@ type DefendOwner = {
 type CombatMovement = {
   followEntity: (entity: any, range: number) => boolean;
   goToward: (position: { x: number; y: number; z: number }, range?: number) => boolean;
+  climbTo?: (position: { x: number; y: number; z: number }, holdMs?: number) => boolean;
   setSprintAllowed?: (allowed: boolean) => void;
   stop?: () => void;
 };
@@ -99,6 +104,10 @@ const RETREAT_MELEE_RANGE = 3.5;
 /** この距離内では実際に攻撃できるよう `back` 入力を解除する。 */
 const MELEE_COMMIT_RANGE = 1.8;
 const WIDE_REPOSITION_OWNER_ALLOWANCE = 2.25;
+const COMBAT_MOVE_DISPLACEMENT_WINDOW_MS = 600;
+const COMBAT_STUCK_DISPLACEMENT = 0.03;
+const COMBAT_STUCK_FLIP_MS = 350;
+const COMBAT_REPOSITION_CLIMB_HOLD_MS = 1200;
 
 type ThreatArcBias = {
   sign: 1 | -1;
@@ -176,6 +185,10 @@ export class Reflexes {
   private recoveryOwned = false;
   private recoveryEmergencyWasActive = false;
   private lastRecoveryDamageHandledAt = 0;
+  private combatMoveLastAt = 0;
+  private combatMoveLastPos: { x: number; z: number } | null = null;
+  /** 段差に押し付けられて横移動が進まないときの反転判定。 */
+  private combatStuckSince = 0;
 
   constructor(
     private readonly bot: Bot,
@@ -567,11 +580,21 @@ export class Reflexes {
       if (releasedPvpGoal) this.bot.pvp?.forceStop?.();
       if (intent.guard) this.keepShieldUp();
       if (movement && (releasedPvpGoal || now >= this.arcRepositionUntil)) {
-        movement.goToward({
-          x: arcBias.destination.x,
-          y: this.bot.entity?.position.y ?? 0,
-          z: arcBias.destination.z
-        }, 0.75);
+        const botPos = this.bot.entity?.position;
+        const dest = arcBias.destination;
+        const bearing = botPos
+          ? threatBearingRad(botPos, dest)
+          : null;
+        const step = bearing != null ? stepAheadAlongBearing(this.bot, bearing) : null;
+        if (step && movement.climbTo) {
+          movement.climbTo(step.center, COMBAT_REPOSITION_CLIMB_HOLD_MS);
+        } else if (botPos) {
+          movement.goToward({
+            x: dest.x,
+            y: step?.center.y ?? botPos.y,
+            z: dest.z
+          }, 0.75);
+        }
         this.arcRepositionUntil = now + 400;
       } else if (!movement && this.bot.entity) {
         this.applyBearingMovement(threatBearingRad(
@@ -626,6 +649,43 @@ export class Reflexes {
     this.bot.setControlState('back', controls.back);
     this.bot.setControlState('left', controls.left);
     this.bot.setControlState('right', controls.right);
+    applyCombatStepAssist(this.bot, bearingRad);
+  }
+
+  private combatDisplacement(now: number): number {
+    if (!this.bot.entity) return 0;
+    const pos = this.bot.entity.position;
+    let displacement = 0;
+    if (this.combatMoveLastPos && now - this.combatMoveLastAt <= COMBAT_MOVE_DISPLACEMENT_WINDOW_MS) {
+      displacement = Math.hypot(pos.x - this.combatMoveLastPos.x, pos.z - this.combatMoveLastPos.z);
+    }
+    this.combatMoveLastPos = { x: pos.x, z: pos.z };
+    this.combatMoveLastAt = now;
+    return displacement;
+  }
+
+  private strafeBearingToward(enemy: any): number {
+    return perpendicularDodgeBearing(
+      threatBearingRad(this.bot.entity!.position, enemy.position),
+      this.strafeSign
+    );
+  }
+
+  private applyStrafeControls(sign: 1 | -1, bearingRad: number): void {
+    this.bot.setControlState(sign === 1 ? 'left' : 'right', true);
+    applyCombatStepAssist(this.bot, bearingRad);
+  }
+
+  private maybeFlipStuckStrafe(stepAhead: boolean, displacement: number, now: number): void {
+    if (!stepAhead || displacement >= COMBAT_STUCK_DISPLACEMENT) {
+      this.combatStuckSince = 0;
+      return;
+    }
+    if (!this.combatStuckSince) this.combatStuckSince = now;
+    if (now - this.combatStuckSince < COMBAT_STUCK_FLIP_MS) return;
+    this.strafeSign = this.strafeSign === 1 ? -1 : 1;
+    this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
+    this.combatStuckSince = 0;
   }
 
   /** 入射・共通脅威方向と直交するワールド座標方向へ回避する。 */
@@ -1140,6 +1200,7 @@ export class Reflexes {
     this.bot.setControlState('right', false);
     this.bot.setControlState('back', false);
     this.bot.setControlState('forward', false);
+    this.bot.setControlState('jump', false);
 
     if (rangedThreatBearing != null && dodgeBurst.dodge) {
       movementTrace.kind = 'dodge';
@@ -1162,12 +1223,9 @@ export class Reflexes {
     } else if (rangedThreatBearing == null && arcGuidedStrafe && bias != null) {
       this.strafeSign = bias.sign;
       this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
-      this.bot.setControlState(this.strafeSign === 1 ? 'left' : 'right', true);
       movementTrace.kind = 'strafe';
-      movementTrace.bearingRad = perpendicularDodgeBearing(
-        threatBearingRad(botPos, enemy.position),
-        this.strafeSign
-      );
+      movementTrace.bearingRad = this.strafeBearingToward(enemy);
+      this.applyStrafeControls(this.strafeSign, movementTrace.bearingRad);
     } else if (needStrafe && bias != null) {
       if (bias.spanRad >= TARGET_THREAT_SPAN_RAD) {
         this.strafeSign = bias.sign;
@@ -1176,21 +1234,20 @@ export class Reflexes {
         this.strafeSign = this.strafeSign === 1 ? -1 : 1;
         this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
       }
-      this.bot.setControlState(this.strafeSign === 1 ? 'left' : 'right', true);
       movementTrace.kind = 'strafe';
-      movementTrace.bearingRad = perpendicularDodgeBearing(
-        threatBearingRad(botPos, enemy.position),
-        this.strafeSign
-      );
+      movementTrace.bearingRad = this.strafeBearingToward(enemy);
+      this.applyStrafeControls(this.strafeSign, movementTrace.bearingRad);
     } else if (needStrafe && now >= this.strafeUntil) {
       this.strafeSign = this.strafeSign === 1 ? -1 : 1;
       this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
-      this.bot.setControlState(this.strafeSign === 1 ? 'left' : 'right', true);
       movementTrace.kind = 'strafe';
-      movementTrace.bearingRad = perpendicularDodgeBearing(
-        threatBearingRad(botPos, enemy.position),
-        this.strafeSign
-      );
+      movementTrace.bearingRad = this.strafeBearingToward(enemy);
+      this.applyStrafeControls(this.strafeSign, movementTrace.bearingRad);
+    }
+    if (movementTrace.bearingRad != null && movementTrace.kind !== 'none') {
+      const displacement = this.combatDisplacement(now);
+      const stepAhead = stepAheadAlongBearing(this.bot, movementTrace.bearingRad) != null;
+      this.maybeFlipStuckStrafe(stepAhead, displacement, now);
     }
     // 密着距離で後退入力を維持すると攻撃が中断されるため、入力しない。
     if (decision.needBackstep && distance > MELEE_COMMIT_RANGE && rangedThreatBearing == null) {
