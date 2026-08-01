@@ -8,6 +8,16 @@ import {
 const DEFAULT_ARRIVE_RANGE = 3;
 const DEFAULT_TIMEOUT_MS = 90000;
 const DEFAULT_GRAVE_WAIT_MS = 2500;
+/** Allow arrival when the bot is on a ledge above/below the recorded death Y. */
+const ARRIVAL_MAX_VERTICAL_GAP = 8;
+
+/**
+ * @param {{ x: number, y: number, z: number }} a
+ * @param {{ x: number, y: number, z: number }} b
+ */
+function horizontalDistance(a, b) {
+    return Math.hypot(a.x - b.x, a.z - b.z);
+}
 
 /**
  * After respawn, walk back to the death coordinates.
@@ -76,8 +86,9 @@ export class DeathReturnInterrupt {
             return;
         }
 
-        const dist = bot.entity.position.distanceTo(dr.deathPos);
-        if (dist <= arriveRange) {
+        const dist = horizontalDistance(bot.entity.position, dr.deathPos);
+        const verticalGap = Math.abs(bot.entity.position.y - dr.deathPos.y);
+        if (dist <= arriveRange && verticalGap <= ARRIVAL_MAX_VERTICAL_GAP) {
             ctx.movement.stop();
             markDeathReturnArrived(ctx);
             console.log('[companion] death return arrived; waiting for grave/item recovery');

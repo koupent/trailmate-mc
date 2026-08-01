@@ -275,6 +275,8 @@ export class Reflexes {
     preferGearRecovery?: boolean;
     /** 相棒Capability間で共有する上位の死亡復旧コンテキスト。 */
     recovery?: RecoveryContext;
+    /** 武装済みRecovery中に周囲の脅威へ通常戦闘で応答する。 */
+    recoveryDeferCombat?: boolean;
   }): Promise<void> {
     if (this.config.self_preservation) {
       this.preserve();
@@ -293,14 +295,22 @@ export class Reflexes {
         this.recoveryEmergencyWasActive = false;
       }
     }
-    if (opts.recovery?.active) {
+    if (opts.recovery?.active && !opts.recoveryDeferCombat) {
       this.handleRecoverySurvival(opts.recovery, opts.movement);
-    } else if (opts.preferGearRecovery) {
-      this.resetCombat();
-    } else if (this.config.self_defense && !opts.movementHeld) {
-      await this.defend(opts.owner, opts.movement);
-    } else if (!this.config.self_defense) {
-      this.resetCombat();
+    } else {
+      if (opts.recovery?.active && opts.recoveryDeferCombat && this.recoveryOwned) {
+        this.recoveryOwned = false;
+        this.recoveryEmergencyWasActive = false;
+        this.clearMovementControls();
+        this.keepShieldDown();
+      }
+      if (opts.preferGearRecovery) {
+        this.resetCombat();
+      } else if (this.config.self_defense && !opts.movementHeld) {
+        await this.defend(opts.owner, opts.movement);
+      } else if (!this.config.self_defense) {
+        this.resetCombat();
+      }
     }
     if (
       this.config.torch_placing
@@ -308,6 +318,7 @@ export class Reflexes {
       && !opts.movementHeld
       && !opts.nonCombatHeld
       && !opts.preferGearRecovery
+      && !opts.recoveryDeferCombat
       && !opts.recovery?.active
       && !this.isControllingMovement
     ) {

@@ -1,4 +1,5 @@
 import { approachPosition } from './approachPosition.js';
+import { scanSurroundings } from '../movement/surroundings.js';
 import {
     dropDistanceFrom,
     findNearestDrop,
@@ -27,6 +28,8 @@ const DEFAULT_GRACE_MS = 2500;
 /** Pause after arriving so pickup has time to register. */
 const PICKUP_SETTLE_MS = 350;
 const DEFAULT_OWNER_WORK_LOOT_CLEARANCE = 4;
+/** Item Y this far below the bot's feet needs a step-down approach, not magnet pickup. */
+const ITEM_BELOW_FEET_DY = 0.4;
 
 /**
  * Walk toward nearby ground item entities so vanilla pickup can collect them.
@@ -94,9 +97,11 @@ export async function pickupNearbyItems(ctx, options = {}) {
         // 固定起点がない場合はBot基準で追跡し、走査ごとに起点を更新する。
         const origin = options.around || bot.entity.position;
         ctx.invalidateCompanionAwareness?.();
-        const snap = typeof ctx.getCompanionAwareness === 'function'
-            ? ctx.getCompanionAwareness()
-            : scanCompanionAwareness(bot, radius, origin);
+        const snap = options.around
+            ? scanCompanionAwareness(bot, radius, origin)
+            : (typeof ctx.getCompanionAwareness === 'function'
+                ? ctx.getCompanionAwareness()
+                : scanCompanionAwareness(bot, radius, origin));
         if (typeof options.onItemSeen === 'function') {
             for (const entity of snap.dropItems) {
                 if (!ownerExcluded(entity)) options.onItemSeen(entity);
@@ -148,9 +153,13 @@ export async function pickupNearbyItems(ctx, options = {}) {
 
         lastSeenAt = Date.now();
         const itemDist = dropDistanceFrom(bot.entity.position, item.position);
+        const verticalGap = item.position.y - bot.entity.position.y;
+        const inMagnetRange = isWithinMagnetPickup(bot.entity.position, item.position, magnetRange);
         const targetKey = item.id ?? item;
 
-        if (itemDist <= magnetRange) {
+        const needsStepDown = verticalGap < -ITEM_BELOW_FEET_DY;
+
+        if (inMagnetRange) {
             ctx.movement?.stop?.();
             lastTargetKey = null;
             await sleep(Math.max(pollMs, PICKUP_SETTLE_MS));
@@ -166,39 +175,50 @@ export async function pickupNearbyItems(ctx, options = {}) {
             y: item.position.y,
             z: item.position.z
         };
-        await approachPosition(ctx, approachTarget, {
-            range: magnetRange,
-            pathRange: magnetRange,
-            horizontalArrival: true,
-            arrivalSlack: 0,
-            timeoutMs: Math.max(
-                600,
-                Math.min(
-                    itemDist <= 4 ? 2000 : 4000,
-                    durationMs - (Date.now() - start)
-                )
-            ),
-            pollMs,
-            abort: () => {
-                if (shouldAbort()) return true;
-                if (!bot.entity) return true;
-                if (dropDistanceFrom(bot.entity.position, item.position) <= magnetRange) {
-                    return true;
-                }
-                ctx.invalidateCompanionAwareness?.();
-                const freshSnap = typeof ctx.getCompanionAwareness === 'function'
-                    ? ctx.getCompanionAwareness()
-                    : scanCompanionAwareness(bot, radius, bot.entity.position);
-                const freshCandidates = freshSnap.dropItems.filter((entity) => !exclude(entity));
-                if (!freshCandidates.some((entity) => (entity.id ?? entity) === targetKey)) {
-                    return true;
-                }
-                const nearer = findNearestDrop(freshSnap, bot.entity.position, freshCandidates);
-                if (!nearer?.position || (nearer.id ?? nearer) === targetKey) return false;
-                const nearerDist = dropDistanceFrom(bot.entity.position, nearer.position);
-                return nearerDist + 1.5 < dropDistanceFrom(bot.entity.position, item.position);
+        const approachAbort = () => {
+            if (shouldAbort()) return true;
+            if (!bot.entity) return true;
+            if (isWithinMagnetPickup(bot.entity.position, item.position, magnetRange)) {
+                return true;
             }
-        });
+            ctx.invalidateCompanionAwareness?.();
+            const freshSnap = typeof ctx.getCompanionAwareness === 'function'
+                ? ctx.getCompanionAwareness()
+                : scanCompanionAwareness(bot, radius, bot.entity.position);
+            const freshCandidates = freshSnap.dropItems.filter((entity) => !exclude(entity));
+            if (!freshCandidates.some((entity) => (entity.id ?? entity) === targetKey)) {
+                return true;
+            }
+            const nearer = findNearestDrop(freshSnap, bot.entity.position, freshCandidates);
+            if (!nearer?.position || (nearer.id ?? nearer) === targetKey) return false;
+            const nearerDist = dropDistanceFrom(bot.entity.position, nearer.position);
+            return nearerDist + 1.5 < dropDistanceFrom(bot.entity.position, item.position);
+        };
+        const approachTimeoutMs = Math.max(
+            600,
+            Math.min(
+                needsStepDown ? 3500 : (itemDist <= 4 ? 2000 : 4000),
+                durationMs - (Date.now() - start)
+            )
+        );
+        if (needsStepDown) {
+            await approachDropBelowFeet(ctx, approachTarget, {
+                magnetRange,
+                timeoutMs: approachTimeoutMs,
+                pollMs,
+                abort: approachAbort
+            });
+        } else {
+            await approachPosition(ctx, approachTarget, {
+                range: magnetRange,
+                pathRange: magnetRange,
+                horizontalArrival: true,
+                arrivalSlack: 0,
+                timeoutMs: approachTimeoutMs,
+                pollMs,
+                abort: approachAbort
+            });
+        }
         if (shouldAbort()) break;
     }
 
@@ -303,8 +323,59 @@ export function resolvePickupRadius(ctx) {
 function hasMagnetPickup(candidates, botPos, magnetRange) {
     return candidates.some((entity) =>
         entity?.position
-        && dropDistanceFrom(botPos, entity.position) <= magnetRange
+        && isWithinMagnetPickup(botPos, entity.position, magnetRange)
     );
+}
+
+/**
+ * Walk toward a drop that sits below the bot's feet (ledge pickup).
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @param {{ x: number, y: number, z: number }} itemPos
+ * @param {{ magnetRange: number, timeoutMs: number, pollMs: number, abort: () => boolean }} options
+ */
+async function approachDropBelowFeet(ctx, itemPos, options) {
+    const bot = ctx?.bot;
+    if (!bot?.entity) return false;
+
+    const { magnetRange, timeoutMs, pollMs, abort } = options;
+    const scan = scanSurroundings(bot, itemPos);
+    const stepDown = scan.stepDowns?.[0];
+    if (stepDown?.center) {
+        await approachPosition(ctx, stepDown.center, {
+            range: 0.6,
+            pathRange: 1,
+            horizontalArrival: false,
+            arrivalSlack: 0.2,
+            timeoutMs: Math.min(timeoutMs, 2000),
+            pollMs,
+            abort
+        });
+        if (abort()) return false;
+    }
+
+    return approachPosition(ctx, itemPos, {
+        range: magnetRange * 0.5,
+        pathRange: Math.max(magnetRange, 1.5),
+        horizontalArrival: false,
+        arrivalSlack: 0.15,
+        timeoutMs,
+        pollMs,
+        abort
+    });
+}
+
+/**
+ * Horizontal closeness alone is not enough when the item sits below the bot's feet.
+ * @param {{ x: number, y: number, z: number }} botPos
+ * @param {{ x: number, y: number, z: number }} itemPos
+ * @param {number} magnetRange
+ */
+export function isWithinMagnetPickup(botPos, itemPos, magnetRange) {
+    const horizontal = dropDistanceFrom(botPos, itemPos);
+    if (horizontal > magnetRange) return false;
+    const verticalGap = itemPos.y - botPos.y;
+    if (verticalGap < -ITEM_BELOW_FEET_DY) return false;
+    return true;
 }
 
 /**

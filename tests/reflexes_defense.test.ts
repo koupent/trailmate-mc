@@ -933,6 +933,35 @@ describe('上位モードと戦闘の連携', () => {
     assert.ok(setup.bot._stats().attackCount >= 1);
   });
 
+  it('武装済みRecovery中は周囲の脅威に通常戦闘で応答する', async () => {
+    const zombie = makeEntity('zombie', 'hostile', 3, 64, 0);
+    const setup = makeBot({ hostiles: [zombie] });
+    setup.track(zombie);
+    setup.bot.inventory = {
+      items: () => [{ name: 'iron_sword' }],
+      slots: []
+    };
+    const movement = {
+      followEntity() { return true; },
+      goToward() { return true; },
+      stop() {}
+    };
+    const recovery = { active: true, emergencyUntil: 0, emergencyCooldownUntil: 0 };
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({
+      movementHeld: false,
+      isIdleish: true,
+      movement,
+      recovery,
+      recoveryDeferCombat: true
+    });
+
+    const stats = setup.bot._stats();
+    assert.ok(stats.attackCount >= 1, 'armed recovery should attack nearby threats');
+    assert.equal(recovery.emergencyUntil, 0);
+  });
+
   it('FollowとWaitは上位モードを保つがRecovery制御を発行しない', async () => {
     const owner = makeEntity('Alice', 'player', 5, 64, 0);
     let followCount = 0;

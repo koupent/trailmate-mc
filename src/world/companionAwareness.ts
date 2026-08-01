@@ -36,11 +36,17 @@ export type CompanionAwarenessSnapshot = {
  * Scan entities (and grave-related blocks) within `radius` of the companion.
  * Perception only — no pickup / dig policy.
  */
+export type CompanionAwarenessScanOptions = {
+  maxVerticalDy?: number;
+};
+
 export function scanCompanionAwareness(
   bot: BotLike,
   radius: number,
-  origin?: Pos
+  origin?: Pos,
+  options?: CompanionAwarenessScanOptions
 ): CompanionAwarenessSnapshot {
+  const maxVerticalDy = options?.maxVerticalDy ?? MAX_PICKUP_DY;
   const scannedAt = Date.now();
   const center = origin || bot.entity?.position;
   if (!bot || !center || !(radius > 0)) {
@@ -55,7 +61,7 @@ export function scanCompanionAwareness(
 
   for (const entity of Object.values(bot.entities || {})) {
     if (!entity?.position) continue;
-    if (!isWithinPickupRange(originPos, entity.position, radius)) continue;
+    if (!isWithinPickupRange(originPos, entity.position, radius, maxVerticalDy)) continue;
     entities.push(entity);
     if (isGroundItem(entity)) {
       dropItems.push(entity);
@@ -174,7 +180,12 @@ function blockKey(pos: Pos): string {
 const MAX_PICKUP_DY = 4;
 
 /** Horizontal range for drops — avoids missing items on slopes due to 3D distance. */
-function isWithinPickupRange(origin: Pos, target: Pos, radius: number): boolean {
-  if (Math.abs(origin.y - target.y) > MAX_PICKUP_DY) return false;
+function isWithinPickupRange(
+  origin: Pos,
+  target: Pos,
+  radius: number,
+  maxVerticalDy: number = MAX_PICKUP_DY
+): boolean {
+  if (Math.abs(origin.y - target.y) > maxVerticalDy) return false;
   return Math.hypot(origin.x - target.x, origin.z - target.z) <= radius;
 }

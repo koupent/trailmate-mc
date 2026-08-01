@@ -1,14 +1,19 @@
 import { Vec3 } from 'vec3';
 import { findOwnGravesFromAwareness, isGraveCandidateBlock } from '../../world/graves.js';
 import { isGroundItem } from '../../world/entities.js';
-import { approachPosition } from '../utils/approachPosition.js';
+import { approachGraveForDig, isGraveWithinDigReach } from '../utils/graveApproach.js';
 import {
     completeDeathRecovery,
     isRecoveryEmergencyActive,
+    markDeathReturnArrived,
     releaseHoldReflexesIfIdle,
     requestRecoveryItemCollection
 } from '../deathRecovery.js';
 import { needsGearRecovery, shouldDeferToCombat } from '../combatGate.js';
+import {
+    getGraveAwarenessSnapshot,
+    hasReachedRecoveryDeathSite
+} from '../utils/graveAwareness.js';
 import {
     allowDigAt,
     clearAllowedDig,
@@ -39,14 +44,17 @@ export class OwnGraveInterrupt {
         if (!ctx.bot?.entity) return false;
         const recovery = Boolean(ctx.deathRecovery?.active);
         if (recovery && isRecoveryEmergencyActive(ctx)) return false;
-        if (recovery && ctx.deathRecovery.phase !== 'grave') return false;
+        if (recovery) {
+            const phase = ctx.deathRecovery.phase;
+            if (phase !== 'grave' && phase !== 'travel') return false;
+            if (phase === 'travel' && !hasReachedRecoveryDeathSite(ctx)) return false;
+        }
         const unarmed = needsGearRecovery(ctx.bot);
         // 武装済みなら戦闘へ譲るが、未武装なら先に装備を復旧する。
         if (!recovery && shouldDeferToCombat(ctx) && !unarmed) return false;
         if (ctx.graveLoot?.active) return true;
 
-        const snap = ctx.getCompanionAwareness?.();
-        if (!snap) return false;
+        const snap = getGraveAwarenessSnapshot(ctx);
         return findOwnGravesFromAwareness(ctx.bot, ctx.bot.username, snap).length > 0;
     }
 
@@ -78,8 +86,11 @@ export class OwnGraveInterrupt {
         }
 
         try {
+            if (recovery?.active && recovery.phase === 'travel') {
+                markDeathReturnArrived(ctx);
+            }
             ctx.invalidateCompanionAwareness?.();
-            const snap = ctx.getCompanionAwareness?.();
+            const snap = getGraveAwarenessSnapshot(ctx);
             const graves = findOwnGravesFromAwareness(bot, bot.username, snap);
             if (graves.length === 0) return;
 
@@ -89,16 +100,12 @@ export class OwnGraveInterrupt {
             ctx.graveLoot.targetKey = key;
             await this._announceFound(ctx, key, pos);
 
-            const reached = await approachPosition(ctx, {
-                x: pos.x + 0.5,
-                y: pos.y,
-                z: pos.z + 0.5
-            }, {
-                range: digRange,
-                timeoutMs: 10000
+            const reached = await approachGraveForDig(ctx, pos, {
+                digRange,
+                timeoutMs: 10_000
             });
 
-            if (!reached || !bot.entity) return;
+            if ((!reached && !isGraveWithinDigReach(bot, pos, digRange)) || !bot.entity) return;
 
             const block = bot.blockAt(new Vec3(pos.x, pos.y, pos.z));
             if (!block || !isGraveCandidateBlock(block.name)) {

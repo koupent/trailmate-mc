@@ -210,6 +210,12 @@ export function hasActiveLootPickupPriority(ctx, now = Date.now()) {
     return Boolean(nl?.priorityUntil && now < nl.priorityUntil && nl.priorityOrigin);
 }
 
+export function clearLootPickupPriority(ctx) {
+    if (!ctx?.nearbyLoot) return;
+    ctx.nearbyLoot.priorityUntil = 0;
+    ctx.nearbyLoot.priorityOrigin = null;
+}
+
 /** @param {object} [cfg] */
 export function resolvePriorityLootMs(cfg = {}) {
     return cfg.priority_loot_ms ?? DEFAULT_PRIORITY_LOOT_MS;
@@ -264,6 +270,9 @@ export function isRecoveryEmergencyActive(ctx, now = Date.now()) {
 
 export function completeDeathRecovery(ctx, reason = 'complete') {
     if (ctx.deathRecovery?.active) ctx.deathRecovery.phase = 'done';
+    if (!String(reason).includes('unreachable-deadline')) {
+        clearLootPickupPriority(ctx);
+    }
     console.log(`[companion] death recovery complete (${reason})`);
     clearDeathReturn(ctx);
 }

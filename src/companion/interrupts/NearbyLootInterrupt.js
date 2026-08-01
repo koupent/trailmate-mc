@@ -13,6 +13,7 @@ import {
     hasEssentialWeaponEquipped,
     hasProtectThreats,
     needsGearRecovery,
+    shouldDeferRecoveryForCombat,
     shouldDeferToCombat
 } from '../combatGate.js';
 
@@ -110,11 +111,11 @@ export class NearbyLootInterrupt {
                     }
                     : undefined,
                 shouldAbort: recovering
-                    ? () => isRecoveryEmergencyActive(ctx) || !ctx.deathRecovery?.active
-                    : () => {
-                        if (hasPriorityLootNearby(ctx)) return false;
-                        return shouldDeferToCombat(ctx) || hasProtectThreats(ctx);
+                    ? () => {
+                        if (isRecoveryEmergencyActive(ctx) || !ctx.deathRecovery?.active) return true;
+                        return shouldDeferRecoveryForCombat(ctx);
                     }
+                    : () => shouldDeferToCombat(ctx) || hasProtectThreats(ctx)
             });
 
             if (recovering && ctx.deathRecovery?.active && !isRecoveryEmergencyActive(ctx)) {
@@ -185,6 +186,7 @@ function evaluateLootShouldRun(ctx) {
     const recovery = ctx.deathRecovery;
     if (recovery?.active) {
         if (isRecoveryEmergencyActive(ctx)) return false;
+        if (recovery.phase === 'items' && shouldDeferRecoveryForCombat(ctx)) return false;
         return recovery.phase === 'items';
     }
 

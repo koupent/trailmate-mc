@@ -65,3 +65,14 @@ export function hasProtectThreats(ctx) {
   }
   return false;
 }
+
+/**
+ * Recovery中でも武装済みなら周囲の脅威に通常戦闘で応答する。
+ * 未武装の間は墓ドロップの装備回収を優先する。
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ */
+export function shouldDeferRecoveryForCombat(ctx) {
+  if (!ctx.deathRecovery?.active) return false;
+  if (needsGearRecovery(ctx.bot)) return false;
+  return shouldDeferToCombat(ctx) || hasProtectThreats(ctx);
+}

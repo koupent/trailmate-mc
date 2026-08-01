@@ -16,7 +16,7 @@ import {
     beginDeathReturnAfterSpawn,
     captureDeathState
 } from './deathRecovery.js';
-import { needsGearRecovery } from './combatGate.js';
+import { needsGearRecovery, shouldDeferRecoveryForCombat } from './combatGate.js';
 import {
     DEFAULT_TORCH_LIGHT_THRESHOLD,
     enableCompanionBlockProtection
@@ -153,6 +153,7 @@ export async function startCompanion(agent, companionConfig = {}) {
 
         const graveRadius = config.own_grave?.scan_radius ?? 10;
         const recoveryActive = Boolean(ctx.deathRecovery?.active);
+        const recoveryDeferCombat = recoveryActive && shouldDeferRecoveryForCombat(ctx);
         const preferGearRecovery = !recoveryActive && needsGearRecovery(agent.bot)
             && findOwnGravesNear(agent.bot, agent.bot.username, graveRadius).length > 0;
 
@@ -163,6 +164,7 @@ export async function startCompanion(agent, companionConfig = {}) {
                 isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
                 nonCombatHeld: !!ctx.holdReflexes || preferGearRecovery,
                 preferGearRecovery,
+                recoveryDeferCombat,
                 recovery: ctx.deathRecovery,
                 owner: ctx.ownerEntity ?? null,
                 movement: ctx.movement
