@@ -11,13 +11,17 @@ const root = path.resolve(__dirname, '..');
 export type ChatConfig = {
   enabled: boolean;
   min_interval_ms: number;
+  priority_min_interval_ms: number;
   event_cooldown_ms: number;
   player_reply_cooldown_ms: number;
   spontaneous_chance: number;
   idle_chance: number;
+  combat_commentary_chance: number;
   low_health: number;
+  low_food_hunger: number;
   stuck_seconds: number;
   hostile_range: number;
+  hostile_approach_distances: number[];
 };
 
 export type CombatLearningConfig = {
@@ -181,14 +185,18 @@ const DEFAULT_COMPANION: CompanionConfig = {
   },
   chat: {
     enabled: true,
-    min_interval_ms: 90000,
-    event_cooldown_ms: 300000,
+    min_interval_ms: 45000,
+    priority_min_interval_ms: 15000,
+    event_cooldown_ms: 120000,
     player_reply_cooldown_ms: 1500,
-    spontaneous_chance: 0.7,
-    idle_chance: 0.35,
+    spontaneous_chance: 0.85,
+    idle_chance: 0.55,
+    combat_commentary_chance: 0.6,
     low_health: 8,
+    low_food_hunger: 14,
     stuck_seconds: 5,
-    hostile_range: 12
+    hostile_range: 12,
+    hostile_approach_distances: [10, 6, 3]
   }
 };
 

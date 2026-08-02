@@ -101,6 +101,14 @@ export class ModeManager {
             tickOwnerWork(this.ctx);
             this.ctx.worldState.update(this.ctx);
             this.ctx.stuck.update(this.ctx.bot, this.ctx.movement.hasGoal);
+            const detectSec = this.ctx.config?.stuck_detect_seconds ?? 1.5;
+            if (this.ctx.stuck.seconds >= detectSec) {
+                // Sticky until dialogue speaks; survives RecoveryInterrupt stuck.reset.
+                this.ctx.stuckChat = {
+                    seconds: Number(this.ctx.stuck.seconds.toFixed(1)),
+                    at: Date.now()
+                };
+            }
             await this.ctx.doors?.tick();
 
             for (const interrupt of this.interrupts) {

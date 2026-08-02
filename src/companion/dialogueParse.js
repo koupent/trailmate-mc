@@ -4,7 +4,10 @@
  */
 
 import { tEvent } from '../i18n/index.js';
+import { DEFAULT_FOLLOW_DISTANCE } from './movement/followConstants.js';
+import { isNearOwnerHorizontally } from './movement/followGeometry.js';
 
+const OVERLAY_CONTROL_OWNERS = new Set(['survival', 'recovery', 'combat', 'transfer']);
 
 /**
  * @typedef {{
@@ -185,10 +188,6 @@ export function looksJapanese(text) {
     return /[\u3040-\u30ff\u3400-\u9fff]/.test(String(text || ''));
 }
 
-/**
- * Reject English and agent/task-log style lines (even if they contain some Japanese).
- * @param {string} message
- */
 /** Reject agent/task-log lines (andy-micro often emits these even in Japanese). */
 const AGENT_LOG_PATTERN = /(進捗|応用|目標\s*[:：]|資源|採掘|ポータル|ピッケル|オプシ|ネザー|継続検索|危険回避|不足|収集|優先待機|共闘|作成中|追加資源|丸石を集|➜|＞|／|!collect|!follow|!nearby|foundation|mapping out)/i;
 
@@ -201,8 +200,78 @@ export function isUsableCompanionChat(message) {
 }
 
 /**
+ * Derive follow phase from snapshot facts for accurate chat.
+ * @param {object} snap
+ * @param {{ follow_distance?: number, owner_near_radius?: number }} config
+ * @returns {'near'|'chasing'|'far'|'lost'|'deferred'|null}
+ */
+export function deriveFollowPhase(snap, config = {}) {
+    if (!snap || snap.mode !== 'follow') return null;
+
+    const controlOwner = snap.controlOwner || 'follow';
+    if (controlOwner !== 'follow') return 'deferred';
+
+    if (!snap.owner) return null;
+
+    if (snap.ownerEntityMissing) return 'lost';
+
+    const followDistance = config.follow_distance ?? DEFAULT_FOLLOW_DISTANCE;
+    const ownerNearRadius = config.owner_near_radius ?? 12;
+
+    if (
+        snap.ownerDistance != null
+        && snap.ownerHasLos
+        && snap.botPos
+        && snap.ownerPos
+        && isNearOwnerHorizontally(snap.botPos, snap.ownerPos, followDistance)
+    ) {
+        return 'near';
+    }
+
+    // Loaded nearby but out of FOV is still chaseable; beyond near radius is far.
+    if (snap.ownerDistance != null && snap.ownerDistance > ownerNearRadius) {
+        return 'far';
+    }
+    if (snap.ownerDistance != null || snap.ownerVisible) {
+        return 'chasing';
+    }
+
+    return 'far';
+}
+
+/**
+ * Locale command key for follow mode replies.
+ * far/chasing share chase wording; only lost (unloaded) is "too far".
+ * @param {'near'|'chasing'|'far'|'lost'|'deferred'|null} followPhase
+ */
+export function deriveFollowReplyKey(followPhase) {
+    switch (followPhase) {
+        case 'near':
+            return 'follow';
+        case 'chasing':
+        case 'far':
+            return 'follow_chase';
+        case 'lost':
+            return 'follow_too_far';
+        case 'deferred':
+            return 'follow_deferred';
+        default:
+            return 'follow';
+    }
+}
+
+/**
+ * Locale command key for owner lock announcements.
+ * @param {'near'|'chasing'|'far'|'lost'|'deferred'|null} followPhase
+ */
+export function deriveOwnerLockedKey(followPhase) {
+    if (followPhase === 'near') return 'owner_locked';
+    if (followPhase === 'lost') return 'owner_locked_too_far';
+    return 'owner_locked_chase';
+}
+
+/**
  * Snapshot-driven commentary via locale catalog (no LLM / no runtime MT).
- * Fact fields are deterministic; wording variants may vary slightly.
  * @param {string} language
  * @param {string} eventId
  * @param {object} snap
@@ -212,12 +281,114 @@ export function renderCommentary(language, eventId, snap = {}) {
         owner: snap.owner || 'だれか',
         distance: snap.ownerDistance != null ? snap.ownerDistance : '?',
         health: snap.health != null ? Math.round(snap.health) : '?',
+        damage: snap.lastDamageTaken != null && snap.lastDamageTaken > 0
+            ? Math.round(snap.lastDamageTaken)
+            : null,
         stuckSeconds: snap.stuckSeconds != null ? snap.stuckSeconds : '?',
-        hostile: snap.hostile?.name || '敵',
+        hostile: snap.combatTarget || snap.hostile?.name || '敵',
         hostileDistance: snap.hostile?.distance != null ? snap.hostile.distance : '?',
         mode: snap.mode || '?'
     };
     return tEvent(language || 'ja', String(eventId || ''), vars);
+}
+
+const DEFAULT_APPROACH_DISTANCES = [10, 6, 3];
+const HOSTILE_BAND_RANK = { outer: 0, mid: 1, near: 2, close: 3 };
+const HOSTILE_BAND_EVENT = {
+    mid: 'hostile_approach_mid',
+    near: 'hostile_approach_near',
+    close: 'hostile_approach_close'
+};
+
+/**
+ * Distance band for hostile approach commentary.
+ * @param {number|null|undefined} distance
+ * @param {number[]} [thresholds]
+ * @returns {'outer'|'mid'|'near'|'close'|null}
+ */
+export function deriveHostileBand(distance, thresholds = DEFAULT_APPROACH_DISTANCES) {
+    if (distance == null || !Number.isFinite(distance)) return null;
+    const [midAt, nearAt, closeAt] = thresholds.length >= 3
+        ? thresholds
+        : DEFAULT_APPROACH_DISTANCES;
+    if (distance <= closeAt) return 'close';
+    if (distance <= nearAt) return 'near';
+    if (distance <= midAt) return 'mid';
+    return 'outer';
+}
+
+/**
+ * First sighting or closer-band cross for hostiles.
+ * @param {object|null} prev
+ * @param {object} snap
+ * @param {{ hostile_approach_distances?: number[] }} config
+ * @returns {{ id: string, text: string, priority: number }|null}
+ */
+export function detectHostileApproach(prev, snap, config = {}) {
+    if (!snap?.hostile) return null;
+
+    const thresholds = config.hostile_approach_distances || DEFAULT_APPROACH_DISTANCES;
+    const band = snap.hostileBand ?? deriveHostileBand(snap.hostile.distance, thresholds);
+    const name = snap.hostile.name || '敵';
+    const dist = snap.hostile.distance;
+
+    if (!prev?.hostile) {
+        return {
+            id: 'hostile',
+            text: `Hostile ${name} nearby (${dist}m)`,
+            priority: 2
+        };
+    }
+
+    const prevBand = prev.hostileBand
+        ?? deriveHostileBand(prev.hostile?.distance, thresholds)
+        ?? 'outer';
+    const prevRank = HOSTILE_BAND_RANK[prevBand] ?? 0;
+    const nextRank = HOSTILE_BAND_RANK[band] ?? 0;
+    if (nextRank <= prevRank) return null;
+
+    const eventId = HOSTILE_BAND_EVENT[band];
+    if (!eventId) return null;
+    return {
+        id: eventId,
+        text: `Hostile ${name} approaching (${band}, ${dist}m)`,
+        priority: 2
+    };
+}
+
+/**
+ * Combat target switch while in combat control.
+ * @param {object|null} prev
+ * @param {object} snap
+ * @returns {{ id: string, text: string, priority: number }|null}
+ */
+export function detectCombatTargetSwitch(prev, snap) {
+    if (!snap || snap.controlOwner !== 'combat') return null;
+    if (!snap.combatTarget) return null;
+    if (!prev || prev.controlOwner !== 'combat') return null;
+    if (prev.combatTarget === snap.combatTarget) return null;
+    if (!prev.combatTarget) return null;
+    return {
+        id: 'combat_target_switch',
+        text: `Combat target -> ${snap.combatTarget}`,
+        priority: 2
+    };
+}
+
+/**
+ * Ongoing combat commentary while fighting.
+ * @param {object} snap
+ * @returns {{ id: string, text: string, priority: number }|null}
+ */
+export function detectCombatCommentary(snap) {
+    if (!snap || snap.controlOwner !== 'combat') return null;
+    if (!snap.combatTarget) return null;
+    const dist = snap.hostile?.distance != null ? `${snap.hostile.distance}m` : '?';
+    return {
+        id: 'combat_fighting',
+        text: `Fighting ${snap.combatTarget} (${dist})`,
+        priority: 2
+    };
 }
 
 /**
@@ -291,23 +462,103 @@ export function sanitizeChatMessage(message) {
 }
 
 /**
+ * @param {object|null} prev
+ * @param {object} snap
+ * @param {string} owner
+ */
+function ownerFoundEventId(snap, config) {
+    const phase = deriveFollowPhase(snap, config);
+    return phase === 'near' ? 'owner_found' : 'owner_found_chase';
+}
+
+/**
+ * @param {object|null} prev
+ * @param {object} snap
+ * @param {{ low_health?: number, stuck_seconds?: number, low_food_hunger?: number }} config
+ */
+function detectDamagedEvent(prev, snap, config) {
+    const recentDamage = snap.lastDamageAgeMs != null
+        && snap.lastDamageAgeMs < 2000
+        && (prev.lastDamageAgeMs == null || prev.lastDamageAgeMs >= 2000);
+    if (!recentDamage) return null;
+
+    const lowHealth = config.low_health ?? 8;
+    if (snap.health != null && snap.health <= lowHealth) {
+        return { id: 'damaged_low', text: `Low HP damage (${snap.health})`, priority: 2 };
+    }
+    if (snap.hostile) {
+        return {
+            id: 'damaged_combat',
+            text: `Combat damage from ${snap.hostile.name}`,
+            priority: 2
+        };
+    }
+    return { id: 'damaged', text: `Took damage (${snap.lastDamageTaken})`, priority: 2 };
+}
+
+/**
  * Detect a notable situation change for spontaneous chat.
  * @param {object|null} prev
  * @param {object} snap
- * @param {{ low_health?: number, stuck_seconds?: number }} config
+ * @param {{ low_health?: number, stuck_seconds?: number, low_food_hunger?: number }} config
  * @returns {{ id: string, text: string, priority: number }|null}
  */
 export function detectSituationEvent(prev, snap, config = {}) {
     if (!prev || !snap) return null;
     const lowHealth = config.low_health ?? 8;
     const stuckSeconds = config.stuck_seconds ?? 5;
+    const lowFoodHunger = config.low_food_hunger ?? 14;
+
+    if (prev.controlOwner !== snap.controlOwner) {
+        const next = snap.controlOwner || 'follow';
+        if (
+            (next === 'follow' || next === 'wait')
+            && !OVERLAY_CONTROL_OWNERS.has(prev.controlOwner)
+        ) {
+            /* skip — registered mode switch already has a command reply */
+        } else {
+            return { id: `control_${next}`, text: `Control -> ${next}`, priority: 2 };
+        }
+    }
+
+    const targetSwitch = detectCombatTargetSwitch(prev, snap);
+    if (targetSwitch) return targetSwitch;
 
     if (!prev.owner && snap.owner) {
-        return { id: 'owner_found', text: `Found owner ${snap.owner}`, priority: 2 };
+        return {
+            id: ownerFoundEventId(snap, config),
+            text: `Found owner ${snap.owner}`,
+            priority: 2
+        };
     }
     if (prev.owner && !snap.owner) {
         return { id: 'owner_lost', text: 'Lost sight of owner for a long time', priority: 1 };
     }
+
+    if (
+        snap.foodCount === 0
+        && snap.hunger != null
+        && snap.hunger <= lowFoodHunger
+        && (
+            (prev.foodCount ?? 0) > 0
+            || prev.hunger == null
+            || prev.hunger > lowFoodHunger
+        )
+    ) {
+        return { id: 'no_food', text: 'Out of food', priority: 2 };
+    }
+
+    if (
+        snap.torchCount === 0
+        && (prev.torchCount ?? 0) > 0
+    ) {
+        return {
+            id: 'no_torch',
+            text: 'Out of torches',
+            priority: snap.isNight ? 2 : 1
+        };
+    }
+
     if (
         snap.health != null
         && snap.health <= lowHealth
@@ -315,18 +566,18 @@ export function detectSituationEvent(prev, snap, config = {}) {
     ) {
         return { id: 'low_health', text: `Health is low (${snap.health})`, priority: 2 };
     }
-    if (
-        snap.lastDamageAgeMs != null
-        && snap.lastDamageAgeMs < 2000
-        && (prev.lastDamageAgeMs == null || prev.lastDamageAgeMs >= 2000)
-    ) {
-        return { id: 'damaged', text: `Took damage recently (${snap.lastDamageTaken})`, priority: 2 };
+
+    const damaged = detectDamagedEvent(prev, snap, config);
+    if (damaged) return damaged;
+
+    if (snap.stuckAlert) {
+        return { id: 'stuck', text: `Stuck for ${snap.stuckSeconds}s`, priority: 2 };
     }
     if (
         snap.stuckSeconds >= stuckSeconds
         && prev.stuckSeconds < stuckSeconds
     ) {
-        return { id: 'stuck', text: `Stuck for ${snap.stuckSeconds}s`, priority: 1 };
+        return { id: 'stuck', text: `Stuck for ${snap.stuckSeconds}s`, priority: 2 };
     }
     if (snap.isNight && !prev.isNight) {
         return { id: 'night', text: 'Night has fallen', priority: 0 };
@@ -334,36 +585,48 @@ export function detectSituationEvent(prev, snap, config = {}) {
     if (!snap.isNight && prev.isNight) {
         return { id: 'day', text: 'Morning has come', priority: 0 };
     }
-    if (!prev.hostile && snap.hostile) {
-        return {
-            id: 'hostile',
-            text: `Hostile ${snap.hostile.name} nearby (${snap.hostile.distance}m)`,
-            priority: 1
-        };
-    }
+
+    const approach = detectHostileApproach(prev, snap, config);
+    if (approach) return approach;
+
     return null;
 }
 
 /**
  * Soft idle mutter while following or waiting (no situation change required).
  * @param {object} snap
+ * @param {{ follow_distance?: number, owner_near_radius?: number }} config
  * @returns {{ id: string, text: string, priority: number }|null}
  */
-export function detectIdleCommentary(snap) {
+export function detectIdleCommentary(snap, config = {}) {
     if (!snap) return null;
+    if (snap.controlOwner === 'combat') return null;
+
     if (snap.mode === 'follow') {
-        const owner = snap.owner || 'だれか';
+        const phase = deriveFollowPhase(snap, config);
+        if (!phase || phase === 'deferred') return null;
+
+        const idleIds = {
+            near: 'idle_follow_near',
+            chasing: 'idle_follow_chasing',
+            far: 'idle_follow_far',
+            lost: 'idle_follow_lost'
+        };
+        const id = idleIds[phase];
+        if (!id) return null;
+
         const dist = snap.ownerDistance != null ? `${snap.ownerDistance}m` : '近く';
         return {
-            id: 'idle_follow',
-            text: `${owner} の後ろをついていく（距離 ${dist}）。いまの気持ちを短くつぶやく。`,
+            id,
+            text: `${snap.owner || 'だれか'} follow ${phase} (${dist})`,
             priority: 0
         };
     }
+
     if (snap.mode === 'wait') {
         return {
             id: 'idle_wait',
-            text: 'その場で待っている。いまの気持ちを短くつぶやく。',
+            text: 'Waiting in place',
             priority: 0
         };
     }

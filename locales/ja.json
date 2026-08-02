@@ -2,19 +2,42 @@
   "commands": {
     "wait": "わかった、ここで待つね",
     "follow": "ついていくね",
+    "follow_chase": "追いかけるね",
+    "follow_too_far": "遠いよ…近づいてから追従して",
+    "follow_deferred": "終わったらついていくね",
     "give_all_ok": "全部渡すね",
     "give_all_empty": "渡すものないよ",
     "give_all_unavailable": "近くにいないと渡せないよ",
     "give_all_failed": "渡せなかった…ごめん",
     "spawnpoint_ok": "ここを拠点にしたよ",
     "spawnpoint_failed": "拠点を設定できなかった…ごめん",
-    "owner_locked": "{owner} についていくね"
+    "owner_locked": "{owner} についていくね",
+    "owner_locked_chase": "{owner}を追いかけるね",
+    "owner_locked_too_far": "{owner}が遠いよ、近づいて",
+    "death_return_start": "死亡地点へ戻るよ ({x}, {y}, {z})",
+    "own_grave_found": "自分の墓を見つけたよ ({x}, {y}, {z})",
+    "boot_ready": "{name} trailmate ready"
   },
   "events": {
-    "idle_follow": [
+    "idle_follow_near": [
       "オーナーまで{distance}m。のんびりついてくよ",
       "{owner}の後ろ、ふわっとついてくよ",
       "いま追従中。そばにいるね"
+    ],
+    "idle_follow_chasing": [
+      "{owner}まで{distance}m。追いかけてるよ",
+      "ちょっと離れてる、追いかけるね",
+      "{distance}m離れてる、急ぐね"
+    ],
+    "idle_follow_far": [
+      "遠いよ…待ってて",
+      "ついていけないかも、待って",
+      "{owner}が遠い…追いかける"
+    ],
+    "idle_follow_lost": [
+      "最後の場所へ向かってるよ",
+      "どこにいったか探してる",
+      "向かってるから待ってて"
     ],
     "idle_wait": [
       "ここで待ってるね",
@@ -36,15 +59,50 @@
       "わっ、{hostile}だ。そばにいるよ",
       "{hostile}が近いよ"
     ],
+    "hostile_approach_mid": [
+      "{hostile}が{hostileDistance}m…近づいてる",
+      "うっ、{hostile}が近づいてきた",
+      "{hostile}が{hostileDistance}mまで来てる"
+    ],
+    "hostile_approach_near": [
+      "{hostile}が{hostileDistance}m！もう近い",
+      "わっ、{hostile}がかなり近い",
+      "{hostile}が{hostileDistance}m、気をつけて"
+    ],
+    "hostile_approach_close": [
+      "{hostile}がすぐそば、{hostileDistance}m！",
+      "やばい、{hostile}が目の前",
+      "{hostile}が{hostileDistance}m、近い！"
+    ],
+    "combat_target_switch": [
+      "ターゲット変更、{hostile}と戦う",
+      "次は{hostile}だ",
+      "{hostile}に切り替えるよ"
+    ],
+    "combat_fighting": [
+      "{hostile}と戦ってる、{hostileDistance}m",
+      "いま{hostile}と交戦中",
+      "{hostile}を倒すよ"
+    ],
     "low_health": [
-      "HPが{health}まで減った…だいじょうぶ？",
-      "いたっ…HP {health}。休もうか？",
-      "ちょっと痛いよ…HP {health}"
+      "HPが{health}まで減った…休みたい",
+      "ちょっとボロボロ、HP {health}",
+      "HP {health}…回復したいな"
     ],
     "damaged": [
-      "いたっ…だいじょうぶ？",
-      "ダメージ受けた…気をつけるね",
-      "ちょっと痛いよ…"
+      "いたっ…ちょっと痛い",
+      "うっ…HP {health}",
+      "痛いよ…"
+    ],
+    "damaged_combat": [
+      "{hostile}にやられた…HP {health}",
+      "うわ、{hostile}が強い…",
+      "{hostile}から逃げたい…HP {health}"
+    ],
+    "damaged_low": [
+      "また痛い…HP {health} もう危ない",
+      "うう…もう限界に近い",
+      "いたっ…HP {health} もう無理かも"
     ],
     "stuck": [
       "あれれ、{stuckSeconds}秒つまってる…",
@@ -56,10 +114,55 @@
       "いたいた、よかった",
       "再会だね、うれしい"
     ],
+    "owner_found_chase": [
+      "みつけた！{owner}を追いかける",
+      "いたいた、追いかけるね",
+      "再会！追いかけるよ"
+    ],
     "owner_lost": [
       "あれ、{owner}どこいった？",
       "見失っちゃった…",
       "探してるよ〜"
+    ],
+    "control_combat": [
+      "{hostile}と戦うよ！{hostileDistance}m先",
+      "わっ、{hostile}だ。護衛モードに入るね",
+      "{hostile}が来た、戦闘開始"
+    ],
+    "control_recovery": [
+      "死亡地点へ戻るよ",
+      "落とし物を取りに行くね",
+      "復旧中、待ってて"
+    ],
+    "control_survival": [
+      "まず生き延びる、待ってて",
+      "危ない、一旦離れるね",
+      "緊急回避中…"
+    ],
+    "control_transfer": [
+      "持ち物渡すね",
+      "余ったもの渡すよ",
+      "アイテム受け渡し中"
+    ],
+    "control_follow": [
+      "またついていくよ",
+      "追従再開するね",
+      "ついていくモードに戻った"
+    ],
+    "control_wait": [
+      "ここで待機するね",
+      "待機モードに戻った",
+      "じっとしてるよ"
+    ],
+    "no_food": [
+      "食べ物がない…持ってきて",
+      "お腹空いた、食料ちょうだい",
+      "食べるものがないよ"
+    ],
+    "no_torch": [
+      "松明がないよ",
+      "暗い、松明ほしい",
+      "松明持ってない…"
     ],
     "generic": [
       "えへへ、なんとなく元気だよ",
