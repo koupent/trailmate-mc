@@ -21,6 +21,7 @@
     "mineflayer-auto-eat": "^3.3.6",
     "mineflayer-pathfinder": "^2.4.5",
     "mineflayer-pvp": "^1.3.2",
+    "mineflayer-statemachine": "^1.7.0",
     "vec3": "^0.1.10"
   },
   "devDependencies": {

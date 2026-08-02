@@ -21,6 +21,11 @@ export function selectControlOwner(input = {}) {
 
 /** 現在の CompanionContext 状態から所有権方針を解決する。 */
 export function currentControlOwner(ctx, upperMode = 'follow', now = Date.now()) {
+    const fsmId = ctx?.agent?.companion?.manager?.getActiveFsmId?.();
+    if (fsmId === 'combat') {
+        return 'combat';
+    }
+
     const reflexes = ctx?.agent?.reflexes;
     const combatActive = Boolean(
         reflexes?.isControllingMovement
@@ -28,6 +33,16 @@ export function currentControlOwner(ctx, upperMode = 'follow', now = Date.now())
         || ctx?.bot?.pvp?.target
     );
     const recoveryActive = Boolean(ctx?.deathRecovery?.active);
+    if (fsmId === 'duty' && recoveryActive) {
+        return selectControlOwner({
+            recoveryActive: true,
+            recoveryEmergency: now < (ctx.deathRecovery.emergencyUntil || 0),
+            combatActive: false,
+            transferActive: Boolean(ctx?.itemTransfer?.active),
+            upperMode
+        });
+    }
+
     return selectControlOwner({
         recoveryActive,
         recoveryEmergency: recoveryActive

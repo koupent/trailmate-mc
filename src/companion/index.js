@@ -1,6 +1,6 @@
 import { CompanionContext } from './CompanionContext.js';
 import { WorldState } from './WorldState.js';
-import { ModeManager } from './ModeManager.js';
+import { CompanionOrchestrator } from './stateMachine/CompanionOrchestrator.js';
 import { FollowMode } from './modes/FollowMode.js';
 import { WaitMode } from './modes/WaitMode.js';
 import { OwnGraveInterrupt } from './interrupts/OwnGraveInterrupt.js';
@@ -11,19 +11,17 @@ import { AutoEquip } from './utils/AutoEquip.js';
 import { PeriodicItemTransfer, createItemShareConfig } from './utils/PeriodicItemTransfer.js';
 import { CompanionDialogue, DEFAULT_CHAT_CONFIG } from './CompanionDialogue.js';
 import { applyJumpHitboxFix } from './hitboxFix.js';
-import { findOwnGravesNear } from '../world/graves.js';
 import {
     beginDeathReturnAfterSpawn,
     captureDeathState
 } from './deathRecovery.js';
-import { needsGearRecovery, shouldDeferRecoveryForCombat } from './combatGate.js';
 import {
     DEFAULT_TORCH_LIGHT_THRESHOLD,
     enableCompanionBlockProtection
 } from './blockProtection.js';
 import { attachOwnerWorkTracker } from './ownerWorkTracker.js';
 import { tCommand } from '../i18n/index.js';
-import { attachOwnerThreatTracker, getActiveOwnerThreat } from './ownerThreatTracker.js';
+import { attachOwnerThreatTracker } from './ownerThreatTracker.js';
 
 const DEFAULT_CONFIG = {
     scan_radius: 48,
@@ -120,7 +118,6 @@ export async function startCompanion(agent, companionConfig = {}) {
     const ctx = new CompanionContext(agent, worldState, config);
     attachOwnerWorkTracker(ctx);
     attachOwnerThreatTracker(ctx);
-    const modes = createCompanionModes();
     // 通常ドロップは先に回収し、Recoveryの墓フェーズでは墓処理へ譲る。
     const interrupts = [
         new NearbyLootInterrupt(),
@@ -128,7 +125,7 @@ export async function startCompanion(agent, companionConfig = {}) {
         new DeathReturnInterrupt(),
         new RecoveryInterrupt()
     ];
-    const manager = new ModeManager(ctx, modes, interrupts, 'follow');
+    const manager = new CompanionOrchestrator(ctx, agent, interrupts, 'follow');
     const autoEquip = new AutoEquip(agent);
     const dialogue = new CompanionDialogue(agent, manager, config);
     const itemTransfer = new PeriodicItemTransfer(config.item_share, {
@@ -141,6 +138,7 @@ export async function startCompanion(agent, companionConfig = {}) {
     agent.companion = {
         ctx,
         manager,
+        orchestrator: manager,
         autoEquip,
         dialogue,
         itemTransfer,
@@ -151,37 +149,15 @@ export async function startCompanion(agent, companionConfig = {}) {
     await applyJumpHitboxFix(agent.bot);
     wireDeathRecovery(agent, ctx, config);
 
-    console.log('[companion] started (follow + wait + death-return + own-grave + nearby-loot + recovery + auto-equip + item-share + dialogue)');
+    console.log('[companion] started (fsm: follow/wait/combat/duty + auto-equip + item-share + dialogue)');
 
     const loop = async () => {
         if (!agent.bot || agent.bot.entity == null) return;
 
-        const graveRadius = config.own_grave?.scan_radius ?? 10;
-        const recoveryActive = Boolean(ctx.deathRecovery?.active);
-        const recoveryDeferCombat = recoveryActive && shouldDeferRecoveryForCombat(ctx);
-        const preferGearRecovery = !recoveryActive && needsGearRecovery(agent.bot)
-            && findOwnGravesNear(agent.bot, agent.bot.username, graveRadius).length > 0;
-
-        // 回収・墓割り込みが他処理を止めていても、戦闘tickは必ず実行する。
-        try {
-            await agent.reflexes?.tick?.({
-                movementHeld: !!ctx.movement?.isHeld,
-                isIdleish: manager.getCurrentModeId() === 'follow' || manager.getCurrentModeId() === 'wait',
-                nonCombatHeld: !!ctx.holdReflexes || preferGearRecovery,
-                preferGearRecovery,
-                recoveryDeferCombat,
-                recovery: ctx.deathRecovery,
-                owner: ctx.ownerEntity ?? null,
-                ownerThreat: getActiveOwnerThreat(ctx),
-                movement: ctx.movement
-            });
-        } catch (err) {
-            console.error('[companion] reflexes error:', err);
-        }
-
         if (agent.companion._loopBusy) return;
         agent.companion._loopBusy = true;
         try {
+            // Single orchestrator: NestedStateMachine owns follow/wait/combat/duty.
             await manager.tick();
             await autoEquip.maybeRun(ctx);
             try {
