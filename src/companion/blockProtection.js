@@ -103,7 +103,7 @@ export function canBreakBlockUnderProtection(block) {
 }
 
 /**
- * Allow digging exactly one block position (own grave recovery).
+ * Allow digging exactly one block position (guarded exceptions under block protection).
  * @param {{ x: number, y: number, z: number }} pos
  */
 export function allowDigAt(pos) {

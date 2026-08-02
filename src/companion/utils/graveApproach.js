@@ -1,10 +1,11 @@
 import { approachPosition } from './approachPosition.js';
+import { DEFAULT_OWN_GRAVE_INTERACT_RANGE } from './graveInteract.js';
 import { jumpOntoStep, sleep, MANUAL_JUMP_DISTANCE, CLIMB_HOLD_MS } from '../movement/climb.js';
 import { scanSurroundings } from '../movement/surroundings.js';
 
 const DEFAULT_POLL_MS = 250;
-/** Extra slack beyond dig_range for center-to-center reach checks. */
-const DIG_REACH_SLACK = 1;
+/** Extra slack beyond interact_range for center-to-center reach checks. */
+const INTERACT_REACH_SLACK = 1;
 
 /**
  * @param {{ x: number, y: number, z: number }} blockPos
@@ -28,37 +29,37 @@ function distance3(a, b) {
 /**
  * @param {import('mineflayer').Bot} bot
  * @param {{ x: number, y: number, z: number }} blockPos
- * @param {number} digRange
+ * @param {number} interactRange
  */
-export function isGraveWithinDigReach(bot, blockPos, digRange) {
+export function isGraveWithinInteractReach(bot, blockPos, interactRange) {
     const feet = bot?.entity?.position;
     if (!feet || !blockPos) return false;
 
     const center = graveBlockCenter(blockPos);
     const horizontal = Math.hypot(feet.x - center.x, feet.z - center.z);
-    if (horizontal > digRange + 0.5) return false;
+    if (horizontal > interactRange + 0.5) return false;
 
     const eyeY = feet.y + 1.62;
     const vertical = center.y - eyeY;
-    if (vertical > digRange + 0.25 || vertical < -(digRange + 0.25)) return false;
+    if (vertical > interactRange + 0.25 || vertical < -(interactRange + 0.25)) return false;
 
-    return distance3(feet, center) <= digRange + DIG_REACH_SLACK;
+    return distance3(feet, center) <= interactRange + INTERACT_REACH_SLACK;
 }
 
 /**
- * Walk or climb until the grave block is within dig reach.
+ * Walk or climb until the grave block is within interaction reach.
  * Uses horizontal arrival plus step-up assist when the grave sits on a ledge.
  *
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} blockPos
- * @param {{ digRange?: number, timeoutMs?: number, pollMs?: number }} [options]
+ * @param {{ interactRange?: number, digRange?: number, timeoutMs?: number, pollMs?: number }} [options]
  * @returns {Promise<boolean>}
  */
-export async function approachGraveForDig(ctx, blockPos, options = {}) {
+export async function approachGraveForInteract(ctx, blockPos, options = {}) {
     const bot = ctx?.bot;
     if (!bot?.entity || !blockPos) return false;
 
-    const digRange = options.digRange ?? 3.5;
+    const interactRange = options.interactRange ?? options.digRange ?? DEFAULT_OWN_GRAVE_INTERACT_RANGE;
     const timeoutMs = options.timeoutMs ?? 10_000;
     const pollMs = options.pollMs ?? DEFAULT_POLL_MS;
     const blockCenter = graveBlockCenter(blockPos);
@@ -69,7 +70,7 @@ export async function approachGraveForDig(ctx, blockPos, options = {}) {
             ctx.movement?.stop?.();
             return false;
         }
-        if (isGraveWithinDigReach(bot, blockPos, digRange)) {
+        if (isGraveWithinInteractReach(bot, blockPos, interactRange)) {
             ctx.movement?.stop?.();
             return true;
         }
@@ -81,8 +82,8 @@ export async function approachGraveForDig(ctx, blockPos, options = {}) {
         }
 
         await approachPosition(ctx, blockCenter, {
-            range: digRange,
-            pathRange: Math.max(2, digRange - 1),
+            range: interactRange,
+            pathRange: Math.max(2, interactRange - 1),
             timeoutMs: pollMs * 2,
             pollMs,
             horizontalArrival: true,
@@ -92,7 +93,7 @@ export async function approachGraveForDig(ctx, blockPos, options = {}) {
     }
 
     ctx.movement?.stop?.();
-    return isGraveWithinDigReach(bot, blockPos, digRange);
+    return isGraveWithinInteractReach(bot, blockPos, interactRange);
 }
 
 /**

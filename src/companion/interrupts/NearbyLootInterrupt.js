@@ -20,7 +20,7 @@ const DEFAULT_RECOVERY_QUIET_MS = 750;
 
 /**
  * Pick up ground-item entities near the bot.
- * Independent from grave digging / death-return travel — those only get the bot near loot.
+ * Independent from grave claim / death-return travel — those only get the bot near loot.
  * 回収は常時有効。オーナー作業中の視界退避は ownerWorkMovement が移動を制御する。
  */
 export class NearbyLootInterrupt {
