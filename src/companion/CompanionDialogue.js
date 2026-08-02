@@ -1,26 +1,35 @@
 import { isHostile, getNearestEntityWhere } from '../world/entities.js';
 import {
     classifyPlayerCommand,
+    detectCombatCommentary,
     detectIdleCommentary,
     detectSituationEvent,
+    deriveFollowPhase,
+    deriveFollowReplyKey,
+    deriveHostileBand,
     renderCommentary
 } from './dialogueParse.js';
-import { isPlayerEligible, lockOwner } from './ownerLock.js';
+import { buildOwnerFollowFacts, isPlayerEligible, lockOwner } from './ownerLock.js';
 import { giveAllItemsToPlayer, countAllItems } from './utils/giveAllItems.js';
+import { countSupplyItems } from './utils/inventorySnapshot.js';
 import { tCommand } from '../i18n/index.js';
 import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
 
 export const DEFAULT_CHAT_CONFIG = {
     enabled: true,
-    min_interval_ms: 90000,
-    event_cooldown_ms: 300000,
+    min_interval_ms: 45000,
+    priority_min_interval_ms: 15000,
+    event_cooldown_ms: 120000,
     player_reply_cooldown_ms: 1500,
-    spontaneous_chance: 0.7,
-    idle_chance: 0.35,
+    spontaneous_chance: 0.85,
+    idle_chance: 0.55,
+    combat_commentary_chance: 0.6,
     low_health: 8,
+    low_food_hunger: 14,
     stuck_seconds: 5,
-    hostile_range: 12
+    hostile_range: 12,
+    hostile_approach_distances: [10, 6, 3]
 };
 
 /**
@@ -35,6 +44,7 @@ export class CompanionDialogue {
     constructor(agent, manager, companionConfig = {}) {
         this.agent = agent;
         this.manager = manager;
+        this.companionConfig = companionConfig;
         this.config = { ...DEFAULT_CHAT_CONFIG, ...(companionConfig.chat || {}) };
         this.lastChatAt = 0;
         this.lastPlayerChatAt = 0;
@@ -85,25 +95,36 @@ export class CompanionDialogue {
         if (this._actionBusy || this._isItemTransferActive()) return;
 
         const snapshot = this._buildSnapshot();
+        const dialogueConfig = this._dialogueConfig();
         let event = detectSituationEvent(this._prev, snapshot, this.config);
         this._prev = snapshot;
 
         if (!event) {
-            event = detectIdleCommentary(snapshot);
+            event = detectCombatCommentary(snapshot);
+            if (!event) event = detectIdleCommentary(snapshot, dialogueConfig);
             if (!event) return;
-            if (Math.random() > this.config.idle_chance) return;
+            const chance = event.id === 'combat_fighting'
+                ? (this.config.combat_commentary_chance ?? 0.6)
+                : this.config.idle_chance;
+            if (Math.random() > chance) return;
         } else if (event.priority < 2 && Math.random() > this.config.spontaneous_chance) {
             return;
         }
 
         const now = Date.now();
-        if (now - this.lastChatAt < this.config.min_interval_ms) return;
-        if (now - this.lastPlayerChatAt < this.config.min_interval_ms) return;
+        const minInterval = event.priority >= 2
+            ? (this.config.priority_min_interval_ms ?? 15000)
+            : this.config.min_interval_ms;
+        if (now - this.lastChatAt < minInterval) return;
+        if (now - this.lastPlayerChatAt < minInterval) return;
         if (now - (this.lastEventAt[event.id] || 0) < this.config.event_cooldown_ms) return;
 
-        const recovery = this.manager.interrupts?.find((i) => i.name === 'recovery');
-        if (recovery && Date.now() < (recovery.cooldownUntil || 0)) return;
-        if (this.agent.companion?.ctx?.movement?.isHeld) return;
+        const isStuckEvent = event.id === 'stuck';
+        if (!isStuckEvent) {
+            const recovery = this.manager.interrupts?.find((i) => i.name === 'recovery');
+            if (recovery && Date.now() < (recovery.cooldownUntil || 0)) return;
+            if (this.agent.companion?.ctx?.movement?.isHeld) return;
+        }
 
         this.lastEventAt[event.id] = now;
 
@@ -111,6 +132,18 @@ export class CompanionDialogue {
         const message = renderCommentary(language, event.id, snapshot);
         if (!message) return;
         await this._say(message);
+        if (isStuckEvent) {
+            const ctx = this.agent.companion?.ctx;
+            if (ctx) ctx.stuckChat = null;
+        }
+    }
+
+    _dialogueConfig() {
+        const cfg = this.companionConfig || {};
+        return {
+            follow_distance: cfg.follow_distance,
+            owner_near_radius: cfg.owner_near_radius
+        };
     }
 
     /**
@@ -133,10 +166,14 @@ export class CompanionDialogue {
             await this.manager.switchMode(command.mode);
         }
 
-        const replyKey = command.mode === 'wait' ? 'wait' : command.mode === 'follow' ? 'follow' : null;
-        const message = replyKey
-            ? tCommand(language, replyKey)
-            : command.message;
+        let message = command.message;
+        if (command.mode === 'wait') {
+            message = tCommand(language, 'wait');
+        } else if (command.mode === 'follow') {
+            const snap = this._buildSnapshot();
+            message = tCommand(language, deriveFollowReplyKey(snap.followPhase));
+        }
+
         if (message && !this.agent.shut_up) {
             await this._say(message);
         }
@@ -186,7 +223,6 @@ export class CompanionDialogue {
                 await this._say(tCommand(language, 'give_all_failed'));
             }
         } finally {
-            // Avoid scooping up the items we just tossed to the player.
             const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
             ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
             ctx.nearbyLoot.suppressUntil = Date.now() + ms;
@@ -232,31 +268,43 @@ export class CompanionDialogue {
         this.lastChatAt = Date.now();
     }
 
+    _emptySnapshot(modeId) {
+        return {
+            mode: modeId,
+            controlOwner: modeId === 'wait' ? 'wait' : 'follow',
+            followPhase: null,
+            owner: null,
+            ownerVisible: false,
+            ownerDistance: null,
+            ownerEntityMissing: false,
+            ownerHasLos: false,
+            botPos: null,
+            ownerPos: null,
+            nearbyPlayers: [],
+            health: null,
+            hunger: null,
+            foodCount: 0,
+            torchCount: 0,
+            timeOfDay: null,
+            isNight: false,
+            stuckSeconds: 0,
+            stuckAlert: false,
+            hostile: null,
+            hostileBand: null,
+            combatTarget: null,
+            lastDamageTaken: 0,
+            lastDamageAgeMs: null
+        };
+    }
+
     _buildSnapshot() {
         const ctx = this.agent.companion?.ctx;
         const bot = this.agent.bot;
-        if (!ctx || !bot?.entity) {
-            return {
-                mode: this.manager.getCurrentModeId(),
-                owner: null,
-                ownerVisible: false,
-                ownerDistance: null,
-                nearbyPlayers: [],
-                health: null,
-                food: null,
-                timeOfDay: null,
-                isNight: false,
-                stuckSeconds: 0,
-                hostile: null,
-                lastDamageTaken: 0,
-                lastDamageAgeMs: null
-            };
-        }
+        const mode = this.manager.getCurrentModeId();
 
-        const owner = ctx.ownerEntity;
-        const ownerDistance = owner
-            ? Number(bot.entity.position.distanceTo(owner.position).toFixed(1))
-            : null;
+        if (!ctx || !bot?.entity) {
+            return this._emptySnapshot(mode);
+        }
 
         const nearbyPlayers = (ctx.worldState.visiblePlayers || []).map((p) => ({
             name: p.name,
@@ -282,20 +330,40 @@ export class CompanionDialogue {
             ? Date.now() - bot.lastDamageTime
             : null;
 
-        return {
-            mode: this.manager.getCurrentModeId(),
-            owner: ctx.ownerName,
-            ownerVisible: !!ctx.worldState.ownerVisible,
-            ownerDistance,
+        const { foodCount, torchCount } = countSupplyItems(bot);
+        const combatTarget = bot.pvp?.target?.name || hostile?.name || null;
+        const hostileBand = hostile
+            ? deriveHostileBand(
+                hostile.distance,
+                this.config.hostile_approach_distances
+            )
+            : null;
+
+        const snap = {
+            ...buildOwnerFollowFacts(ctx, mode),
             nearbyPlayers,
             health: bot.health,
-            food: bot.food,
+            hunger: bot.food,
+            foodCount,
+            torchCount,
             timeOfDay,
             isNight,
-            stuckSeconds: Number((ctx.stuck?.seconds || 0).toFixed(1)),
+            stuckSeconds: Number(
+                (ctx.stuckChat?.seconds ?? ctx.stuck?.seconds ?? 0).toFixed(1)
+            ),
+            stuckAlert: Boolean(ctx.stuckChat),
             hostile,
+            hostileBand,
+            combatTarget,
             lastDamageTaken: bot.lastDamageTaken || 0,
             lastDamageAgeMs
         };
+
+        const dialogueConfig = this._dialogueConfig();
+        snap.followPhase = mode === 'follow'
+            ? deriveFollowPhase(snap, dialogueConfig)
+            : null;
+
+        return snap;
     }
 }

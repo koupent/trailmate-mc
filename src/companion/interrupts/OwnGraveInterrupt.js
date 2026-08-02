@@ -12,6 +12,7 @@ import {
     requestRecoveryItemCollection
 } from '../deathRecovery.js';
 import { needsGearRecovery, shouldDeferToCombat } from '../combatGate.js';
+import { tCommand } from '../../i18n/index.js';
 import {
     canProcessGraveDuringRecovery,
     findOwnGravesInContext
@@ -135,7 +136,10 @@ export class OwnGraveInterrupt {
         const z = Math.floor(pos.z);
         console.log(`[companion] found own grave at ${key}`);
         try {
-            await ctx.agent?.openChat?.(`自分の墓を見つけたよ (${x}, ${y}, ${z})`);
+            const language = ctx.agent?.language || 'ja';
+            await ctx.agent?.openChat?.(
+                tCommand(language, 'own_grave_found', { x, y, z })
+            );
         } catch {
             /* ignore */
         }

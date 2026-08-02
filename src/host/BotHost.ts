@@ -7,6 +7,7 @@ import type { AppConfig } from '../config.js';
 import { startCompanion } from '../companion/index.js';
 import { Reflexes } from '../reflexes/Reflexes.js';
 import { setupAutoEat } from './autoEat.js';
+import { tCommand } from '../i18n/index.js';
 
 export type TrailmateHost = {
   bot: Bot;
@@ -131,7 +132,7 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
     void host.companion?.dialogue?.handlePlayerMessage?.(username, message);
   });
 
-  await host.openChat(`${host.name} trailmate ready`);
+  await host.openChat(tCommand(config.language, 'boot_ready', { name: host.name }));
   console.log(`[trailmate] spawned as ${host.name}`);
   return host;
 }
@@ -139,13 +140,23 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
 function trackDamage(bot: Bot): void {
   (bot as any).lastDamageTime = 0;
   (bot as any).lastDamageTaken = 0;
+  let lastHealth = bot.health;
+
   bot.on('health', () => {
-    /* mineflayer emits health; damage is tracked via entityHurt if available */
+    const hp = bot.health;
+    if (hp < lastHealth) {
+      (bot as any).lastDamageTaken = lastHealth - hp;
+      (bot as any).lastDamageTime = Date.now();
+    }
+    lastHealth = hp;
   });
+
   bot.on('entityHurt', (entity) => {
     if (entity !== bot.entity) return;
     (bot as any).lastDamageTime = Date.now();
-    // amount not always available; CompanionDialogue uses presence of recent damage
-    (bot as any).lastDamageTaken = Math.max(1, (bot as any).lastDamageTaken || 1);
+    if (!(bot as any).lastDamageTaken) {
+      const delta = lastHealth - bot.health;
+      (bot as any).lastDamageTaken = delta > 0 ? delta : 1;
+    }
   });
 }

@@ -21,6 +21,8 @@ export class CompanionContext {
         this.config = config;
         this.movement = new MovementController(agent.bot);
         this.stuck = new StuckMonitor();
+        /** @type {{ seconds: number, at: number }|null} sticky stuck signal for chat (survives stuck.reset) */
+        this.stuckChat = null;
         this.doors = new DoorTracker(agent.bot, {
             getOwnerEntity: () => this.ownerEntity
         });

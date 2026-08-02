@@ -22,6 +22,7 @@ import {
     enableCompanionBlockProtection
 } from './blockProtection.js';
 import { attachOwnerWorkTracker } from './ownerWorkTracker.js';
+import { tCommand } from '../i18n/index.js';
 
 const DEFAULT_CONFIG = {
     scan_radius: 48,
@@ -235,8 +236,13 @@ function wireDeathRecovery(agent, ctx, config) {
                 if (ctx.deathRecovery?.active) {
                     console.log('[companion] death return started after respawn');
                     try {
+                        const pos = ctx.deathRecovery.deathPos;
                         await agent.openChat?.(
-                            `死亡地点へ戻るよ (${Math.floor(ctx.deathRecovery.deathPos.x)}, ${Math.floor(ctx.deathRecovery.deathPos.y)}, ${Math.floor(ctx.deathRecovery.deathPos.z)})`
+                            tCommand(agent.language || 'ja', 'death_return_start', {
+                                x: Math.floor(pos.x),
+                                y: Math.floor(pos.y),
+                                z: Math.floor(pos.z)
+                            })
                         );
                     } catch {
                         /* ignore */
