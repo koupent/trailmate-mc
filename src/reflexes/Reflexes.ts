@@ -34,6 +34,7 @@ import {
   WIDE_THREAT_SPAN_RAD,
   shouldEnterArcNarrowing,
   shouldExitArcNarrowing,
+  shouldApplyTacticalReposition,
 } from '../combat/threatArc.js';
 import { CombatEpisodeTracker } from '../combat/CombatEpisodeTracker.js';
 import {
@@ -109,6 +110,10 @@ const COMBAT_MOVE_DISPLACEMENT_WINDOW_MS = 600;
 const COMBAT_STUCK_DISPLACEMENT = 0.03;
 const COMBAT_STUCK_FLIP_MS = 350;
 const COMBAT_REPOSITION_CLIMB_HOLD_MS = 1200;
+/** 被弾後に自己防衛を維持する猶予（ms）。 */
+const RECENT_DAMAGE_GRACE_MS = 4000;
+/** オーナー被弾直後に recentDamageUntil を延長する判定窓（ms）。 */
+const OWNER_THREAT_FRESH_MS = 1500;
 
 type ThreatArcBias = {
   sign: 1 | -1;
@@ -284,6 +289,15 @@ export class Reflexes {
     ownerThreat?: OwnerThreatHint;
   }): Promise<void> {
     this.lastOwnerThreat = opts.ownerThreat ?? null;
+    if (this.lastOwnerThreat?.attackerId) {
+      const age = Date.now() - this.lastOwnerThreat.seenAt;
+      if (age < OWNER_THREAT_FRESH_MS) {
+        this.recentDamageUntil = Math.max(
+          this.recentDamageUntil,
+          Date.now() + RECENT_DAMAGE_GRACE_MS
+        );
+      }
+    }
     if (this.config.self_preservation) {
       this.preserve();
     }
@@ -312,7 +326,7 @@ export class Reflexes {
       }
       if (opts.preferGearRecovery) {
         this.resetCombat();
-      } else if (this.config.self_defense && !opts.movementHeld) {
+      } else if (this.config.self_defense && (!opts.movementHeld || this.currentTarget != null)) {
         await this.defend(opts.owner, opts.movement);
       } else if (!this.config.self_defense) {
         this.resetCombat();
@@ -531,6 +545,18 @@ export class Reflexes {
       this.traceCombatDecision(enemy, arcBias, intent, movementTrace, now);
       return;
     }
+
+    if (
+      arcBias
+      && !this.arcNarrowLatched
+      && shouldApplyTacticalReposition(arcBias.threatCount, arcBias.selection)
+    ) {
+      const intent = this.decideCurrentCombatIntent(enemy, arcBias!);
+      const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
+      this.traceCombatDecision(enemy, arcBias, intent, movementTrace, now);
+      return;
+    }
+
     const traceIntent = this.combatTrace.enabled
       ? this.decideCurrentCombatIntent(enemy, arcBias)
       : null;
@@ -959,6 +985,13 @@ export class Reflexes {
     const stickyTarget = this.currentTarget;
     const canSwitch = !stickyTarget || now >= this.focusUntil;
     const hasLos = (entity: any) => hasLineOfSight(this.bot, entity);
+    const ownerThreatLocked = this.applyOwnerThreatPriority(
+      ownerPos,
+      botPos,
+      ranges,
+      hasLos,
+      now
+    );
 
     if (!this.currentTarget) {
       let picked = pickProtectTarget(this.bot, ownerPos, ranges, hasLos, this.lastOwnerThreat);
@@ -986,7 +1019,7 @@ export class Reflexes {
         this.lastTargetSeenAt = now;
         this.focusUntil = now + this.activePresetParams.focusStickyMs;
       }
-    } else if (canSwitch && stickyTarget) {
+    } else if (canSwitch && stickyTarget && !ownerThreatLocked) {
       const candidate = pickProtectTarget(
         this.bot,
         ownerPos,
@@ -1001,6 +1034,40 @@ export class Reflexes {
         this.focusUntil = now + this.activePresetParams.focusStickyMs;
       }
     }
+  }
+
+  /**
+   * オーナー被弾の襲撃者を最優先で currentTarget に固定する。
+   * @returns true when locked onto the owner-attacker this tick
+   */
+  private applyOwnerThreatPriority(
+    ownerPos: DefendOwner['position'] | null | undefined,
+    botPos: { x: number; y: number; z: number },
+    ranges: ProtectRanges,
+    hasLos: (entity: any) => boolean,
+    now: number
+  ): boolean {
+    const ownerThreatId = this.lastOwnerThreat?.attackerId ?? null;
+    if (ownerThreatId == null) return false;
+
+    const ownerAttacker = this.resolveLiveTarget(this.bot.entities?.[ownerThreatId]);
+    if (!ownerAttacker || !this.isUsableTarget(ownerAttacker)) return false;
+
+    if (this.currentTarget?.id === ownerAttacker.id) {
+      if (hasLos(ownerAttacker)) this.lastTargetSeenAt = now;
+      return true;
+    }
+
+    if (!hasLos(ownerAttacker)) return false;
+    if (isProtectThreat(botPos, ownerPos, ownerAttacker, ranges) == null) return false;
+
+    if (this.currentTarget?.id !== ownerAttacker.id) {
+      this.currentTarget = ownerAttacker;
+      this.syncCombatLearning(ownerAttacker, now);
+      this.lastTargetSeenAt = now;
+      this.focusUntil = now + this.activePresetParams.focusStickyMs;
+    }
+    return true;
   }
 
   private transitionMode(
@@ -1032,15 +1099,16 @@ export class Reflexes {
    * ここでawaitすると相棒ループが止まり、FollowがBotを再取得してしまう。
    */
   private ensureAttackTarget(enemy: any): void {
+    const target = this.currentTarget ?? enemy;
     const pvp = this.bot.pvp as {
       target?: { id?: number } | null;
       attack?: (e: any) => Promise<void> | void;
     } | undefined;
-    if (!pvp?.attack || !enemy) return;
-    if (pvp.target?.id != null && enemy.id != null && pvp.target.id === enemy.id) {
+    if (!pvp?.attack || !target) return;
+    if (pvp.target?.id != null && target.id != null && pvp.target.id === target.id) {
       return;
     }
-    void Promise.resolve(pvp.attack(enemy)).catch((err: any) => {
+    void Promise.resolve(pvp.attack(target)).catch((err: any) => {
       console.warn('[reflexes] defend failed:', (err as Error)?.message || err);
     });
   }
@@ -1050,15 +1118,16 @@ export class Reflexes {
    * 対象の前で棒立ちになることを防ぐ。
    */
   private meleeAssistStrike(enemy: any | null, now: number): void {
-    if (!enemy?.position || !this.bot.entity) return;
-    const dist = distanceToPos(this.bot.entity.position, enemy.position);
+    const target = this.currentTarget ?? enemy;
+    if (!target?.position || !this.bot.entity) return;
+    const dist = distanceToPos(this.bot.entity.position, target.position);
     if (dist > RETREAT_MELEE_RANGE) return;
     if (now - this.lastPassiveStrikeAt < 1000) return;
     this.lastPassiveStrikeAt = now;
     try {
-      const look = enemy.position.offset?.(0, (enemy.height ?? 1.8) * 0.9, 0) || enemy.position;
+      const look = target.position.offset?.(0, (target.height ?? 1.8) * 0.9, 0) || target.position;
       void this.bot.lookAt?.(look, true);
-      this.bot.attack?.(enemy);
+      this.bot.attack?.(target);
     } catch {
       /* 失敗は無視する */
     }
@@ -1479,7 +1548,7 @@ export class Reflexes {
       // 攻撃を受けたら戦闘へ入り、護衛の基本的な自己防衛を続ける。
       const now = Date.now();
       this.lastDamageAt = now;
-      this.recentDamageUntil = now + 4000;
+      this.recentDamageUntil = now + RECENT_DAMAGE_GRACE_MS;
       this.combatControlUntil = refreshCombatControlUntil({
         now,
         previousUntil: this.combatControlUntil,

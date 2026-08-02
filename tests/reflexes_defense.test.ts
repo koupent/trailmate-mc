@@ -751,7 +751,7 @@ describe('Reflexesの戦闘判断', () => {
     assert.equal(setup.bot._stats().lookTargets.at(-1).z, front.position.z);
   });
 
-  it('狭い敵集団ではpathfinder移動を奪わず攻撃する', async () => {
+  it('狭い敵集団でも改善位置があれば位置取りし攻撃も維持する', async () => {
     const left = makeEntity('zombie', 'hostile', -0.4, 64, 3);
     const right = makeEntity('zombie', 'hostile', 0.4, 64, 3);
     const owner = makeOwner('Alice', 0, 64, 0, left);
@@ -762,9 +762,25 @@ describe('Reflexesの戦闘判断', () => {
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
 
-    assert.equal(movement._stats().destinations.length, 0);
+    assert.equal(movement._stats().destinations.length, 1);
     assert.equal(setup.bot._stats().forceStopCount, 0);
     assert.equal(setup.bot._stats().attackTarget, left);
+  });
+
+  it('狭い敵集団で改善がなければpathfinder移動せず攻撃する', async () => {
+    const near = makeEntity('zombie', 'hostile', 0, 64, 3);
+    const far = makeEntity('zombie', 'hostile', 0, 64, 5);
+    const owner = makeOwner('Alice', 0, 64, 0, near);
+    const setup = makeBot({ hostiles: [near, far] });
+    setup.track(near, far, owner);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+
+    assert.equal(movement._stats().destinations.length, 0);
+    assert.equal(setup.bot._stats().forceStopCount, 0);
+    assert.equal(setup.bot._stats().attackTarget, near);
   });
 
   it('単体遠距離敵の射線と直交するワールド方向へ回避する', async () => {

@@ -37,6 +37,16 @@ export function attachOwnerThreatTracker(ctx) {
 export function getActiveOwnerThreat(ctx, now = Date.now()) {
     const threat = ctx?.ownerThreat;
     if (!threat?.attackerId) return null;
+
+    const attacker = resolveThreatEntity(ctx.bot, threat.attackerId);
+    if (attacker && isHostile(attacker)) {
+        // 襲撃者がまだ存在する間は優先度を維持する。
+        if (now - threat.seenAt > OWNER_THREAT_TTL_MS) {
+            threat.seenAt = now;
+        }
+        return threat;
+    }
+
     if (now - threat.seenAt > OWNER_THREAT_TTL_MS) {
         ctx.ownerThreat = null;
         return null;

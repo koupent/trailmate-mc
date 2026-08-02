@@ -27,6 +27,7 @@ services:
       MC_PORT: ${MC_PORT:-25568}
       MC_AUTH: ${MC_AUTH:-offline}
       BOT_NAME: ${BOT_NAME:-Trailmate}
+      COMBAT_TRACE: ${COMBAT_TRACE:-0}
     volumes:
       # Optional local override: uncomment after copying config.example.json -> config.json
       # - ./config.json:/app/config.json:ro
