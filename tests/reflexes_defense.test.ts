@@ -524,7 +524,7 @@ describe('Reflexesの戦闘判断', () => {
     assert.equal(setup.bot._stats().followRange, 3.6);
   });
 
-  it('着火前の近いcreeperから後退せず近接攻撃する', async () => {
+  it('着火前の近いcreeperには近接攻撃する', async () => {
     const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
     const setup = makeBot({ hostiles: [creeper] });
     setup.track(creeper);
@@ -534,6 +534,7 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
 
     assert.ok(setup.bot._stats().attackCount >= 1);
+    assert.equal(setup.bot._stats().forceStopCount, 0);
     assert.equal(movement._stats().destinations.length, 0);
   });
 
@@ -541,6 +542,40 @@ describe('Reflexesの戦闘判断', () => {
     const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
     creeper.metadata = [];
     creeper.metadata[16] = 1;
+    const setup = makeBot({ hostiles: [creeper] });
+    setup.track(creeper);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
+
+    assert.equal(setup.bot._stats().attackCount, 0);
+    assert.equal(setup.bot._stats().forceStopCount, 1);
+    assert.equal(movement._stats().destinations.length, 1);
+  });
+
+  it('着火が消えたら退避せず攻撃に戻る', async () => {
+    const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
+    creeper.metadata = [];
+    creeper.metadata[16] = 1;
+    const setup = makeBot({ hostiles: [creeper] });
+    setup.track(creeper);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
+    assert.equal(setup.bot._stats().forceStopCount, 1);
+
+    creeper.metadata[16] = -1;
+    await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
+
+    assert.ok(setup.bot._stats().attackCount >= 1);
+  });
+
+  it('metadata[18]の着火フラグでもcreeperから後退する', async () => {
+    const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
+    creeper.metadata = [];
+    creeper.metadata[18] = true;
     const setup = makeBot({ hostiles: [creeper] });
     setup.track(creeper);
     const movement = makeMovement();
@@ -569,7 +604,7 @@ describe('Reflexesの戦闘判断', () => {
   });
 
   it('ownerとBotの両方から遠い敵を無視する', async () => {
-    const skeleton = makeEntity('skeleton', 'hostile', 0, 64, 10);
+    const skeleton = makeEntity('skeleton', 'hostile', 0, 64, 14);
     const owner = makeOwner('Alice', 0, 64, 0);
     owner.yaw = 0;
     const setup = makeBot({ hostiles: [skeleton] });

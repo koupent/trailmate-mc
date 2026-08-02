@@ -57,10 +57,10 @@ export function decideCombatIntent(opts: {
     && opts.distanceToPrimary <= opts.meleeAttackRange
     && !opts.explosiveImmediateDanger;
   const pressured = opts.rangedThreatCount > 0 || opts.explosiveImmediateDanger;
-  const guard = opts.hasShield && (
-    opts.explosiveImmediateDanger
-    || opts.rangedThreatCount >= Math.max(1, opts.guardRangedThreatThreshold)
-  );
+  // クリーパー爆発は盾でも穴・致死リスクが高いので、爆発圧では盾より退避を優先する。
+  const guard = opts.hasShield
+    && !opts.explosiveImmediateDanger
+    && opts.rangedThreatCount >= Math.max(1, opts.guardRangedThreatThreshold);
   // 近接攻撃が届いたら横回避ループを解除して攻撃を確定する。
   // API上攻撃と防御を両立できない場合は、引き続き防御を優先する。
   const dodge = pressured && !guard && !attack;

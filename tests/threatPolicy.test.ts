@@ -10,7 +10,7 @@ import {
 const RANGES: ProtectRanges = {
   botChaseRange: 12,
   ownerProtectRange: OWNER_PROTECT_RANGE,
-  selfImmediateRange: 3.5
+  selfImmediateRange: 6
 };
 
 function pos(x: number, y: number, z: number) {
@@ -29,7 +29,7 @@ describe('threatPolicy', () => {
     const reason = isProtectThreat(
       pos(0, 64, 0),
       pos(0, 64, 0),
-      { name: 'zombie', type: 'hostile', position: pos(0, 64, 6) },
+      { name: 'zombie', type: 'hostile', position: pos(0, 64, 8) },
       RANGES
     );
     assert.equal(reason, 'owner-near');
@@ -49,7 +49,7 @@ describe('threatPolicy', () => {
     const reason = isProtectThreat(
       pos(0, 64, 0),
       pos(0, 64, 0),
-      { name: 'skeleton', type: 'hostile', position: pos(0, 64, 10) },
+      { name: 'skeleton', type: 'hostile', position: pos(0, 64, 14) },
       RANGES
     );
     assert.equal(reason, null);

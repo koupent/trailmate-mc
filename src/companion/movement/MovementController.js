@@ -165,6 +165,7 @@ export class MovementController {
         this._goalKey = null;
         this._goal = null;
         this._lastSeekPos = null;
+        this.status = 'idle';
         this._clearHold();
         try {
             this.bot.pathfinder.setGoal(null);

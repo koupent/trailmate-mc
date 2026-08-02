@@ -105,11 +105,45 @@ export class CompanionOrchestrator {
         try {
             await prepareCompanionWorldTick(this.ctx);
             await refreshDutyFlags(this.targets);
-            this.root.update();
+
+            // Await active behavior BEFORE transitions so combat latch is visible.
+            const active = this.root.activeState;
+            if (active && typeof active.runTick === 'function') {
+                try {
+                    await active.runTick();
+                } catch (err) {
+                    console.error(`[companion/fsm] ${active.stateName || 'active'} error:`, err);
+                }
+            }
+
+            this._applyTransitions();
         } catch (err) {
             console.error('[companion] fsm tick error:', err);
         } finally {
             this._busy = false;
+        }
+    }
+
+    /**
+     * NestedStateMachine.update() runs behavior then transitions without awaiting.
+     * We await runTick ourselves, then only evaluate transitions here.
+     */
+    _applyTransitions() {
+        const nested = this.root;
+        const transitions = nested.transitions || [];
+        for (let i = 0; i < transitions.length; i++) {
+            const transition = transitions[i];
+            if (transition.parentState !== nested.activeState) continue;
+            if (!(transition.isTriggered() || transition.shouldTransition())) continue;
+            transition.resetTrigger();
+            nested.activeState.active = false;
+            nested.activeState.onStateExited?.();
+            transition.onTransition();
+            nested.activeState = transition.childState;
+            nested.activeState.active = true;
+            nested.activeState.onStateEntered?.();
+            nested.emit?.('stateChanged');
+            return;
         }
     }
 }

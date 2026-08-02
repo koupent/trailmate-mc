@@ -47,7 +47,12 @@ export class FollowMode extends Mode {
     }
 
     async onExit(ctx) {
-        ctx.movement.stop();
+        // FSM では combat/duty へ一瞬でも遷移するたびに呼ばれる。
+        // ここで stop すると追従ゴールが毎回消え、棒立ち・duty 往復の原因になる。
+        // 待機への切替は WaitMode.onEnter が stop する。
+        if (!ctx.agent?.companion?.manager?.getActiveFsmId) {
+            ctx.movement.stop();
+        }
     }
 
     async tick(ctx) {
@@ -57,8 +62,15 @@ export class FollowMode extends Mode {
         ctx.movement.tickHoldWatchdog();
         ctx.doors?.tick?.().catch?.(() => {});
 
-        // 目的地はRecoveryが供給し、Followはownerコンテキストだけを保持する。
-        if (currentControlOwner(ctx, 'follow') !== 'follow') {
+        // FSM が combat/duty を所有するときは FollowBehavior 自体が動かない。
+        // ここではラッチ中の wantsCombat で追従を止めない（二重ループ時代の名残）。
+        const fsmId = ctx.agent?.companion?.manager?.getActiveFsmId?.();
+        if (!fsmId && currentControlOwner(ctx, 'follow') !== 'follow') {
+            const owner = ctx.ownerEntity;
+            if (owner) this._rememberOwner(ctx, owner);
+            return;
+        }
+        if (fsmId && fsmId !== 'follow') {
             const owner = ctx.ownerEntity;
             if (owner) this._rememberOwner(ctx, owner);
             return;

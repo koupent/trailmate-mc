@@ -37,10 +37,21 @@ export class DutyBehavior extends AsyncTickBehavior {
             });
         }
 
+        let ran = false;
         for (const interrupt of targets.interrupts) {
-            if (!(await interrupt.shouldRun(ctx))) continue;
+            // refreshDutyFlags の結果を優先し、実行直前に再判定して陳腐化を防ぐ。
+            if (interrupt._lastShouldRun !== true) continue;
+            if (!(await interrupt.shouldRun(ctx))) {
+                interrupt._lastShouldRun = false;
+                continue;
+            }
             await interrupt.run(ctx);
+            ran = true;
             return;
+        }
+        // shouldRun が実行前に false になった場合、同 tick で duty を抜ける。
+        if (!ran) {
+            targets._dutyPending = false;
         }
     }
 }

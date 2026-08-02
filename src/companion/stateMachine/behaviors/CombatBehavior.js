@@ -26,11 +26,12 @@ export class CombatBehavior extends AsyncTickBehavior {
         const ctx = targets.ctx;
         const agent = targets.agent;
         const recoveryActive = Boolean(ctx.deathRecovery?.active);
+        const gear = preferGearRecovery(targets);
         await agent.reflexes?.tick?.({
             movementHeld: !!ctx.movement?.isHeld,
             isIdleish: false,
-            nonCombatHeld: !!ctx.holdReflexes || preferGearRecovery(targets),
-            preferGearRecovery: preferGearRecovery(targets),
+            nonCombatHeld: !!ctx.holdReflexes || gear,
+            preferGearRecovery: gear,
             recoveryDeferCombat: recoveryActive && shouldDeferRecoveryForCombat(ctx),
             recovery: ctx.deathRecovery,
             owner: ctx.ownerEntity ?? null,

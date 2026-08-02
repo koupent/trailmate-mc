@@ -8,9 +8,9 @@ type BotLike = {
   entity: { position: Pos };
 };
 
-export const IMMEDIATE_THREAT_RANGE = 3.5;
+export const IMMEDIATE_THREAT_RANGE = 6;
 /** ownerからこの距離内の敵を護衛脅威とみなす（視野角には依存しない）。 */
-export const OWNER_PROTECT_RANGE = 8;
+export const OWNER_PROTECT_RANGE = 10;
 
 export function isHostile(mob: { type?: string; name?: string } | null | undefined): boolean {
   if (!mob || !mob.name) return false;

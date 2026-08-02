@@ -20,7 +20,10 @@ const lastTorchAtByCtx = new WeakMap();
  */
 function sampleBrightnessAt(ctx, pos) {
     const bot = ctx.bot;
-    const block = bot.blockAt(pos);
+    const samplePos = pos instanceof Vec3
+        ? pos
+        : new Vec3(pos.x, pos.y, pos.z);
+    const block = bot.blockAt(samplePos);
     if (!block) return null;
     const timeOfDay = bot.time?.timeOfDay ?? 0;
     const isNight = timeOfDay >= 13000 && timeOfDay < 23000;
@@ -30,7 +33,7 @@ function sampleBrightnessAt(ctx, pos) {
         isNight,
         torchDistance: nearestTorchDistance(
             (x, y, z) => bot.blockAt(new Vec3(x, y, z)),
-            pos,
+            samplePos,
             torchScanRadius(threshold)
         )
     });

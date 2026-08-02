@@ -29,6 +29,10 @@ export class FollowBehavior extends AsyncTickBehavior {
         const { targets } = this;
         if (targets.paused) return;
         await targets.followMode.tick(targets.ctx);
-        await maybePlaceSupportTorch(targets.ctx, targets.agent);
+        try {
+            await maybePlaceSupportTorch(targets.ctx, targets.agent);
+        } catch {
+            // 松明配置の失敗で追従を止めない。
+        }
     }
 }

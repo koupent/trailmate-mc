@@ -47,6 +47,13 @@ import { CombatOptimizer } from '../combat/CombatOptimizer.js';
 import { CombatStateStore } from '../combat/CombatStateStore.js';
 import { CombatTrace } from '../combat/CombatTrace.js';
 import {
+  isCreeperIgnited,
+  CREEPER_FLEE_DISTANCE,
+  CREEPER_SAFE_DISTANCE,
+  CREEPER_MELEE_ASSIST_RANGE,
+  CREEPER_STRIKE_GAP_MS
+} from '../combat/creeperTactics.js';
+import {
   collectTacticalThreatObservations,
   DEFAULT_TACTICAL_OBSERVATION_RADIUS,
   type TacticalThreatObservation
@@ -540,6 +547,32 @@ export class Reflexes {
     this.configureCombatRange(enemy);
     const arcBias = this.collectThreatArcBias(enemy);
 
+    // 着火中だけ短く飛び退き、すでに離れていればそれ以上逃げない。
+    if (this.shouldEvadeCreeper(enemy)) {
+      const dist = enemy?.position && this.bot.entity
+        ? distanceToPos(this.bot.entity.position, enemy.position)
+        : null;
+      this.bot.pvp?.forceStop?.();
+      movement?.setSprintAllowed?.(true);
+      // 着火解除に必要な最低限だけ下がる（遠くまで逃げない）。
+      if (dist == null || dist < CREEPER_SAFE_DISTANCE) {
+        this.moveAwayFrom(enemy, movement, CREEPER_FLEE_DISTANCE);
+      }
+      const traceIntent = this.combatTrace.enabled
+        ? this.decideCurrentCombatIntent(enemy, arcBias)
+        : null;
+      this.traceCombatDecision(enemy, arcBias, traceIntent, {
+        ...this.idleMovementTrace(),
+        kind: 'retreat',
+        bearingRad: threatBearingRad(this.bot.entity!.position, enemy.position) + Math.PI
+      }, now);
+      return;
+    }
+
+    if (enemy?.name === 'creeper') {
+      movement?.setSprintAllowed?.(true);
+    }
+
     if (this.shouldNarrowThreatArc(arcBias)) {
       const intent = this.decideCurrentCombatIntent(enemy, arcBias);
       const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
@@ -561,18 +594,6 @@ export class Reflexes {
     const traceIntent = this.combatTrace.enabled
       ? this.decideCurrentCombatIntent(enemy, arcBias)
       : null;
-
-    if (this.shouldEvadeCreeper(enemy)) {
-      this.bot.pvp?.forceStop?.();
-      this.applyCombatSpacing(enemy, arcBias);
-      this.moveAwayFrom(enemy, movement);
-      this.traceCombatDecision(enemy, arcBias, traceIntent, {
-        ...this.idleMovementTrace(),
-        kind: 'retreat',
-        bearingRad: threatBearingRad(this.bot.entity!.position, enemy.position) + Math.PI
-      }, now);
-      return;
-    }
 
     const movementTrace = this.applyCombatSpacing(enemy, arcBias);
     this.ensureAttackTarget(enemy);
@@ -673,15 +694,16 @@ export class Reflexes {
     enemy: any,
     arcBias: ThreatArcBias | null
   ): CombatIntentDecision {
+    const distanceToPrimary = enemy?.position && this.bot.entity
+      ? distanceToPos(this.bot.entity.position, enemy.position)
+      : Infinity;
     return decideCombatIntent({
-      distanceToPrimary: enemy?.position && this.bot.entity
-        ? distanceToPos(this.bot.entity.position, enemy.position)
-        : Infinity,
+      distanceToPrimary,
       meleeAttackRange: RETREAT_MELEE_RANGE,
       rangedThreatCount: arcBias?.rangedThreatCount ?? (isRangedEntity(enemy) ? 1 : 0),
       hasShield: this.hasShieldEquipped(),
       guardRangedThreatThreshold: this.activePresetParams.guardRangedThreatThreshold,
-      explosiveImmediateDanger: this.isIgnitedCreeper(enemy)
+      explosiveImmediateDanger: isCreeperIgnited(enemy)
     });
   }
 
@@ -1122,8 +1144,12 @@ export class Reflexes {
     const target = this.currentTarget ?? enemy;
     if (!target?.position || !this.bot.entity) return;
     const dist = distanceToPos(this.bot.entity.position, target.position);
-    if (dist > RETREAT_MELEE_RANGE) return;
-    if (now - this.lastPassiveStrikeAt < 1000) return;
+    const isCreeper = target.name === 'creeper';
+    const reach = isCreeper ? CREEPER_MELEE_ASSIST_RANGE : RETREAT_MELEE_RANGE;
+    if (dist > reach) return;
+    if (isCreeperIgnited(target)) return;
+    const strikeGapMs = isCreeper ? CREEPER_STRIKE_GAP_MS : 1000;
+    if (now - this.lastPassiveStrikeAt < strikeGapMs) return;
     this.lastPassiveStrikeAt = now;
     try {
       const look = target.position.offset?.(0, (target.height ?? 1.8) * 0.9, 0) || target.position;
@@ -1180,7 +1206,7 @@ export class Reflexes {
   }
 
   /** モードを増やさず、直近の爆発脅威から離れる。 */
-  private moveAwayFrom(threat: any, movement?: CombatMovement): void {
+  private moveAwayFrom(threat: any, movement?: CombatMovement, fleeDistance?: number): void {
     if (!movement || !threat?.position) return;
     const botPos = this.bot.entity.position;
     let dx = botPos.x - threat.position.x;
@@ -1204,22 +1230,24 @@ export class Reflexes {
       awayFromCrowd: crowdAway,
       bias: this.activePresetParams.crowdAvoidBias
     });
+    const range = Math.max(
+      this.config.retreat_distance,
+      Number.isFinite(fleeDistance) ? Number(fleeDistance) : 0
+    );
     const destination = {
-      x: botPos.x + blended.x * this.config.retreat_distance,
+      x: botPos.x + blended.x * range,
       y: botPos.y,
-      z: botPos.z + blended.z * this.config.retreat_distance
+      z: botPos.z + blended.z * range
     };
     movement.goToward(destination, RETREAT_GOAL_RANGE);
   }
 
   private shouldEvadeCreeper(enemy: any): boolean {
-    if (!this.isIgnitedCreeper(enemy)) return false;
-    const pvp = this.bot.pvp as any;
-    return typeof pvp?.hasShield !== 'function' || !pvp.hasShield();
+    return isCreeperIgnited(enemy);
   }
 
   private isIgnitedCreeper(enemy: any): boolean {
-    return enemy?.name === 'creeper' && enemy.metadata?.[16] === 1;
+    return isCreeperIgnited(enemy);
   }
 
   private configureCombatRange(enemy: any): void {
