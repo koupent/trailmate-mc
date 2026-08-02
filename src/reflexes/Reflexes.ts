@@ -67,7 +67,7 @@ import {
   type LightSample
 } from './torchPlacement.js';
 
-type DefendOwner = {
+type DefendOwnerEntity = {
   position: {
     x: number;
     y: number;
@@ -76,7 +76,8 @@ type DefendOwner = {
     distanceTo?: (other: { x: number; y: number; z: number }) => number;
   };
   height?: number;
-} | null | undefined;
+};
+type DefendOwner = DefendOwnerEntity | null | undefined;
 
 type CombatMovement = {
   followEntity: (entity: any, range: number) => boolean;
@@ -1041,7 +1042,7 @@ export class Reflexes {
    * @returns true when locked onto the owner-attacker this tick
    */
   private applyOwnerThreatPriority(
-    ownerPos: DefendOwner['position'] | null | undefined,
+    ownerPos: DefendOwnerEntity['position'] | null | undefined,
     botPos: { x: number; y: number; z: number },
     ranges: ProtectRanges,
     hasLos: (entity: any) => boolean,
