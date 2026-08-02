@@ -48,7 +48,7 @@ const DEFAULT_CONFIG = {
     },
     own_grave: {
         enabled: true,
-        dig_range: 3.5
+        interact_range: 3.5
     },
     nearby_loot: {
         enabled: true,

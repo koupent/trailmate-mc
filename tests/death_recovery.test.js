@@ -30,7 +30,8 @@ import { DeathReturnInterrupt } from '../src/companion/interrupts/DeathReturnInt
 import { OwnGraveInterrupt } from '../src/companion/interrupts/OwnGraveInterrupt.js';
 import { NearbyLootInterrupt } from '../src/companion/interrupts/NearbyLootInterrupt.js';
 import { pickupNearbyItems } from '../src/companion/utils/pickupItems.js';
-import { isGraveWithinDigReach } from '../src/companion/utils/graveApproach.js';
+import { isGraveWithinInteractReach } from '../src/companion/utils/graveApproach.js';
+import { resolveOwnGraveInteractRange } from '../src/companion/utils/graveInteract.js';
 import { scanCompanionAwareness } from '../src/world/companionAwareness.js';
 import { OWNER_WORK_PHASES, seedPlayerWorkPhase } from '../src/companion/ownerWorkTracker.js';
 import { selectControlOwner } from '../src/companion/ControlPriority.js';
@@ -328,7 +329,7 @@ describe('death recovery state', () => {
             holdReflexes: false,
             config: {
                 death_return: { enabled: true, arrive_range: 3, timeout_ms: 90000 },
-                own_grave: { enabled: true, dig_range: 3.5 },
+                own_grave: { enabled: true, interact_range: 3.5 },
                 nearby_loot: { enabled: true, max_ms: 15000, quiet_ms: 1500, grace_ms: 2500 },
                 awareness_radius: 10
             },
@@ -427,7 +428,7 @@ describe('OwnGraveInterrupt gating', () => {
                 entities: {},
                 blockAt() { return { name: 'air', position: { x: 0, y: 64, z: 0 } }; }
             },
-            config: { own_grave: { enabled: true, dig_range: 3.5 } },
+            config: { own_grave: { enabled: true, interact_range: 3.5 } },
             graveLoot: { active: false, targetKey: null }
         });
         assert.equal(interrupt.shouldRun(ctx), false);
@@ -453,7 +454,7 @@ describe('OwnGraveInterrupt gating', () => {
                     return { name: 'air', position: { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) } };
                 }
             },
-            config: { own_grave: { enabled: true, dig_range: 3.5 } },
+            config: { own_grave: { enabled: true, interact_range: 3.5 } },
             graveLoot: { active: false, targetKey: null }
         });
         assert.equal(interrupt.shouldRun(ctx), true);
@@ -485,6 +486,9 @@ describe('OwnGraveInterrupt gating', () => {
                     }
                 },
                 pvp: { stop() {} },
+                controls: {},
+                getControlState(name) { return Boolean(this.controls[name]); },
+                setControlState(name, value) { this.controls[name] = value; },
                 blockAt(pos) {
                     if (Math.floor(pos.x) === 2 && Math.floor(pos.y) === 64 && Math.floor(pos.z) === 0) {
                         return headBlock;
@@ -492,7 +496,7 @@ describe('OwnGraveInterrupt gating', () => {
                     return { name: 'air', position: { x: Math.floor(pos.x), y: Math.floor(pos.y), z: Math.floor(pos.z) } };
                 },
                 async lookAt() {},
-                async dig() {}
+                async activateBlock() {}
             },
             movement: {
                 stop() {},
@@ -501,7 +505,7 @@ describe('OwnGraveInterrupt gating', () => {
             config: {
                 own_grave: {
                     enabled: true,
-                    dig_range: 3.5
+                    interact_range: 3.5
                 }
             },
             graveLoot: { active: false, targetKey: null },
@@ -517,6 +521,7 @@ describe('OwnGraveInterrupt gating', () => {
         await interrupt.run(ctx);
         assert.equal(chats.length, 1);
         assert.equal(chats[0], '自分の墓を見つけたよ (2, 64, 0)');
+        assert.equal(ctx.bot.controls.sneak, false);
         assert.equal(ctx.deathRecovery.phase, 'items');
         assert.deepEqual(ctx.deathRecovery.collectionOrigin, { x: 2, y: 64, z: 0 });
 
@@ -861,21 +866,30 @@ describe('NearbyLootInterrupt', () => {
     });
 });
 
+describe('graveInteract', () => {
+    it('interact_range を優先し、未設定時は dig_range にフォールバックする', () => {
+        assert.equal(resolveOwnGraveInteractRange({ interact_range: 4 }), 4);
+        assert.equal(resolveOwnGraveInteractRange({ dig_range: 2.5 }), 2.5);
+        assert.equal(resolveOwnGraveInteractRange({ interact_range: 4, dig_range: 2.5 }), 4);
+        assert.equal(resolveOwnGraveInteractRange({}), 3.5);
+    });
+});
+
 describe('graveApproach', () => {
-    it('段差の上にある墓でも水平距離が近ければ採掘可能と判定する', () => {
+    it('段差の上にある墓でも水平距離が近ければ操作可能と判定する', () => {
         const bot = {
             entity: { position: new Vec3(10.2, 64, 10.2) }
         };
         const gravePos = new Vec3(10, 66, 10);
-        assert.equal(isGraveWithinDigReach(bot, gravePos, 3.5), true);
+        assert.equal(isGraveWithinInteractReach(bot, gravePos, 3.5), true);
     });
 
-    it('水平距離が遠い墓は採掘不可と判定する', () => {
+    it('水平距離が遠い墓は操作不可と判定する', () => {
         const bot = {
             entity: { position: new Vec3(15, 64, 10.2) }
         };
         const gravePos = new Vec3(10, 65, 10);
-        assert.equal(isGraveWithinDigReach(bot, gravePos, 3.5), false);
+        assert.equal(isGraveWithinInteractReach(bot, gravePos, 3.5), false);
     });
 });
 
@@ -902,7 +916,7 @@ describe('grave detection regression', () => {
             },
             config: {
                 awareness_radius: 10,
-                own_grave: { enabled: true, scan_radius: 12, dig_range: 3.5 }
+                own_grave: { enabled: true, scan_radius: 12, interact_range: 3.5 }
             },
             graveLoot: { active: false, targetKey: null },
             deathRecovery: {
@@ -941,7 +955,7 @@ describe('grave detection regression', () => {
             config: {
                 awareness_radius: 10,
                 death_return: { arrive_range: 3 },
-                own_grave: { enabled: true, scan_radius: 12, dig_range: 3.5 }
+                own_grave: { enabled: true, scan_radius: 12, interact_range: 3.5 }
             }
         });
         const snap = getGraveAwarenessSnapshot(ctx);

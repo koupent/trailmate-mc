@@ -99,7 +99,7 @@ class VirtualWorld {
             if (index >= 0) this.inventorySlots[index] = null;
             this.tossed += 1;
         };
-        bot.dig = async () => this.breakGrave();
+        bot.activateBlock = async () => this.breakGrave();
         bot.pvp = {
             target: null,
             followRange: 2,
@@ -156,7 +156,7 @@ class VirtualWorld {
                 timeout_ms: 5000,
                 grave_wait_ms: 0
             },
-            own_grave: { enabled: true, scan_radius: 10, dig_range: 3.5 },
+            own_grave: { enabled: true, scan_radius: 10, interact_range: 3.5 },
             nearby_loot: {
                 enabled: true,
                 radius: 8,

@@ -50,7 +50,10 @@ export type DeathReturnConfig = {
 
 export type OwnGraveConfig = {
   enabled: boolean;
-  dig_range: number;
+  /** Right-click reach for grave claim. */
+  interact_range: number;
+  /** @deprecated Use interact_range */
+  dig_range?: number;
 };
 
 export type NearbyLootConfig = {
@@ -137,7 +140,7 @@ const DEFAULT_COMPANION: CompanionConfig = {
   },
   own_grave: {
     enabled: true,
-    dig_range: 3.5
+    interact_range: 3.5
   },
   nearby_loot: {
     enabled: true,
@@ -222,6 +225,9 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.own_grave,
     ...(companionFile.own_grave || {})
   };
+  if (own_grave.interact_range == null && own_grave.dig_range != null) {
+    own_grave.interact_range = own_grave.dig_range;
+  }
   const nearby_loot = {
     ...DEFAULT_COMPANION.nearby_loot,
     ...(companionFile.nearby_loot || {})

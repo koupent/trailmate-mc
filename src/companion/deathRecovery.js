@@ -16,7 +16,7 @@ import {
  *   startedAt: number,
  *   phase: 'idle' | 'travel' | 'grave' | 'items' | 'equip' | 'done',
  *   arrivedAt: number,
- *   graveBrokenAt: number,
+ *   graveClaimedAt: number,
  *   collectionStartedAt: number,
  *   collectionSource: 'grave' | 'death-site' | null,
  *   collectionOrigin: { x: number, y: number, z: number } | null,
@@ -44,7 +44,7 @@ export function createDeathRecoveryState() {
         startedAt: 0,
         phase: 'idle',
         arrivedAt: 0,
-        graveBrokenAt: 0,
+        graveClaimedAt: 0,
         collectionStartedAt: 0,
         collectionSource: null,
         collectionOrigin: null,
@@ -164,7 +164,7 @@ export function requestRecoveryItemCollection(
     dr.collectionSource = source === 'grave' ? 'grave' : 'death-site';
 
     if (source === 'grave') {
-        // 墓破壊は新しい回収ラウンド。以前のcapture/deadline/owned集合を引き継がない。
+        // 墓回収は新しい回収ラウンド。以前のcapture/deadline/owned集合を引き継がない。
         dr.collectionStartedAt = now;
         dr.collectionCaptureUntil = now + captureMs;
         dr.collectionDeadlineAt = now + deadlineMs;
@@ -172,7 +172,7 @@ export function requestRecoveryItemCollection(
         dr.collectionSnapshotInitialized = true;
         dr.ownedItemIds = [];
         dr.ownedItemIdsFrozen = false;
-        dr.graveBrokenAt = now;
+        dr.graveClaimedAt = now;
         setLootPickupPriority(ctx, dr.collectionOrigin, resolvePriorityLootMs(cfg));
     } else {
         // これらの時刻は復旧ミッション全体に属する。緊急生存行動による
