@@ -7,6 +7,7 @@ import {
   DEFAULT_PROTECT_RANGES,
   isProtectThreat,
   pickProtectTarget,
+  type OwnerThreatHint,
   type ProtectRanges
 } from '../world/threatPolicy.js';
 import { projectRoot, type ReflexConfig } from '../config.js';
@@ -189,6 +190,8 @@ export class Reflexes {
   private combatMoveLastPos: { x: number; z: number } | null = null;
   /** 段差に押し付けられて横移動が進まないときの反転判定。 */
   private combatStuckSince = 0;
+  /** ownerThreatTracker が記録したオーナー被弾情報。 */
+  private lastOwnerThreat: OwnerThreatHint = null;
 
   constructor(
     private readonly bot: Bot,
@@ -277,7 +280,10 @@ export class Reflexes {
     recovery?: RecoveryContext;
     /** 武装済みRecovery中に周囲の脅威へ通常戦闘で応答する。 */
     recoveryDeferCombat?: boolean;
+    /** ownerThreatTracker が記録したオーナー被弾情報。 */
+    ownerThreat?: OwnerThreatHint;
   }): Promise<void> {
+    this.lastOwnerThreat = opts.ownerThreat ?? null;
     if (this.config.self_preservation) {
       this.preserve();
     }
@@ -955,7 +961,7 @@ export class Reflexes {
     const hasLos = (entity: any) => hasLineOfSight(this.bot, entity);
 
     if (!this.currentTarget) {
-      let picked = pickProtectTarget(this.bot, ownerPos, ranges, hasLos);
+      let picked = pickProtectTarget(this.bot, ownerPos, ranges, hasLos, this.lastOwnerThreat);
       // 被弾は強制的な自己防衛トリガーとし、owner範囲外でも短時間は
       // recentDamageUntilにより最寄りの敵と戦う。
       if (!picked && now < this.recentDamageUntil) {
@@ -963,14 +969,15 @@ export class Reflexes {
           this.bot,
           null,
           { ...ranges, ownerProtectRange: 0, selfImmediateRange: ranges.botChaseRange },
-          hasLos
+          hasLos,
+          this.lastOwnerThreat
         );
         if (!picked) {
           picked = pickProtectTarget(this.bot, null, {
             ...ranges,
             ownerProtectRange: 0,
             selfImmediateRange: ranges.botChaseRange
-          }, () => true);
+          }, () => true, this.lastOwnerThreat);
         }
       }
       if (picked) {
@@ -980,7 +987,13 @@ export class Reflexes {
         this.focusUntil = now + this.activePresetParams.focusStickyMs;
       }
     } else if (canSwitch && stickyTarget) {
-      const candidate = pickProtectTarget(this.bot, ownerPos, ranges, hasLos);
+      const candidate = pickProtectTarget(
+        this.bot,
+        ownerPos,
+        ranges,
+        hasLos,
+        this.lastOwnerThreat
+      );
       if (candidate && candidate.id !== stickyTarget.id) {
         this.currentTarget = candidate;
         this.syncCombatLearning(candidate, now);
@@ -1040,7 +1053,7 @@ export class Reflexes {
     if (!enemy?.position || !this.bot.entity) return;
     const dist = distanceToPos(this.bot.entity.position, enemy.position);
     if (dist > RETREAT_MELEE_RANGE) return;
-    if (now - this.lastPassiveStrikeAt < 600) return;
+    if (now - this.lastPassiveStrikeAt < 1000) return;
     this.lastPassiveStrikeAt = now;
     try {
       const look = enemy.position.offset?.(0, (enemy.height ?? 1.8) * 0.9, 0) || enemy.position;

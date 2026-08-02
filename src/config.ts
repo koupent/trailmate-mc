@@ -71,6 +71,8 @@ export type NearbyLootConfig = {
   quiet_ms: number;
   grace_ms: number;
   give_suppress_ms: number;
+  collector_radius?: number;
+  collector_enabled?: boolean;
 };
 
 export type OwnerWorkConfig = {
@@ -153,10 +155,12 @@ const DEFAULT_COMPANION: CompanionConfig = {
     recovery_capture_ms: 1000,
     recovery_deadline_ms: 12000,
     recovery_quiet_ms: 750,
-    max_ms: 15000,
+    max_ms: 4000,
     quiet_ms: 1500,
     grace_ms: 2500,
-    give_suppress_ms: 12000
+    give_suppress_ms: 12000,
+    collector_radius: 4,
+    collector_enabled: true
   },
   item_share: {
     enabled: true,

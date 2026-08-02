@@ -1,13 +1,12 @@
 import { jumpOntoStep, sleep, MANUAL_JUMP_DISTANCE, CLIMB_HOLD_MS } from '../movement/climb.js';
 import { scanSurroundings } from '../movement/surroundings.js';
 import { isCloseablePassage } from '../movement/DoorTracker.js';
+import { DEFAULT_FOLLOW_MIN_DISTANCE } from '../movement/followConstants.js';
 
 /** Cooldown after any recovery action, so the path gets a chance to work. */
 const COOLDOWN_MS = 900;
 /** Neighbours raised by ≥1 that mean "we are in a depression". */
 const HOLE_RAISED_MIN = 2;
-/** Fallback when config omits follow_min_distance. */
-const DEFAULT_FOLLOW_MIN_DISTANCE = 2;
 /** Retry the same ledge this many times before picking a new one. */
 const MAX_CLIMB_STICKY_ATTEMPTS = 4;
 /** After this many sticky attempts, always jump manually. */

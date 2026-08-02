@@ -58,6 +58,10 @@ function makePickupCtx(opts = {}) {
         entities: {
             1: { id: 1, name: 'item', position: itemPos }
         },
+        inventory: {
+            emptySlotCount: () => 1,
+            items: () => []
+        },
         players: opts.ownerPos
             ? { Steve: { entity: { id: ownerId, position: opts.ownerPos, yaw: opts.ownerYaw ?? 0 } } }
             : {},
@@ -191,7 +195,10 @@ describe('pickup regression', () => {
 
     it('owner作業中でもドロップがあればshouldRunがtrueになる', () => {
         const interrupt = new NearbyLootInterrupt();
-        const ctx = makePickupCtx({ ownerWorkPhase: OWNER_WORK_PHASES.deferring });
+        const ctx = makePickupCtx({
+            ownerWorkPhase: OWNER_WORK_PHASES.deferring,
+            itemPos: new Vec3(5, 64, 0)
+        });
         assert.equal(interrupt.shouldRun(ctx), true);
     });
 
@@ -253,12 +260,22 @@ describe('pickup regression', () => {
         const interrupt = new NearbyLootInterrupt();
         const ctx = makePickupCtx({
             botPos: new Vec3(0, 64, 6),
-            itemPos: new Vec3(0, 64, 7),
+            itemPos: new Vec3(0, 64, 12),
             ownerPos: new Vec3(0, 64, 0),
             ownerWorkPhase: OWNER_WORK_PHASES.deferring
         });
         seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
         assert.equal(interrupt.shouldRun(ctx), true);
+    });
+
+    it('マグネット範囲内だけのドロップではshouldRunがfalseになる', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(0.5, 64, 0),
+            ownerPos: new Vec3(0, 64, 0)
+        });
+        assert.equal(interrupt.shouldRun(ctx), false);
     });
 
     it('exits immediately after the last drop is gone instead of waiting grace+quiet', async () => {

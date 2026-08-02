@@ -23,6 +23,7 @@ import {
 } from './blockProtection.js';
 import { attachOwnerWorkTracker } from './ownerWorkTracker.js';
 import { tCommand } from '../i18n/index.js';
+import { attachOwnerThreatTracker, getActiveOwnerThreat } from './ownerThreatTracker.js';
 
 const DEFAULT_CONFIG = {
     scan_radius: 48,
@@ -58,10 +59,12 @@ const DEFAULT_CONFIG = {
         recovery_capture_ms: 1000,
         recovery_deadline_ms: 12000,
         recovery_quiet_ms: 750,
-        max_ms: 8000,
+        max_ms: 4000,
         quiet_ms: 400,
         grace_ms: 500,
-        give_suppress_ms: 12000
+        give_suppress_ms: 12000,
+        collector_radius: 4,
+        collector_enabled: true
     },
     item_share: createItemShareConfig(),
     chat: { ...DEFAULT_CHAT_CONFIG }
@@ -116,6 +119,7 @@ export async function startCompanion(agent, companionConfig = {}) {
     const worldState = new WorldState();
     const ctx = new CompanionContext(agent, worldState, config);
     attachOwnerWorkTracker(ctx);
+    attachOwnerThreatTracker(ctx);
     const modes = createCompanionModes();
     // 通常ドロップは先に回収し、Recoveryの墓フェーズでは墓処理へ譲る。
     const interrupts = [
@@ -168,6 +172,7 @@ export async function startCompanion(agent, companionConfig = {}) {
                 recoveryDeferCombat,
                 recovery: ctx.deathRecovery,
                 owner: ctx.ownerEntity ?? null,
+                ownerThreat: getActiveOwnerThreat(ctx),
                 movement: ctx.movement
             });
         } catch (err) {

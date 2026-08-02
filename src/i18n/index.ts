@@ -5,6 +5,7 @@ import { projectRoot } from '../config.js';
 type LocaleBundle = {
   commands: Record<string, string>;
   events: Record<string, string[]>;
+  movement?: Record<string, string>;
 };
 
 const cache = new Map<string, LocaleBundle>();
@@ -31,6 +32,12 @@ export function tEvent(language: string, eventId: string, vars: CommentaryVars =
   const bundle = loadLocale(language);
   const lines = bundle.events[eventId] || bundle.events.generic || ['…'];
   const template = lines[Math.floor(Math.random() * lines.length)];
+  return applyVars(template, vars);
+}
+
+export function tMovement(language: string, key: string, vars: CommentaryVars = {}): string {
+  const bundle = loadLocale(language);
+  const template = bundle.movement?.[key] || key;
   return applyVars(template, vars);
 }
 

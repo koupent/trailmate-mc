@@ -2,13 +2,18 @@ import {
     getDeferringPlayerIds,
     isOwnerWorkDeferring
 } from './ownerWorkTracker.js';
-import { computeOutOfSightAnchor, isBotInOwnerFov } from './followPosition.js';
+import { isBotInOwnerFov } from './followPosition.js';
 import {
     DEFAULT_FOLLOW_DISTANCE,
-    FOLLOW_GOAL_RANGE,
-    SAME_FLOOR_DY
+    FOLLOW_GOAL_RANGE
 } from './movement/followConstants.js';
 import { horizontalDistanceBetween } from './movement/followGeometry.js';
+import {
+    PLAYER_PUSH_LANE,
+    wouldPathPassNearPlayer
+} from './movement/playerPathClearance.js';
+import { notifyPathBlocked } from './movement/playerBlockNotify.js';
+import { computeWorkYieldTarget } from './movement/workYieldPosition.js';
 
 const DEFAULT_OWNER_WORK_FOV = 100;
 
@@ -145,7 +150,9 @@ function pickRetreatWorker(ctx) {
 }
 
 /**
- * Stay out of any nearby working player's view.
+ * Step aside from a working player's mining lane.
+ * Yield target prefers a lateral FOV-out spot; if the only path crosses the
+ * player and no lateral option exists, chat and stop until the way clears.
  * Returns true when movement was handled for this tick.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
  */
@@ -158,22 +165,47 @@ export function applyOwnerWorkRetreat(ctx) {
     if (ctx.movement?.isHeld) return false;
 
     const followDistance = ctx.config?.follow_distance ?? DEFAULT_FOLLOW_DISTANCE;
-    const workerDy = worker.position.y - bot.entity.position.y;
-    const inHorizFov = isBotInOwnerFov(worker, bot.entity.position, ownerWorkFovDegrees(ctx));
-    const sameFloor = Math.abs(workerDy) < SAME_FLOOR_DY;
+    const fov = ownerWorkFovDegrees(ctx);
+    const inHorizFov = isBotInOwnerFov(worker, bot.entity.position, fov);
+    const horiz = horizontalDistanceBetween(bot.entity.position, worker.position);
 
-    if (!inHorizFov && sameFloor) {
+    const { target } = computeWorkYieldTarget(
+        worker,
+        bot.entity.position,
+        {
+            distance: followDistance,
+            fovDegrees: fov,
+            isPathBlocked: (pos) => wouldPathPassNearPlayer(ctx, pos)
+        }
+    );
+
+    const directBlocked = wouldPathPassNearPlayer(ctx, target);
+
+    // Already clear of the cone and far enough — hold.
+    if (!inHorizFov && horiz >= followDistance) {
         ctx.movement.stop();
         return true;
     }
 
-    const anchor = computeOutOfSightAnchor(worker, followDistance);
-    const distToAnchor = horizontalDistanceBetween(bot.entity.position, anchor);
-    if (distToAnchor < FOLLOW_GOAL_RANGE && sameFloor) {
+    const distToTarget = horizontalDistanceBetween(bot.entity.position, target);
+    if (!inHorizFov && distToTarget < FOLLOW_GOAL_RANGE) {
         ctx.movement.stop();
         return true;
     }
 
-    ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE);
+    // Already scraping the player — any pathfinder step will push them.
+    // Wait (and say so) until they create space; do not chase a lateral goal.
+    const tooCloseToMove = horiz <= PLAYER_PUSH_LANE;
+
+    // Never path through / scrape a player — stop and ask them to clear the way.
+    if (directBlocked || tooCloseToMove) {
+        notifyPathBlocked(ctx);
+        ctx.movement.stop();
+        return true;
+    }
+
+    ctx.movement.goToward(target, FOLLOW_GOAL_RANGE, {
+        rejectIf: () => wouldPathPassNearPlayer(ctx, target)
+    });
     return true;
 }

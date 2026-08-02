@@ -194,6 +194,40 @@ export class DoorTracker {
     }
 
     /**
+     * True when an open door or gate separates the bot from the owner.
+     * @param {{ x: number, y: number, z: number }} botPos
+     * @param {{ x: number, y: number, z: number }} ownerPos
+     */
+    findSeparatingPassage(botPos, ownerPos) {
+        if (!botPos || !ownerPos) return false;
+
+        for (const entry of this._tracked) {
+            if (isDoorBetween(botPos, ownerPos, entry.doorPos, entry.facing)) {
+                return true;
+            }
+        }
+
+        const baseX = Math.floor((botPos.x + ownerPos.x) / 2);
+        const baseY = Math.floor(botPos.y + 0.001);
+        const baseZ = Math.floor((botPos.z + ownerPos.z) / 2);
+
+        for (let dx = -3; dx <= 3; dx++) {
+            for (let dz = -3; dz <= 3; dz++) {
+                const block = this._blockAt({ x: baseX + dx, y: baseY, z: baseZ + dz });
+                if (!isCloseablePassage(block) || block._properties?.open !== true) continue;
+                const lower = block._properties?.half === 'upper'
+                    ? this._blockAt({ x: block.position.x, y: block.position.y - 1, z: block.position.z })
+                    : block;
+                if (!lower?.position) continue;
+                if (isDoorBetween(botPos, ownerPos, lower.position, lower._properties?.facing)) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Expire stale entries, open a closed door blocking the path, and close after passage.
      */
     async tick() {
