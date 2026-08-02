@@ -1,3 +1,4 @@
+import type { ControlState } from 'mineflayer';
 import { scanSurroundings } from '../companion/movement/surroundings.js';
 import { movementControlsTowardBearing } from './threatArc.js';
 
@@ -14,7 +15,7 @@ type StepAssistBot = {
     yaw: number;
     onGround?: boolean;
   } | null;
-  setControlState: (control: string, state: boolean) => void;
+  setControlState: (control: ControlState, state: boolean) => void;
 };
 
 /** 移動方位の前方に1ブロック段差があるかを返す。 */
