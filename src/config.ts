@@ -71,6 +71,8 @@ export type NearbyLootConfig = {
   quiet_ms: number;
   grace_ms: number;
   give_suppress_ms: number;
+  collector_radius?: number;
+  collector_enabled?: boolean;
 };
 
 export type OwnerWorkConfig = {
@@ -153,10 +155,12 @@ const DEFAULT_COMPANION: CompanionConfig = {
     recovery_capture_ms: 1000,
     recovery_deadline_ms: 12000,
     recovery_quiet_ms: 750,
-    max_ms: 15000,
+    max_ms: 4000,
     quiet_ms: 1500,
     grace_ms: 2500,
-    give_suppress_ms: 12000
+    give_suppress_ms: 12000,
+    collector_radius: 4,
+    collector_enabled: true
   },
   item_share: {
     enabled: true,
@@ -169,14 +173,14 @@ const DEFAULT_COMPANION: CompanionConfig = {
     self_defense: true,
     torch_placing: true,
     self_preservation: true,
-    hostile_range: 12,
+    hostile_range: 16,
     combat_lost_grace_ms: 1500,
     retreat_health: 8,
     resume_health: 14,
-    retreat_distance: 6,
+    retreat_distance: 8,
     combat_learning: {
       enabled: true,
-      explore_rate: 0.12,
+      explore_rate: 0.2,
       min_trials: 3,
       min_health_to_explore: 12,
       explore_damage_abort: 8,
@@ -195,7 +199,7 @@ const DEFAULT_COMPANION: CompanionConfig = {
     low_health: 8,
     low_food_hunger: 14,
     stuck_seconds: 5,
-    hostile_range: 12,
+    hostile_range: 16,
     hostile_approach_distances: [10, 6, 3]
   }
 };

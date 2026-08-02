@@ -109,4 +109,99 @@ describe('ownerWorkMovement', () => {
         assert.equal(applyOwnerWorkRetreat(ctx), true);
         assert.ok(ctx.movement.goCalls.length >= 1 || ctx.movement.stopCalls >= 1);
     });
+
+    it('retreats laterally when the bot is ahead in the mining lane', () => {
+        const owner = { id: 7, position: { x: 0, y: 64, z: 0 }, yaw: 0 };
+        const chats = [];
+        const ctx = makeCtx({
+            bot: {
+                entity: { id: 1, position: { x: 0, y: 64, z: -2 } },
+                players: { Steve: { entity: owner } },
+                entities: { 7: owner },
+                chat: (msg) => { chats.push(msg); }
+            }
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(applyOwnerWorkRetreat(ctx), true);
+        assert.equal(ctx.movement.goCalls.length, 1);
+        assert.equal(ctx.movement.stopCalls, 0);
+        const dest = ctx.movement.goCalls[0];
+        assert.ok(Math.abs(dest.x) >= 2.5, `expected lateral retreat, got x=${dest.x}`);
+        assert.equal(chats.length, 0);
+    });
+
+    it('stops and notifies when the only path crosses the player', () => {
+        const owner = { id: 7, position: { x: 0, y: 64, z: 0 }, yaw: 0 };
+        const chats = [];
+        // Wide FOV so lateral candidates are inside the cone; only behind remains.
+        const ctx = makeCtx({
+            config: {
+                owner_work: {
+                    enabled: true,
+                    all_players: true,
+                    fov_degrees: 359
+                },
+                follow_distance: 3
+            },
+            bot: {
+                entity: { id: 1, position: { x: 0, y: 64, z: -2 } },
+                players: { Steve: { entity: owner } },
+                entities: { 7: owner },
+                chat: (msg) => { chats.push(msg); }
+            }
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(applyOwnerWorkRetreat(ctx), true);
+        assert.equal(ctx.movement.stopCalls, 1);
+        assert.equal(ctx.movement.goCalls.length, 0);
+        assert.ok(chats.length >= 1);
+        assert.match(chats[0], /通れない/);
+    });
+
+    it('stops when already within push range even if a lateral target exists', () => {
+        const owner = { id: 7, position: { x: 0, y: 64, z: 0 }, yaw: 0 };
+        const chats = [];
+        const ctx = makeCtx({
+            bot: {
+                entity: { id: 1, position: { x: 0.4, y: 64, z: 0.3 } },
+                players: { Steve: { entity: owner } },
+                entities: { 7: owner },
+                chat: (msg) => { chats.push(msg); },
+                blockAt: () => ({ name: 'air', boundingBox: 'empty' })
+            }
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(applyOwnerWorkRetreat(ctx), true);
+        assert.equal(ctx.movement.goCalls.length, 0);
+        assert.equal(ctx.movement.stopCalls, 1);
+        assert.ok(chats.length >= 1);
+        assert.match(chats[0], /通れない/);
+    });
+
+    it('does not goToward when the yield target would push through the player', () => {
+        // Bot ahead of miner; laterals exist but are treated as blocked by placing
+        // a second body on each side so the only fallback (behind) crosses the owner.
+        const owner = { id: 7, position: { x: 0, y: 64, z: 0 }, yaw: 0 };
+        const leftGuard = { id: 8, position: { x: 1.5, y: 64, z: -1 }, yaw: 0 };
+        const rightGuard = { id: 9, position: { x: -1.5, y: 64, z: -1 }, yaw: 0 };
+        const chats = [];
+        const ctx = makeCtx({
+            bot: {
+                entity: { id: 1, position: { x: 0, y: 64, z: -2 } },
+                players: {
+                    Steve: { entity: owner },
+                    Left: { entity: leftGuard },
+                    Right: { entity: rightGuard }
+                },
+                entities: { 7: owner, 8: leftGuard, 9: rightGuard },
+                chat: (msg) => { chats.push(msg); }
+            }
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(applyOwnerWorkRetreat(ctx), true);
+        assert.equal(ctx.movement.goCalls.length, 0, 'must not path through players');
+        assert.equal(ctx.movement.stopCalls, 1);
+        assert.ok(chats.length >= 1);
+        assert.match(chats[0], /通れない/);
+    });
 });

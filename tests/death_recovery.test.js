@@ -552,6 +552,10 @@ describe('NearbyLootInterrupt', () => {
             entities: {
                 1: { name: 'item', position: itemPos }
             },
+            inventory: {
+                emptySlotCount: () => 1,
+                items: () => []
+            },
             players: opts.ownerPos
                 ? { Steve: { entity: { id: ownerId, position: opts.ownerPos, yaw: opts.ownerYaw ?? 0 } } }
                 : {}
@@ -602,8 +606,8 @@ describe('NearbyLootInterrupt', () => {
     it('作業退避中でなければowner近傍のドロップも回収する', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
-            botPos: new Vec3(2, 64, 0),
-            itemPos: new Vec3(1, 64, 0),
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(5, 64, 0),
             ownerPos: new Vec3(0, 64, 0)
         })), true);
     });
@@ -611,7 +615,7 @@ describe('NearbyLootInterrupt', () => {
     it('owner作業中でもドロップがあればshouldRunがtrueになる', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
-            botPos: new Vec3(0, 64, 8),
+            botPos: new Vec3(0, 64, 0),
             itemPos: new Vec3(0, 64, 8),
             ownerPos: new Vec3(0, 64, 0),
             ownerWorkPhase: OWNER_WORK_PHASES.deferring
@@ -621,7 +625,7 @@ describe('NearbyLootInterrupt', () => {
     it('owner作業後のcooldown中でもドロップがあればshouldRunがtrueになる', () => {
         const interrupt = new NearbyLootInterrupt();
         assert.equal(interrupt.shouldRun(makeLootCtx({
-            botPos: new Vec3(0, 64, 6),
+            botPos: new Vec3(0, 64, 0),
             itemPos: new Vec3(0, 64, 6),
             ownerPos: new Vec3(0, 64, 0),
             ownerWorkPhase: OWNER_WORK_PHASES.cooldown

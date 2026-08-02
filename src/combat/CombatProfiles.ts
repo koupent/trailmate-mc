@@ -174,24 +174,34 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
   }),
 
   'explosive-baseline': adjust(MELEE_BASELINE, {
-    followRange: 4.5,
-    kiteFollowRange: 5.0,
-    backstepRange: 2.4,
-    strafeRange: 3.5,
-    creeperSoftEvadeRange: 3.2,
-    creeperFollowRange: 4.5,
-    focusStickyMs: 700,
-    crowdAvoidBias: 0.4
+    followRange: 1.8,
+    kiteFollowRange: 3.8,
+    backstepRange: 1.2,
+    strafeRange: 2.4,
+    creeperSoftEvadeRange: 2.0,
+    creeperFollowRange: 1.8,
+    focusStickyMs: 1200,
+    crowdAvoidBias: 0.1
   }),
   'explosive-wide': adjust(MELEE_BASELINE, {
-    followRange: 5.0,
-    kiteFollowRange: 5.0,
-    backstepRange: 2.5,
-    strafeRange: 4.0,
-    creeperSoftEvadeRange: 4.0,
-    creeperFollowRange: 5.5,
-    focusStickyMs: 600,
-    crowdAvoidBias: 0.55
+    followRange: 2.4,
+    kiteFollowRange: 4.5,
+    backstepRange: 1.5,
+    strafeRange: 2.8,
+    creeperSoftEvadeRange: 2.4,
+    creeperFollowRange: 2.4,
+    focusStickyMs: 900,
+    crowdAvoidBias: 0.25
+  }),
+  'explosive-aggressive': adjust(MELEE_BASELINE, {
+    followRange: 1.6,
+    kiteFollowRange: 3.5,
+    backstepRange: 1.1,
+    strafeRange: 2.2,
+    creeperSoftEvadeRange: 1.8,
+    creeperFollowRange: 1.6,
+    focusStickyMs: 1400,
+    crowdAvoidBias: 0.05
   })
 };
 
@@ -202,8 +212,8 @@ const CONTEXT_PRESETS: Record<string, CombatPresetId[]> = {
   'agile|1': ['agile-baseline', 'melee-defensive'],
   'ranged|0': ['ranged-baseline', 'melee-defensive'],
   'ranged|1': ['ranged-baseline', 'ranged-shield-push'],
-  'explosive|0': ['explosive-baseline', 'explosive-wide'],
-  'explosive|1': ['explosive-baseline', 'explosive-wide']
+  'explosive|0': ['explosive-aggressive', 'explosive-baseline', 'explosive-wide'],
+  'explosive|1': ['explosive-aggressive', 'explosive-baseline', 'explosive-wide']
 };
 
 export function classifyEnemy(name: string | null | undefined): EnemyClass {
@@ -273,6 +283,10 @@ export function resolveFollowRange(
   distance: number
 ): number {
   if (enemyClass === 'ranged') return params.kiteFollowRange;
+  if (enemyClass === 'explosive') {
+    // 未着火は近接 follow。着火時は退避パスが pvp を止める。
+    return params.creeperFollowRange;
+  }
   return distance <= params.backstepRange
     ? params.kiteFollowRange
     : params.followRange;

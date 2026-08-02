@@ -34,6 +34,8 @@ export class MovementController {
         this.status = 'idle';
         this._goalKey = null;
         this._goal = null;
+        /** @type {{ x: number, y: number, z: number }|null} */
+        this._lastSeekPos = null;
         this._holdUntil = 0;
         this._holdOrigin = null;
         this._holdStartedAt = 0;
@@ -84,11 +86,16 @@ export class MovementController {
      * Used while climbing where a tight GoalFollow is safer than a behind-anchor.
      * @param {import('prismarine-entity').Entity} entity
      * @param {number} range
+     * @param {{ rejectIf?: () => boolean }} [options]
      */
-    followEntity(entity, range) {
+    followEntity(entity, range, options = {}) {
+        const rejected = typeof options.rejectIf === 'function' && options.rejectIf();
+        if (rejected) {
+            return false;
+        }
         this._releaseClimbHold();
         const key = `follow:${entity.id}:${range}`;
-        if (this._goalKey === key && this.hasGoal) return false;
+        if (this._goalKey === key && this.hasGoal && !this.isBlocked) return false;
         this._goalKey = key;
         this._setGoal(new pf.goals.GoalFollow(entity, range));
         return true;
@@ -98,12 +105,21 @@ export class MovementController {
      * Walk toward a fixed world position (last-known owner, etc.). No climb hold.
      * @param {{x: number, y: number, z: number}} pos
      * @param {number} [range=2]
+     * @param {{ rejectIf?: () => boolean }} [options]
      */
-    goToward(pos, range = 2) {
+    goToward(pos, range = 2, options = {}) {
+        if (typeof options.rejectIf === 'function' && options.rejectIf()) {
+            return false;
+        }
         this._releaseClimbHold();
         const key = `seek:${Math.floor(pos.x)}:${Math.floor(pos.y)}:${Math.floor(pos.z)}:${range}`;
-        if (this._goalKey === key && this.hasGoal) return false;
+        const last = this._lastSeekPos;
+        const drifted = !last
+            || Math.hypot(pos.x - last.x, pos.y - last.y, pos.z - last.z) > 0.5;
+        // Refresh when the continuous target drifts, even if the floor key is unchanged.
+        if (this._goalKey === key && this.hasGoal && !drifted) return false;
         this._goalKey = key;
+        this._lastSeekPos = { x: pos.x, y: pos.y, z: pos.z };
         this._setGoal(new pf.goals.GoalNear(pos.x, pos.y, pos.z, range));
         return true;
     }
@@ -148,6 +164,8 @@ export class MovementController {
     stop() {
         this._goalKey = null;
         this._goal = null;
+        this._lastSeekPos = null;
+        this.status = 'idle';
         this._clearHold();
         try {
             this.bot.pathfinder.setGoal(null);

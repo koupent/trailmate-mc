@@ -18,6 +18,16 @@ import {
 const WEAPON_NAME_RE = /sword|axe|trident|bow|crossbow|mace|spear/;
 
 /**
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ */
+function resolveProtectRanges(ctx) {
+  return {
+    ...DEFAULT_PROTECT_RANGES,
+    botChaseRange: ctx.config?.reflexes?.hostile_range ?? DEFAULT_PROTECT_RANGES.botChaseRange
+  };
+}
+
+/**
  * インベントリに使用可能な戦闘武器がない場合に true。
  * @param {import('mineflayer').Bot | null | undefined} bot
  */
@@ -54,10 +64,7 @@ export function shouldDeferToCombat(ctx) {
 export function hasProtectThreats(ctx) {
   const bot = ctx.bot;
   if (!bot?.entity?.position) return false;
-  const ranges = {
-    ...DEFAULT_PROTECT_RANGES,
-    botChaseRange: ctx.config?.reflexes?.hostile_range ?? DEFAULT_PROTECT_RANGES.botChaseRange
-  };
+  const ranges = resolveProtectRanges(ctx);
   const ownerPos = ctx.ownerEntity?.position;
   const botPos = bot.entity.position;
   for (const entity of Object.values(bot.entities || {})) {
@@ -84,4 +91,30 @@ export function shouldDeferRecoveryForCombat(ctx) {
  */
 export function shouldAbortPickupForCombat(ctx) {
   return shouldDeferToCombat(ctx) || hasProtectThreats(ctx);
+}
+
+/**
+ * 戦闘中でもマグネット範囲内のドロップ回収を許可する。
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ */
+export function canOpportunisticCollect(ctx) {
+  const bot = ctx?.bot;
+  if (!bot?.entity?.position) return true;
+  if (!shouldDeferToCombat(ctx) && !hasProtectThreats(ctx)) return true;
+
+  const ranges = resolveProtectRanges(ctx);
+  const botPos = bot.entity.position;
+  for (const entity of Object.values(bot.entities || {})) {
+    if (!entity?.position) continue;
+    if (!isProtectThreat(botPos, ctx.ownerEntity?.position, entity, ranges)) continue;
+    const dist = Math.hypot(
+      entity.position.x - botPos.x,
+      entity.position.y - botPos.y,
+      entity.position.z - botPos.z
+    );
+    if (dist <= DEFAULT_PROTECT_RANGES.selfImmediateRange) {
+      return false;
+    }
+  }
+  return true;
 }

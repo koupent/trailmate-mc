@@ -1,4 +1,4 @@
-import { pickupNearbyItems, resolvePickupRadius, hasNearbyDrops, hasPriorityLootNearby } from '../utils/pickupItems.js';
+import { pickupNearbyItems, resolvePickupRadius, hasNearbyDrops, hasPriorityLootNearby, hasInventorySpace, hasOnlyMagnetRangeDrops } from '../utils/pickupItems.js';
 import {
     finishRecoveryAfterItemCollection,
     isRecoveryEmergencyActive,
@@ -12,7 +12,7 @@ import {
     shouldDeferRecoveryForCombat
 } from '../combatGate.js';
 
-const DEFAULT_MAX_MS = 8000;
+const DEFAULT_MAX_MS = 4000;
 const DEFAULT_QUIET_MS = 400;
 const DEFAULT_GRACE_MS = 500;
 const DEFAULT_RECOVERY_RADIUS = 12;
@@ -134,6 +134,8 @@ function evaluateLootShouldRun(ctx) {
 
     const suppressUntil = ctx.nearbyLoot?.suppressUntil || 0;
     if (Date.now() < suppressUntil) return false;
+    if (!hasInventorySpace(ctx.bot)) return false;
+    if (hasOnlyMagnetRangeDrops(ctx)) return false;
     if (shouldAbortPickupForCombat(ctx)) return false;
 
     return hasNearbyDrops(ctx);

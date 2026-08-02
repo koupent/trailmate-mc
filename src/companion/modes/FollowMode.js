@@ -1,14 +1,22 @@
 import { Mode } from '../Mode.js';
 import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
-import { hasLineOfSight } from '../../world/lineOfSight.js';
 import { applyOwnerWorkRetreat } from '../ownerWorkMovement.js';
 import { currentControlOwner } from '../ControlPriority.js';
 import {
-    DEFAULT_FOLLOW_DISTANCE,
+    DEFAULT_FOLLOW_MIN_DISTANCE,
     FOLLOW_GOAL_RANGE,
     LAST_KNOWN_ARRIVE_RANGE
 } from '../movement/followConstants.js';
-import { isNearOwnerHorizontally } from '../movement/followGeometry.js';
+import { horizontalDistanceBetween } from '../movement/followGeometry.js';
+import {
+    computeTrailAnchor,
+    resolveFollowPhase
+} from '../movement/followPhase.js';
+import {
+    PLAYER_PUSH_LANE,
+    wouldPathPassNearPlayer
+} from '../movement/playerPathClearance.js';
+import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -39,7 +47,12 @@ export class FollowMode extends Mode {
     }
 
     async onExit(ctx) {
-        ctx.movement.stop();
+        // FSM では combat/duty へ一瞬でも遷移するたびに呼ばれる。
+        // ここで stop すると追従ゴールが毎回消え、棒立ち・duty 往復の原因になる。
+        // 待機への切替は WaitMode.onEnter が stop する。
+        if (!ctx.agent?.companion?.manager?.getActiveFsmId) {
+            ctx.movement.stop();
+        }
     }
 
     async tick(ctx) {
@@ -47,9 +60,17 @@ export class FollowMode extends Mode {
         const config = ctx.config;
 
         ctx.movement.tickHoldWatchdog();
+        ctx.doors?.tick?.().catch?.(() => {});
 
-        // 目的地はRecoveryが供給し、Followはownerコンテキストだけを保持する。
-        if (currentControlOwner(ctx, 'follow') !== 'follow') {
+        // FSM が combat/duty を所有するときは FollowBehavior 自体が動かない。
+        // ここではラッチ中の wantsCombat で追従を止めない（二重ループ時代の名残）。
+        const fsmId = ctx.agent?.companion?.manager?.getActiveFsmId?.();
+        if (!fsmId && currentControlOwner(ctx, 'follow') !== 'follow') {
+            const owner = ctx.ownerEntity;
+            if (owner) this._rememberOwner(ctx, owner);
+            return;
+        }
+        if (fsmId && fsmId !== 'follow') {
             const owner = ctx.ownerEntity;
             if (owner) this._rememberOwner(ctx, owner);
             return;
@@ -70,7 +91,7 @@ export class FollowMode extends Mode {
         this._rememberOwner(ctx, owner);
         this._waitingAtLastKnown = false;
 
-        const followDistance = config.follow_distance ?? DEFAULT_FOLLOW_DISTANCE;
+        const followMinDistance = config.follow_min_distance ?? DEFAULT_FOLLOW_MIN_DISTANCE;
 
         // Skip Follow only while a climb hold is still making progress.
         if (ctx.movement.isHeld) return;
@@ -79,20 +100,28 @@ export class FollowMode extends Mode {
             return;
         }
 
-        // Close enough only counts when the owner is actually reachable from
-        // here — a wall between them means the bot is parked outside the room.
-        const nearOwner = isNearOwnerHorizontally(
-            bot.entity.position,
-            owner.position,
-            followDistance
-        );
-        if (nearOwner && hasLineOfSight(bot, owner)) {
+        tryOpportunisticCollect(ctx);
+
+        const phase = resolveFollowPhase(ctx, owner);
+        const botPos = bot.entity.position;
+        const horiz = horizontalDistanceBetween(botPos, owner.position);
+
+        if (phase === 'near') {
             ctx.movement.stop();
             return;
         }
 
-        // Always path to the owner itself. A behind-anchor point lands inside
-        // walls in small rooms, which makes the bot loop outside the building.
+        if (phase === 'trail') {
+            if (horiz <= followMinDistance || horiz <= PLAYER_PUSH_LANE) {
+                ctx.movement.stop();
+                return;
+            }
+
+            const anchor = computeTrailAnchor(owner, followMinDistance);
+            ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE);
+            return;
+        }
+
         ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE);
     }
 
@@ -135,7 +164,10 @@ export class FollowMode extends Mode {
             return;
         }
 
-        ctx.movement.goToward(target, LAST_KNOWN_ARRIVE_RANGE);
+        const pushGuard = createPushGuard(ctx);
+        ctx.movement.goToward(target, LAST_KNOWN_ARRIVE_RANGE, {
+            rejectIf: pushGuard(target)
+        });
     }
 
     async _searchOwner(ctx) {
@@ -152,4 +184,12 @@ export class FollowMode extends Mode {
             await ctx.bot.look(ctx.bot.entity.yaw + (Math.random() - 0.5), 0, true);
         }
     }
+}
+
+/**
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @returns {(target: { x: number, y: number, z: number }) => () => boolean}
+ */
+function createPushGuard(ctx) {
+    return (target) => () => wouldPathPassNearPlayer(ctx, target);
 }

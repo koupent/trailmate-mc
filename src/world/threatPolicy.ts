@@ -26,7 +26,12 @@ export const DEFAULT_PROTECT_RANGES: ProtectRanges = {
   selfImmediateRange: IMMEDIATE_THREAT_RANGE
 };
 
-export type ProtectReason = 'owner-near' | 'self-immediate' | null;
+export type ProtectReason = 'owner-hurt-by' | 'owner-near' | 'self-immediate' | null;
+
+export type OwnerThreatHint = {
+  attackerId: number;
+  seenAt: number;
+} | null | undefined;
 
 function distanceBetween(a: Pos, b: Pos): number {
   if (typeof a.distanceTo === 'function') return a.distanceTo(b);
@@ -56,8 +61,13 @@ function protectRank(
   botPos: Pos,
   ownerPos: Pos | null | undefined,
   enemyPos: Pos,
-  ranges: ProtectRanges
+  ranges: ProtectRanges,
+  enemy?: { id?: number } | null,
+  ownerThreatId?: number | null
 ): number {
+  if (ownerThreatId != null && enemy?.id === ownerThreatId) {
+    return -100 + distanceBetween(botPos, enemyPos);
+  }
   const botDist = distanceBetween(botPos, enemyPos);
   if (botDist <= ranges.selfImmediateRange) return botDist;
   const ownerDist = ownerPos ? distanceBetween(ownerPos, enemyPos) : Infinity;
@@ -76,29 +86,41 @@ export function pickProtectTarget(
   },
   ownerPos: Pos | null | undefined,
   ranges: ProtectRanges,
-  hasLineOfSight: (entity: any) => boolean
+  hasLineOfSight: (entity: any) => boolean,
+  ownerThreat?: OwnerThreatHint
 ): any | null {
   const botPos = bot.entity.position;
   const entityMap = bot.entities;
   const hasEntityMap = entityMap != null && typeof entityMap === 'object';
+  const ownerThreatId = ownerThreat?.attackerId ?? null;
   const candidates = hasEntityMap
     ? Object.values(entityMap).filter((entity) => {
-      if (!isProtectThreat(botPos, ownerPos, entity, ranges)) return false;
-      return hasLineOfSight(entity);
+      if (!entity?.position || !isHostile(entity) || entity.isValid === false) return false;
+      if (!hasLineOfSight(entity)) return false;
+      if (ownerThreatId != null && entity.id === ownerThreatId) {
+        return distanceBetween(botPos, entity.position) <= ranges.botChaseRange;
+      }
+      return isProtectThreat(botPos, ownerPos, entity, ranges) != null;
     })
     : [];
 
   // Botがentitiesマップを持たない場合だけ nearestEntity へフォールバックする。
   if (!hasEntityMap && typeof bot.nearestEntity === 'function') {
     return bot.nearestEntity(
-      (entity) =>
-        !!isProtectThreat(botPos, ownerPos, entity, ranges) && hasLineOfSight(entity)
+      (entity) => {
+        if (!entity?.position || !isHostile(entity) || entity.isValid === false) return false;
+        if (!hasLineOfSight(entity)) return false;
+        if (ownerThreatId != null && entity.id === ownerThreatId) {
+          return distanceBetween(botPos, entity.position) <= ranges.botChaseRange;
+        }
+        return isProtectThreat(botPos, ownerPos, entity, ranges) != null;
+      }
     );
   }
 
   candidates.sort((a, b) => {
-    const aRank = protectRank(botPos, ownerPos, a.position, ranges);
-    const bRank = protectRank(botPos, ownerPos, b.position, ranges);
+    const aRank = protectRank(botPos, ownerPos, a.position, ranges, a, ownerThreatId);
+    const bRank = protectRank(botPos, ownerPos, b.position, ranges, b, ownerThreatId);
     return aRank - bRank;
   });
   return candidates[0] || null;

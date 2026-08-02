@@ -367,6 +367,16 @@ export function shouldExitArcNarrowing(spanRad: number): boolean {
   return spanRad < EXIT_ARC_NARROW_SPAN_RAD;
 }
 
+/**
+ * 扇形が既に狭くても chooseBestThreatPosition が改善位置を返したら移動する。
+ */
+export function shouldApplyTacticalReposition(
+  threatCount: number,
+  selection: ThreatPositionSelection | null | undefined
+): boolean {
+  return threatCount >= 2 && Boolean(selection?.moved && selection.chosen?.position);
+}
+
 export function spanDegrees(spanRad: number): number {
   return (spanRad * 180) / Math.PI;
 }

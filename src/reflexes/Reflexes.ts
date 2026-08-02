@@ -7,6 +7,7 @@ import {
   DEFAULT_PROTECT_RANGES,
   isProtectThreat,
   pickProtectTarget,
+  type OwnerThreatHint,
   type ProtectRanges
 } from '../world/threatPolicy.js';
 import { projectRoot, type ReflexConfig } from '../config.js';
@@ -33,6 +34,7 @@ import {
   WIDE_THREAT_SPAN_RAD,
   shouldEnterArcNarrowing,
   shouldExitArcNarrowing,
+  shouldApplyTacticalReposition,
 } from '../combat/threatArc.js';
 import { CombatEpisodeTracker } from '../combat/CombatEpisodeTracker.js';
 import {
@@ -44,6 +46,13 @@ import {
 import { CombatOptimizer } from '../combat/CombatOptimizer.js';
 import { CombatStateStore } from '../combat/CombatStateStore.js';
 import { CombatTrace } from '../combat/CombatTrace.js';
+import {
+  isCreeperIgnited,
+  CREEPER_FLEE_DISTANCE,
+  CREEPER_SAFE_DISTANCE,
+  CREEPER_MELEE_ASSIST_RANGE,
+  CREEPER_STRIKE_GAP_MS
+} from '../combat/creeperTactics.js';
 import {
   collectTacticalThreatObservations,
   DEFAULT_TACTICAL_OBSERVATION_RADIUS,
@@ -65,7 +74,7 @@ import {
   type LightSample
 } from './torchPlacement.js';
 
-type DefendOwner = {
+type DefendOwnerEntity = {
   position: {
     x: number;
     y: number;
@@ -74,7 +83,8 @@ type DefendOwner = {
     distanceTo?: (other: { x: number; y: number; z: number }) => number;
   };
   height?: number;
-} | null | undefined;
+};
+type DefendOwner = DefendOwnerEntity | null | undefined;
 
 type CombatMovement = {
   followEntity: (entity: any, range: number) => boolean;
@@ -108,6 +118,10 @@ const COMBAT_MOVE_DISPLACEMENT_WINDOW_MS = 600;
 const COMBAT_STUCK_DISPLACEMENT = 0.03;
 const COMBAT_STUCK_FLIP_MS = 350;
 const COMBAT_REPOSITION_CLIMB_HOLD_MS = 1200;
+/** 被弾後に自己防衛を維持する猶予（ms）。 */
+const RECENT_DAMAGE_GRACE_MS = 4000;
+/** オーナー被弾直後に recentDamageUntil を延長する判定窓（ms）。 */
+const OWNER_THREAT_FRESH_MS = 1500;
 
 type ThreatArcBias = {
   sign: 1 | -1;
@@ -189,6 +203,8 @@ export class Reflexes {
   private combatMoveLastPos: { x: number; z: number } | null = null;
   /** 段差に押し付けられて横移動が進まないときの反転判定。 */
   private combatStuckSince = 0;
+  /** ownerThreatTracker が記録したオーナー被弾情報。 */
+  private lastOwnerThreat: OwnerThreatHint = null;
 
   constructor(
     private readonly bot: Bot,
@@ -277,7 +293,19 @@ export class Reflexes {
     recovery?: RecoveryContext;
     /** 武装済みRecovery中に周囲の脅威へ通常戦闘で応答する。 */
     recoveryDeferCombat?: boolean;
+    /** ownerThreatTracker が記録したオーナー被弾情報。 */
+    ownerThreat?: OwnerThreatHint;
   }): Promise<void> {
+    this.lastOwnerThreat = opts.ownerThreat ?? null;
+    if (this.lastOwnerThreat?.attackerId) {
+      const age = Date.now() - this.lastOwnerThreat.seenAt;
+      if (age < OWNER_THREAT_FRESH_MS) {
+        this.recentDamageUntil = Math.max(
+          this.recentDamageUntil,
+          Date.now() + RECENT_DAMAGE_GRACE_MS
+        );
+      }
+    }
     if (this.config.self_preservation) {
       this.preserve();
     }
@@ -306,7 +334,7 @@ export class Reflexes {
       }
       if (opts.preferGearRecovery) {
         this.resetCombat();
-      } else if (this.config.self_defense && !opts.movementHeld) {
+      } else if (this.config.self_defense && (!opts.movementHeld || this.currentTarget != null)) {
         await this.defend(opts.owner, opts.movement);
       } else if (!this.config.self_defense) {
         this.resetCombat();
@@ -519,20 +547,20 @@ export class Reflexes {
     this.configureCombatRange(enemy);
     const arcBias = this.collectThreatArcBias(enemy);
 
-    if (this.shouldNarrowThreatArc(arcBias)) {
-      const intent = this.decideCurrentCombatIntent(enemy, arcBias);
-      const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
-      this.traceCombatDecision(enemy, arcBias, intent, movementTrace, now);
-      return;
-    }
-    const traceIntent = this.combatTrace.enabled
-      ? this.decideCurrentCombatIntent(enemy, arcBias)
-      : null;
-
+    // 着火中だけ短く飛び退き、すでに離れていればそれ以上逃げない。
     if (this.shouldEvadeCreeper(enemy)) {
+      const dist = enemy?.position && this.bot.entity
+        ? distanceToPos(this.bot.entity.position, enemy.position)
+        : null;
       this.bot.pvp?.forceStop?.();
-      this.applyCombatSpacing(enemy, arcBias);
-      this.moveAwayFrom(enemy, movement);
+      movement?.setSprintAllowed?.(true);
+      // 着火解除に必要な最低限だけ下がる（遠くまで逃げない）。
+      if (dist == null || dist < CREEPER_SAFE_DISTANCE) {
+        this.moveAwayFrom(enemy, movement, CREEPER_FLEE_DISTANCE);
+      }
+      const traceIntent = this.combatTrace.enabled
+        ? this.decideCurrentCombatIntent(enemy, arcBias)
+        : null;
       this.traceCombatDecision(enemy, arcBias, traceIntent, {
         ...this.idleMovementTrace(),
         kind: 'retreat',
@@ -540,6 +568,32 @@ export class Reflexes {
       }, now);
       return;
     }
+
+    if (enemy?.name === 'creeper') {
+      movement?.setSprintAllowed?.(true);
+    }
+
+    if (this.shouldNarrowThreatArc(arcBias)) {
+      const intent = this.decideCurrentCombatIntent(enemy, arcBias);
+      const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
+      this.traceCombatDecision(enemy, arcBias, intent, movementTrace, now);
+      return;
+    }
+
+    if (
+      arcBias
+      && !this.arcNarrowLatched
+      && shouldApplyTacticalReposition(arcBias.threatCount, arcBias.selection)
+    ) {
+      const intent = this.decideCurrentCombatIntent(enemy, arcBias!);
+      const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
+      this.traceCombatDecision(enemy, arcBias, intent, movementTrace, now);
+      return;
+    }
+
+    const traceIntent = this.combatTrace.enabled
+      ? this.decideCurrentCombatIntent(enemy, arcBias)
+      : null;
 
     const movementTrace = this.applyCombatSpacing(enemy, arcBias);
     this.ensureAttackTarget(enemy);
@@ -640,15 +694,16 @@ export class Reflexes {
     enemy: any,
     arcBias: ThreatArcBias | null
   ): CombatIntentDecision {
+    const distanceToPrimary = enemy?.position && this.bot.entity
+      ? distanceToPos(this.bot.entity.position, enemy.position)
+      : Infinity;
     return decideCombatIntent({
-      distanceToPrimary: enemy?.position && this.bot.entity
-        ? distanceToPos(this.bot.entity.position, enemy.position)
-        : Infinity,
+      distanceToPrimary,
       meleeAttackRange: RETREAT_MELEE_RANGE,
       rangedThreatCount: arcBias?.rangedThreatCount ?? (isRangedEntity(enemy) ? 1 : 0),
       hasShield: this.hasShieldEquipped(),
       guardRangedThreatThreshold: this.activePresetParams.guardRangedThreatThreshold,
-      explosiveImmediateDanger: this.isIgnitedCreeper(enemy)
+      explosiveImmediateDanger: isCreeperIgnited(enemy)
     });
   }
 
@@ -953,9 +1008,16 @@ export class Reflexes {
     const stickyTarget = this.currentTarget;
     const canSwitch = !stickyTarget || now >= this.focusUntil;
     const hasLos = (entity: any) => hasLineOfSight(this.bot, entity);
+    const ownerThreatLocked = this.applyOwnerThreatPriority(
+      ownerPos,
+      botPos,
+      ranges,
+      hasLos,
+      now
+    );
 
     if (!this.currentTarget) {
-      let picked = pickProtectTarget(this.bot, ownerPos, ranges, hasLos);
+      let picked = pickProtectTarget(this.bot, ownerPos, ranges, hasLos, this.lastOwnerThreat);
       // 被弾は強制的な自己防衛トリガーとし、owner範囲外でも短時間は
       // recentDamageUntilにより最寄りの敵と戦う。
       if (!picked && now < this.recentDamageUntil) {
@@ -963,14 +1025,15 @@ export class Reflexes {
           this.bot,
           null,
           { ...ranges, ownerProtectRange: 0, selfImmediateRange: ranges.botChaseRange },
-          hasLos
+          hasLos,
+          this.lastOwnerThreat
         );
         if (!picked) {
           picked = pickProtectTarget(this.bot, null, {
             ...ranges,
             ownerProtectRange: 0,
             selfImmediateRange: ranges.botChaseRange
-          }, () => true);
+          }, () => true, this.lastOwnerThreat);
         }
       }
       if (picked) {
@@ -979,8 +1042,14 @@ export class Reflexes {
         this.lastTargetSeenAt = now;
         this.focusUntil = now + this.activePresetParams.focusStickyMs;
       }
-    } else if (canSwitch && stickyTarget) {
-      const candidate = pickProtectTarget(this.bot, ownerPos, ranges, hasLos);
+    } else if (canSwitch && stickyTarget && !ownerThreatLocked) {
+      const candidate = pickProtectTarget(
+        this.bot,
+        ownerPos,
+        ranges,
+        hasLos,
+        this.lastOwnerThreat
+      );
       if (candidate && candidate.id !== stickyTarget.id) {
         this.currentTarget = candidate;
         this.syncCombatLearning(candidate, now);
@@ -988,6 +1057,40 @@ export class Reflexes {
         this.focusUntil = now + this.activePresetParams.focusStickyMs;
       }
     }
+  }
+
+  /**
+   * オーナー被弾の襲撃者を最優先で currentTarget に固定する。
+   * @returns true when locked onto the owner-attacker this tick
+   */
+  private applyOwnerThreatPriority(
+    ownerPos: DefendOwnerEntity['position'] | null | undefined,
+    botPos: { x: number; y: number; z: number },
+    ranges: ProtectRanges,
+    hasLos: (entity: any) => boolean,
+    now: number
+  ): boolean {
+    const ownerThreatId = this.lastOwnerThreat?.attackerId ?? null;
+    if (ownerThreatId == null) return false;
+
+    const ownerAttacker = this.resolveLiveTarget(this.bot.entities?.[ownerThreatId]);
+    if (!ownerAttacker || !this.isUsableTarget(ownerAttacker)) return false;
+
+    if (this.currentTarget?.id === ownerAttacker.id) {
+      if (hasLos(ownerAttacker)) this.lastTargetSeenAt = now;
+      return true;
+    }
+
+    if (!hasLos(ownerAttacker)) return false;
+    if (isProtectThreat(botPos, ownerPos, ownerAttacker, ranges) == null) return false;
+
+    if (this.currentTarget?.id !== ownerAttacker.id) {
+      this.currentTarget = ownerAttacker;
+      this.syncCombatLearning(ownerAttacker, now);
+      this.lastTargetSeenAt = now;
+      this.focusUntil = now + this.activePresetParams.focusStickyMs;
+    }
+    return true;
   }
 
   private transitionMode(
@@ -1019,15 +1122,16 @@ export class Reflexes {
    * ここでawaitすると相棒ループが止まり、FollowがBotを再取得してしまう。
    */
   private ensureAttackTarget(enemy: any): void {
+    const target = this.currentTarget ?? enemy;
     const pvp = this.bot.pvp as {
       target?: { id?: number } | null;
       attack?: (e: any) => Promise<void> | void;
     } | undefined;
-    if (!pvp?.attack || !enemy) return;
-    if (pvp.target?.id != null && enemy.id != null && pvp.target.id === enemy.id) {
+    if (!pvp?.attack || !target) return;
+    if (pvp.target?.id != null && target.id != null && pvp.target.id === target.id) {
       return;
     }
-    void Promise.resolve(pvp.attack(enemy)).catch((err: any) => {
+    void Promise.resolve(pvp.attack(target)).catch((err: any) => {
       console.warn('[reflexes] defend failed:', (err as Error)?.message || err);
     });
   }
@@ -1037,15 +1141,20 @@ export class Reflexes {
    * 対象の前で棒立ちになることを防ぐ。
    */
   private meleeAssistStrike(enemy: any | null, now: number): void {
-    if (!enemy?.position || !this.bot.entity) return;
-    const dist = distanceToPos(this.bot.entity.position, enemy.position);
-    if (dist > RETREAT_MELEE_RANGE) return;
-    if (now - this.lastPassiveStrikeAt < 600) return;
+    const target = this.currentTarget ?? enemy;
+    if (!target?.position || !this.bot.entity) return;
+    const dist = distanceToPos(this.bot.entity.position, target.position);
+    const isCreeper = target.name === 'creeper';
+    const reach = isCreeper ? CREEPER_MELEE_ASSIST_RANGE : RETREAT_MELEE_RANGE;
+    if (dist > reach) return;
+    if (isCreeperIgnited(target)) return;
+    const strikeGapMs = isCreeper ? CREEPER_STRIKE_GAP_MS : 1000;
+    if (now - this.lastPassiveStrikeAt < strikeGapMs) return;
     this.lastPassiveStrikeAt = now;
     try {
-      const look = enemy.position.offset?.(0, (enemy.height ?? 1.8) * 0.9, 0) || enemy.position;
+      const look = target.position.offset?.(0, (target.height ?? 1.8) * 0.9, 0) || target.position;
       void this.bot.lookAt?.(look, true);
-      this.bot.attack?.(enemy);
+      this.bot.attack?.(target);
     } catch {
       /* 失敗は無視する */
     }
@@ -1097,7 +1206,7 @@ export class Reflexes {
   }
 
   /** モードを増やさず、直近の爆発脅威から離れる。 */
-  private moveAwayFrom(threat: any, movement?: CombatMovement): void {
+  private moveAwayFrom(threat: any, movement?: CombatMovement, fleeDistance?: number): void {
     if (!movement || !threat?.position) return;
     const botPos = this.bot.entity.position;
     let dx = botPos.x - threat.position.x;
@@ -1121,22 +1230,24 @@ export class Reflexes {
       awayFromCrowd: crowdAway,
       bias: this.activePresetParams.crowdAvoidBias
     });
+    const range = Math.max(
+      this.config.retreat_distance,
+      Number.isFinite(fleeDistance) ? Number(fleeDistance) : 0
+    );
     const destination = {
-      x: botPos.x + blended.x * this.config.retreat_distance,
+      x: botPos.x + blended.x * range,
       y: botPos.y,
-      z: botPos.z + blended.z * this.config.retreat_distance
+      z: botPos.z + blended.z * range
     };
     movement.goToward(destination, RETREAT_GOAL_RANGE);
   }
 
   private shouldEvadeCreeper(enemy: any): boolean {
-    if (!this.isIgnitedCreeper(enemy)) return false;
-    const pvp = this.bot.pvp as any;
-    return typeof pvp?.hasShield !== 'function' || !pvp.hasShield();
+    return isCreeperIgnited(enemy);
   }
 
   private isIgnitedCreeper(enemy: any): boolean {
-    return enemy?.name === 'creeper' && enemy.metadata?.[16] === 1;
+    return isCreeperIgnited(enemy);
   }
 
   private configureCombatRange(enemy: any): void {
@@ -1466,7 +1577,7 @@ export class Reflexes {
       // 攻撃を受けたら戦闘へ入り、護衛の基本的な自己防衛を続ける。
       const now = Date.now();
       this.lastDamageAt = now;
-      this.recentDamageUntil = now + 4000;
+      this.recentDamageUntil = now + RECENT_DAMAGE_GRACE_MS;
       this.combatControlUntil = refreshCombatControlUntil({
         now,
         previousUntil: this.combatControlUntil,

@@ -1,6 +1,7 @@
 /** Shared helpers to walk toward a fixed world position. */
 
 import { sleep } from '../movement/climb.js';
+import { wouldPathPassNearPlayer } from '../movement/playerPathClearance.js';
 
 const DEFAULT_RANGE = 2;
 const DEFAULT_TIMEOUT_MS = 8000;
@@ -49,7 +50,8 @@ export async function approachPosition(ctx, pos, options = {}) {
 
     if (arrived()) return true;
 
-    ctx.movement?.goToward?.(pos, pathRange);
+    const rejectIf = () => wouldPathPassNearPlayer(ctx, pos);
+    ctx.movement?.goToward?.(pos, pathRange, { rejectIf });
 
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
@@ -69,7 +71,7 @@ export async function approachPosition(ctx, pos, options = {}) {
             ctx.movement?.stop?.();
             return true;
         }
-        ctx.movement?.goToward?.(pos, pathRange);
+        ctx.movement?.goToward?.(pos, pathRange, { rejectIf });
         await sleep(pollMs);
     }
 

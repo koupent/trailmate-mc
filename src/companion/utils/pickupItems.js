@@ -28,7 +28,7 @@ const DEFAULT_POLL_MS = 250;
 const DEFAULT_QUIET_MS = 1500;
 const DEFAULT_GRACE_MS = 2500;
 /** Pause after arriving so pickup has time to register. */
-const PICKUP_SETTLE_MS = 350;
+export const PICKUP_SETTLE_MS = 350;
 const DEFAULT_OWNER_WORK_LOOT_CLEARANCE = 4;
 /** Item Y this far below the bot's feet needs a step-down approach, not magnet pickup. */
 const ITEM_BELOW_FEET_DY = 0.4;
@@ -234,8 +234,38 @@ export async function pickupNearbyItems(ctx, options = {}) {
 export function hasNearbyDrops(ctx) {
     const bot = ctx?.bot;
     if (!bot?.entity?.position) return false;
+    if (!hasInventorySpace(bot)) return false;
     const radius = resolvePickupRadius(ctx);
     return hasNearbyDropsAt(ctx, bot.entity.position, radius);
+}
+
+/**
+ * @param {import('mineflayer').Bot} bot
+ */
+export function hasInventorySpace(bot) {
+    try {
+        return (bot.inventory.emptySlotCount?.() ?? 0) > 0;
+    } catch {
+        return true;
+    }
+}
+
+/**
+ * True when only magnet-range drops remain (OpportunisticCollector handles them).
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ */
+export function hasOnlyMagnetRangeDrops(ctx) {
+    const bot = ctx?.bot;
+    if (!bot?.entity?.position) return false;
+    const radius = resolvePickupRadius(ctx);
+    ctx.invalidateCompanionAwareness?.();
+    const snap = scanCompanionAwareness(bot, radius, bot.entity.position);
+    const exclude = buildPickupExclude(ctx, { magnetRange: PICKUP_MAGNET_RANGE });
+    const candidates = snap.dropItems.filter((entity) => !exclude(entity));
+    if (candidates.length === 0) return false;
+    return candidates.every((entity) => (
+        dropDistanceFrom(bot.entity.position, entity.position) <= PICKUP_MAGNET_RANGE
+    ));
 }
 
 /**
@@ -279,7 +309,7 @@ export function buildPickupExclude(ctx, options = {}) {
         if (!entity?.position) return true;
         if (isExcludedNearOwner(ctx, entity.position, ownerClearance)) return true;
         if (candidateFilter && !candidateFilter(entity)) return true;
-        if (shouldExcludePickupDuringOwnerWork(ctx, entity.position, magnetRange)) return true;
+        if (shouldExcludePickupDuringOwnerWork(ctx, entity.position)) return true;
         return wouldEnterOwnerWorkFov(ctx, entity.position, { withinPickupRange: magnetRange });
     };
 }
@@ -300,9 +330,8 @@ export function resolveOwnerWorkLootClearance(ctx) {
 /**
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} itemPos
- * @param {number} magnetRange
  */
-function shouldExcludePickupDuringOwnerWork(ctx, itemPos, _magnetRange) {
+function shouldExcludePickupDuringOwnerWork(ctx, itemPos) {
     if (!isOwnerWorkDeferring(ctx)) return false;
     if (isOnDedicatedLootMission(ctx)) return false;
     return isPositionInOwnerWorkFov(ctx, itemPos);

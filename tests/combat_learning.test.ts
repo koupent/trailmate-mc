@@ -23,6 +23,7 @@ import {
   perpendicularDodgeBearing,
   shouldEnterArcNarrowing,
   shouldExitArcNarrowing,
+  shouldApplyTacticalReposition,
   ENTER_ARC_NARROW_SPAN_RAD,
   EXIT_ARC_NARROW_SPAN_RAD,
   spanDegrees,
@@ -282,6 +283,21 @@ describe('threatArc位置取り', () => {
     );
     assert.equal(shouldExitArcNarrowing(EXIT_ARC_NARROW_SPAN_RAD * 0.9), true);
     assert.equal(shouldExitArcNarrowing(EXIT_ARC_NARROW_SPAN_RAD * 1.1), false);
+  });
+
+  it('狭い扇形でも改善位置があれば戦術 reposition を適用する', () => {
+    const bot = { x: -338.13, z: 209.8 };
+    const threats = [
+      { x: -333.67, z: 209.5 },
+      { x: -331.33, z: 208.32 }
+    ];
+    const selection = chooseBestThreatPosition(bot, threats, { step: 2.25, minimumImprovement: 0 });
+    assert.equal(
+      shouldEnterArcNarrowing({ threatCount: 2, spanRad: selection.current.spanRad }),
+      false
+    );
+    assert.equal(shouldApplyTacticalReposition(2, selection), true);
+    assert.ok(selection.chosen.spanRad < selection.current.spanRad);
   });
 
   it('逆軸ではなくMineflayer yawでワールド方位を変換する', () => {
