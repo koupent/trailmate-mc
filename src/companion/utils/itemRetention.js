@@ -121,11 +121,7 @@ function compareFoodDesc(a, b, foodsByName) {
     return (fb.saturation || 0) - (fa.saturation || 0);
 }
 
-/**
- * Chest retention is intentionally data-driven. Adding or removing a retained
- * inventory category should only require editing this list and its config key.
- */
-export const CHEST_RETENTION_RULES = Object.freeze([
+const COMMON_STACK_RETENTION_RULES = Object.freeze([
     {
         id: 'torch',
         limitKey: 'keep_torch_stacks',
@@ -141,7 +137,15 @@ export const CHEST_RETENTION_RULES = Object.freeze([
             context.bannedFood
         ),
         compare: (a, b, context) => compareFoodDesc(a, b, context.foodsByName)
-    },
+    }
+]);
+
+/**
+ * Chest retention is intentionally data-driven. Adding or removing a retained
+ * inventory category should only require editing this list and its config key.
+ */
+export const CHEST_RETENTION_RULES = Object.freeze([
+    ...COMMON_STACK_RETENTION_RULES,
     {
         id: 'melee_weapon',
         limitKey: 'keep_weapon_stacks',
@@ -157,18 +161,36 @@ export const CHEST_RETENTION_RULES = Object.freeze([
  * @param {Array<{ slot: number }>} stacks
  * @param {Partial<typeof DEFAULT_RETENTION>} policy
  * @param {{ foodsByName: object, bannedFood: Set<string>, keepSlots: Set<number> }} context
- * @param {ReadonlyArray<{ limitKey: keyof typeof DEFAULT_RETENTION, matches: Function, compare: Function }>} rules
+ * @param {ReadonlyArray<{
+ *   limitKey: keyof typeof DEFAULT_RETENTION,
+ *   matches: (stack: any, context: any) => boolean,
+ *   compare: (a: any, b: any, context: any) => number
+ * }>} rules
  */
 function applyRetentionRules(stacks, policy, context, rules) {
     for (const rule of rules) {
-        const keepCount = policy[rule.limitKey] ?? DEFAULT_RETENTION[rule.limitKey] ?? 0;
+        const configured = policy[rule.limitKey] ?? DEFAULT_RETENTION[rule.limitKey] ?? 0;
+        const keepCount = Math.max(0, Math.trunc(Number(configured) || 0));
         keepTopStacks(
             stacks.filter((stack) => rule.matches(stack, context)),
-            Math.max(0, keepCount),
+            keepCount,
             (a, b) => rule.compare(a, b, context),
             context.keepSlots
         );
     }
+}
+
+/**
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ foodsByName?: object, bannedFood?: string[] }} options
+ * @param {Set<number>} keepSlots
+ */
+function createRetentionContext(bot, options, keepSlots) {
+    return {
+        foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
+        bannedFood: new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS),
+        keepSlots
+    };
 }
 
 /**
@@ -236,15 +258,10 @@ export function equippedItemSlots(bot) {
  * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
  */
 export function listChestDepositStacks(bot, policy = {}, options = {}) {
-    const foodsByName = options.foodsByName || bot?.registry?.foodsByName || {};
-    const bannedFood = new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS);
     const stacks = listOccupiedStacks(bot);
     const keepSlots = equippedItemSlots(bot);
-    applyRetentionRules(stacks, policy, {
-        foodsByName,
-        bannedFood,
-        keepSlots
-    }, CHEST_RETENTION_RULES);
+    const context = createRetentionContext(bot, options, keepSlots);
+    applyRetentionRules(stacks, policy, context, CHEST_RETENTION_RULES);
 
     return stacks
         .filter((s) => !keepSlots.has(s.slot))
@@ -266,29 +283,13 @@ export function listChestDepositStacks(bot, policy = {}, options = {}) {
  * @returns {Array<{ slot: number, type: number, count: number, name: string }>}
  */
 export function listGiveableStacks(bot, policy = {}, options = {}) {
-    const keepTorch = policy.keep_torch_stacks ?? DEFAULT_RETENTION.keep_torch_stacks;
-    const keepFood = policy.keep_food_stacks ?? DEFAULT_RETENTION.keep_food_stacks;
     const keepEquip = policy.keep_equipment_sets ?? DEFAULT_RETENTION.keep_equipment_sets;
-
-    const foodsByName = options.foodsByName || bot?.registry?.foodsByName || {};
-    const bannedFood = new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS);
 
     const stacks = listOccupiedStacks(bot);
     /** @type {Set<number>} */
     const keepSlots = new Set();
-
-    keepTopStacks(
-        stacks.filter((s) => isTorch(s.name)),
-        keepTorch,
-        (a, b) => b.count - a.count,
-        keepSlots
-    );
-    keepTopStacks(
-        stacks.filter((s) => isKeepableFood(s.name, foodsByName, bannedFood)),
-        keepFood,
-        (a, b) => compareFoodDesc(a, b, foodsByName),
-        keepSlots
-    );
+    const context = createRetentionContext(bot, options, keepSlots);
+    applyRetentionRules(stacks, policy, context, COMMON_STACK_RETENTION_RULES);
 
     /** @type {Record<string, typeof stacks>} */
     const byGroup = Object.fromEntries(EQUIPMENT_GROUPS.map((group) => [group, []]));
