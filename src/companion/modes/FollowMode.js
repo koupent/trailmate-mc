@@ -117,11 +117,15 @@ export class FollowMode extends Mode {
             }
 
             const anchor = computeTrailAnchor(owner, followMinDistance);
-            ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE);
+            ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE, {
+                endpointVisibilityTarget: owner
+            });
             return;
         }
 
-        ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE);
+        ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE, {
+            endpointVisibilityTarget: owner
+        });
     }
 
     /**

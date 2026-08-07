@@ -1,16 +1,68 @@
 import pf from 'mineflayer-pathfinder';
+import Vec3 from 'vec3';
 import {
     alignPathToDoorGaps,
     createSafeMovements,
     DEFAULT_SAFE_MAX_DROP_DOWN,
     enforceSafeMovements
 } from '../blockProtection.js';
+import { hasLineOfSightFrom } from '../../world/lineOfSight.js';
 
 /** Climb goals may block Follow only briefly. */
 const DEFAULT_CLIMB_HOLD_MS = 2000;
 /** Drop a climb lock if the bot has not moved this far within STALL_MS. */
 const STALL_DISTANCE = 0.4;
 const STALL_MS = 1500;
+/** Nearby partial follow routes stay paused until A* produces a final result. */
+const GUARDED_PARTIAL_DISTANCE = 32;
+
+/**
+ * Prevent a nearby partial route from moving the bot toward an arbitrary A*
+ * frontier, and reject a completed route that only reaches the far side of a
+ * wall around the followed player.
+ *
+ * The path array is shared with mineflayer-pathfinder, so clearing it here
+ * prevents that route from being executed. The controller then re-plans with
+ * closed passages disabled to reach the closest point in the current area.
+ *
+ * @param {import('mineflayer').Bot} bot
+ * @param {{status?:string,path?:Array<{x:number,y:number,z:number}>}} result
+ * @param {import('prismarine-entity').Entity|null|undefined} target
+ * @returns {'partial-nearby-target'|'obstructed-target-endpoint'|null}
+ */
+export function suppressUnsafeFollowPath(bot, result, target) {
+    if (!target?.position || !Array.isArray(result?.path)) return null;
+
+    const botPos = bot.entity?.position;
+    if (!botPos) return null;
+    const distance = Math.hypot(
+        target.position.x - botPos.x,
+        target.position.z - botPos.z
+    );
+
+    if (result.status === 'partial' && distance <= GUARDED_PARTIAL_DISTANCE) {
+        result.path.length = 0;
+        return 'partial-nearby-target';
+    }
+
+    const endpoint = result.path.at(-1);
+    if (result.status !== 'success' || !endpoint) return null;
+
+    const feet = new Vec3(
+        Number.isInteger(endpoint.x) ? endpoint.x + 0.5 : endpoint.x,
+        endpoint.y,
+        Number.isInteger(endpoint.z) ? endpoint.z + 0.5 : endpoint.z
+    );
+    const visible = hasLineOfSightFrom(
+        bot.world,
+        { position: feet, height: bot.entity?.height ?? 1.8 },
+        target
+    );
+    if (visible) return null;
+
+    result.path.length = 0;
+    return 'obstructed-target-endpoint';
+}
 /**
  * Sole owner of mineflayer-pathfinder for the companion.
  *
@@ -24,6 +76,9 @@ export class MovementController {
     constructor(bot) {
         this.bot = bot;
         this.movements = buildMovements(bot);
+        this.closestReachableMovements = buildMovements(bot);
+        this.closestReachableMovements._trailmateDisableDoorOpening = true;
+        this.closestReachableMovements.canOpenDoors = false;
         enforceSafeMovements(bot);
         bot.pathfinder.setMovements(this.movements);
 
@@ -39,8 +94,35 @@ export class MovementController {
         this._holdUntil = 0;
         this._holdOrigin = null;
         this._holdStartedAt = 0;
+        this._endpointVisibilityTarget = null;
+        this._lastRouteSuppressionKey = null;
+        this._closestReachableActive = false;
+        this._closestReachableScheduled = false;
+        this._closestReachableTargetOrigin = null;
 
         bot.on('path_update', (result) => {
+            if (this._closestReachableActive) {
+                this.status = result.status;
+                alignPathToDoorGaps(bot, result.path);
+                return;
+            }
+
+            const rejectedEndpoint = result.path?.at(-1) || null;
+            const suppressed = suppressUnsafeFollowPath(
+                bot,
+                result,
+                this._endpointVisibilityTarget
+            );
+            if (suppressed) {
+                this.status = suppressed === 'partial-nearby-target' ? 'searching' : 'unreachable';
+                this._logRouteSuppression(suppressed, result, rejectedEndpoint);
+                if (suppressed === 'obstructed-target-endpoint') {
+                    this._scheduleClosestReachableFallback();
+                }
+                return;
+            }
+
+            this._lastRouteSuppressionKey = null;
             this.status = result.status;
             alignPathToDoorGaps(bot, result.path);
         });
@@ -77,6 +159,22 @@ export class MovementController {
         return this.status === 'noPath' || this.status === 'timeout';
     }
 
+    get isUnreachable() {
+        return this.status === 'unreachable';
+    }
+
+    get isRoutePending() {
+        return this.status === 'searching';
+    }
+
+    get isClosestReachable() {
+        return this._closestReachableActive || this._closestReachableScheduled;
+    }
+
+    get isTryingToMove() {
+        return this.isMoving;
+    }
+
     get isHeld() {
         return Date.now() < this._holdUntil;
     }
@@ -86,7 +184,10 @@ export class MovementController {
      * Used while climbing where a tight GoalFollow is safer than a behind-anchor.
      * @param {import('prismarine-entity').Entity} entity
      * @param {number} range
-     * @param {{ rejectIf?: () => boolean }} [options]
+     * @param {{
+     *   rejectIf?: () => boolean,
+     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null
+     * }} [options]
      */
     followEntity(entity, range, options = {}) {
         const rejected = typeof options.rejectIf === 'function' && options.rejectIf();
@@ -94,10 +195,12 @@ export class MovementController {
             return false;
         }
         this._releaseClimbHold();
-        const key = `follow:${entity.id}:${range}`;
+        const visibilityTarget = options.endpointVisibilityTarget || null;
+        this._resetClosestReachableAfterTargetMove(visibilityTarget);
+        const key = `follow:${entity.id}:${range}:${visibilityTarget ? 'guarded' : 'plain'}`;
         if (this._goalKey === key && this.hasGoal && !this.isBlocked) return false;
         this._goalKey = key;
-        this._setGoal(new pf.goals.GoalFollow(entity, range));
+        this._setGoal(new pf.goals.GoalFollow(entity, range), { visibilityTarget });
         return true;
     }
 
@@ -105,14 +208,19 @@ export class MovementController {
      * Walk toward a fixed world position (last-known owner, etc.). No climb hold.
      * @param {{x: number, y: number, z: number}} pos
      * @param {number} [range=2]
-     * @param {{ rejectIf?: () => boolean }} [options]
+     * @param {{
+     *   rejectIf?: () => boolean,
+     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null
+     * }} [options]
      */
     goToward(pos, range = 2, options = {}) {
         if (typeof options.rejectIf === 'function' && options.rejectIf()) {
             return false;
         }
         this._releaseClimbHold();
-        const key = `seek:${Math.floor(pos.x)}:${Math.floor(pos.y)}:${Math.floor(pos.z)}:${range}`;
+        const visibilityTarget = options.endpointVisibilityTarget || null;
+        this._resetClosestReachableAfterTargetMove(visibilityTarget);
+        const key = `seek:${Math.floor(pos.x)}:${Math.floor(pos.y)}:${Math.floor(pos.z)}:${range}:${visibilityTarget ? 'guarded' : 'plain'}`;
         const last = this._lastSeekPos;
         const drifted = !last
             || Math.hypot(pos.x - last.x, pos.y - last.y, pos.z - last.z) > 0.5;
@@ -120,7 +228,7 @@ export class MovementController {
         if (this._goalKey === key && this.hasGoal && !drifted) return false;
         this._goalKey = key;
         this._lastSeekPos = { x: pos.x, y: pos.y, z: pos.z };
-        this._setGoal(new pf.goals.GoalNear(pos.x, pos.y, pos.z, range));
+        this._setGoal(new pf.goals.GoalNear(pos.x, pos.y, pos.z, range), { visibilityTarget });
         return true;
     }
 
@@ -165,6 +273,11 @@ export class MovementController {
         this._goalKey = null;
         this._goal = null;
         this._lastSeekPos = null;
+        this._endpointVisibilityTarget = null;
+        this._lastRouteSuppressionKey = null;
+        this._closestReachableActive = false;
+        this._closestReachableScheduled = false;
+        this._closestReachableTargetOrigin = null;
         this.status = 'idle';
         this._clearHold();
         try {
@@ -203,12 +316,68 @@ export class MovementController {
         }
     }
 
-    _setGoal(goal) {
+    _setGoal(goal, options = {}) {
         // Re-apply after combat/legacy modes may have overwritten pathfinder movements.
+        this._endpointVisibilityTarget = options.visibilityTarget || null;
+        this._lastRouteSuppressionKey = null;
+        this._closestReachableActive = false;
+        this._closestReachableScheduled = false;
+        this._closestReachableTargetOrigin = null;
         this.bot.pathfinder.setMovements(this.movements);
         this.status = 'searching';
         this._goal = goal;
         this.bot.pathfinder.setGoal(goal, true);
+    }
+
+    _scheduleClosestReachableFallback() {
+        if (this._closestReachableActive || this._closestReachableScheduled || !this._goal) return;
+        const expectedGoal = this._goal;
+        const expectedTarget = this._endpointVisibilityTarget;
+        this._closestReachableScheduled = true;
+
+        queueMicrotask(() => {
+            this._closestReachableScheduled = false;
+            if (this._goal !== expectedGoal || this._endpointVisibilityTarget !== expectedTarget) return;
+
+            this._closestReachableActive = true;
+            this._closestReachableTargetOrigin = expectedTarget?.position?.clone?.()
+                || (expectedTarget?.position
+                    ? new Vec3(expectedTarget.position.x, expectedTarget.position.y, expectedTarget.position.z)
+                    : null);
+            this.status = 'searching';
+            this.closestReachableMovements.canOpenDoors = false;
+            this.bot.pathfinder.setMovements(this.closestReachableMovements);
+            // The safety wrapper re-applies defaults to the same object.
+            this.closestReachableMovements.canOpenDoors = false;
+            this.bot.pathfinder.setGoal(expectedGoal, true);
+            console.log('[companion] follow-route-fallback closest-reachable-without-closed-passages');
+        });
+    }
+
+    _resetClosestReachableAfterTargetMove(target) {
+        if (!this._closestReachableActive || !target?.position || !this._closestReachableTargetOrigin) return;
+        if (target.position.distanceSquared(this._closestReachableTargetOrigin) <= 1) return;
+
+        this._closestReachableActive = false;
+        this._closestReachableTargetOrigin = null;
+        this._goalKey = null;
+    }
+
+    _logRouteSuppression(reason, result, endpoint = null) {
+        const target = this._endpointVisibilityTarget;
+        const targetCell = target?.position
+            ? `${Math.floor(target.position.x)},${Math.floor(target.position.y)},${Math.floor(target.position.z)}`
+            : 'none';
+        const key = `${reason}:${targetCell}`;
+        if (this._lastRouteSuppressionKey === key) return;
+        this._lastRouteSuppressionKey = key;
+        console.log(`[companion] follow-route-suppressed ${JSON.stringify({
+            reason,
+            pathStatus: result.status || null,
+            bot: this.bot.entity?.position || null,
+            target: target?.position || null,
+            endpoint
+        })}`);
     }
 }
 

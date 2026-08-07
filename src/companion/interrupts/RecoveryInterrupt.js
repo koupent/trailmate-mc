@@ -39,6 +39,8 @@ export class RecoveryInterrupt {
         if (ctx.deathRecovery?.active) return false;
         if (!ctx.ownerEntity) return false;
         if (ctx.movement.isHeld) return false;
+        if (ctx.movement.isUnreachable || ctx.movement.isRoutePending
+            || ctx.movement.isClosestReachable) return false;
 
         const owner = ctx.ownerEntity;
         const botPos = ctx.bot.entity.position;
