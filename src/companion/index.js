@@ -8,7 +8,10 @@ import { DeathReturnInterrupt } from './interrupts/DeathReturnInterrupt.js';
 import { NearbyLootInterrupt } from './interrupts/NearbyLootInterrupt.js';
 import { RecoveryInterrupt } from './interrupts/RecoveryInterrupt.js';
 import { AutoEquip } from './utils/AutoEquip.js';
-import { PeriodicItemTransfer, createItemShareConfig } from './utils/PeriodicItemTransfer.js';
+import {
+    ChestItemTransfer,
+    createChestTransferConfig
+} from './utils/ChestItemTransfer.js';
 import { CompanionDialogue, DEFAULT_CHAT_CONFIG } from './CompanionDialogue.js';
 import { applyJumpHitboxFix } from './hitboxFix.js';
 import {
@@ -64,7 +67,7 @@ const DEFAULT_CONFIG = {
         collector_radius: 4,
         collector_enabled: true
     },
-    item_share: createItemShareConfig(),
+    item_share: createChestTransferConfig(),
     chat: { ...DEFAULT_CHAT_CONFIG }
 };
 
@@ -107,7 +110,7 @@ export async function startCompanion(agent, companionConfig = {}) {
             ...DEFAULT_CONFIG.owner_work,
             ...(companionConfig.owner_work || {})
         },
-        item_share: createItemShareConfig(companionConfig.item_share)
+        item_share: createChestTransferConfig(companionConfig.item_share)
     };
 
     enableCompanionBlockProtection({
@@ -128,7 +131,7 @@ export async function startCompanion(agent, companionConfig = {}) {
     const manager = new CompanionOrchestrator(ctx, agent, interrupts, 'follow');
     const autoEquip = new AutoEquip(agent);
     const dialogue = new CompanionDialogue(agent, manager, config);
-    const itemTransfer = new PeriodicItemTransfer(config.item_share, {
+    const itemTransfer = new ChestItemTransfer(config.item_share, {
         manager,
         autoEquip,
         dialogue
@@ -144,12 +147,13 @@ export async function startCompanion(agent, companionConfig = {}) {
         itemTransfer,
         _loopBusy: false
     };
+    itemTransfer.attach(ctx);
 
     await manager.start();
     await applyJumpHitboxFix(agent.bot);
     wireDeathRecovery(agent, ctx, config);
 
-    console.log('[companion] started (fsm: follow/wait/combat/duty + auto-equip + item-share + dialogue)');
+    console.log('[companion] started (fsm: follow/wait/combat/duty + auto-equip + chest-share + dialogue)');
 
     const loop = async () => {
         if (!agent.bot || agent.bot.entity == null) return;
@@ -160,11 +164,6 @@ export async function startCompanion(agent, companionConfig = {}) {
             // Single orchestrator: NestedStateMachine owns follow/wait/combat/duty.
             await manager.tick();
             await autoEquip.maybeRun(ctx);
-            try {
-                await itemTransfer.maybeRun(ctx);
-            } catch (err) {
-                console.error('[companion] item-share error:', err);
-            }
             try {
                 await dialogue.maybeSpeak();
             } catch (err) {

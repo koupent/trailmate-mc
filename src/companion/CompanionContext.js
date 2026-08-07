@@ -34,7 +34,7 @@ export class CompanionContext {
         this.graveLoot = { active: false, targetKey: null };
         /** @type {{ active: boolean, suppressUntil: number, priorityUntil?: number, priorityOrigin?: { x: number, y: number, z: number } | null }} nearby ground-item scavenging */
         this.nearbyLoot = { active: false, suppressUntil: 0, priorityUntil: 0, priorityOrigin: null };
-        /** @type {{ active: boolean }} periodic surplus item transfer to owner */
+        /** @type {{ active: boolean }} surplus transfer into an owner-placed chest */
         this.itemTransfer = { active: false };
         /** @type {Map<number, import('./ownerWorkTracker.js').OwnerWorkState>} */
         this.playerWorkById = new Map();
