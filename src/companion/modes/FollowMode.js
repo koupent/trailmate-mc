@@ -60,7 +60,6 @@ export class FollowMode extends Mode {
         const config = ctx.config;
 
         ctx.movement.tickHoldWatchdog();
-        ctx.doors?.tick?.().catch?.(() => {});
 
         // FSM が combat/duty を所有するときは FollowBehavior 自体が動かない。
         // ここではラッチ中の wantsCombat で追従を止めない（二重ループ時代の名残）。

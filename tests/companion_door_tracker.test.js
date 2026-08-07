@@ -172,6 +172,8 @@ describe('DoorTracker integration', () => {
     let blocks;
     /** @type {any[]} */
     let activations;
+    let now;
+    let activationFailures;
 
     function makeBlock(name, pos, props) {
         return {
@@ -203,6 +205,8 @@ describe('DoorTracker integration', () => {
     beforeEach(() => {
         blocks = new Map();
         activations = [];
+        now = 10_000;
+        activationFailures = 0;
         owner = {
             id: 42,
             position: { x: 0, y: 64, z: 0, offset() { return this; } },
@@ -218,9 +222,16 @@ describe('DoorTracker integration', () => {
         bot.blockAt = (pos) => blocks.get(`${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`) || null;
         bot.activateBlock = (block) => {
             activations.push(block);
+            if (activationFailures > 0) {
+                activationFailures--;
+                return Promise.reject(new Error('activation failed'));
+            }
             return Promise.resolve();
         };
-        tracker = new DoorTracker(bot, { getOwnerEntity: () => owner });
+        tracker = new DoorTracker(bot, {
+            getOwnerEntity: () => owner,
+            now: () => now
+        });
     });
 
     afterEach(() => {
@@ -301,6 +312,26 @@ describe('DoorTracker integration', () => {
         assert.equal(tracker.trackedCount, 1);
     });
 
+    it('matches an owner-open update delayed by network latency', () => {
+        owner.position = { x: 3.5, y: 64, z: 0.5, offset() { return this; } };
+        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.blockAtEntityCursor = () => closed;
+        bot.emit('entitySwingArm', owner);
+
+        now += 1000;
+        bot.emit('blockUpdate', closed, makeBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: true,
+            facing: 'north',
+            half: 'lower'
+        }));
+
+        assert.equal(tracker.trackedCount, 1);
+    });
+
     it('ignores iron doors and trapdoors', () => {
         for (const name of ['iron_door', 'oak_trapdoor']) {
             const closed = setBlock(name, { x: 1, y: 64, z: 1 }, { open: false, facing: 'north' });
@@ -340,16 +371,29 @@ describe('DoorTracker integration', () => {
         await tracker.tick();
         assert.equal(activations.length, 1);
         assert.equal(activations[0].name, 'oak_door');
-        assert.equal(tracker.trackedCount, 0);
+        assert.equal(tracker.trackedCount, 1);
 
-        // Already forgotten: a second tick must not activate again.
         setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
+            open: false,
             facing: 'north',
             half: 'lower'
         });
         await tracker.tick();
+        assert.equal(tracker.trackedCount, 0);
         assert.equal(activations.length, 1);
+    });
+
+    it('closes after a fast crossing between ticks', async () => {
+        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
+            facing: 'north',
+            half: 'lower'
+        });
+
+        bot.entity.position = { x: 0.5, y: 64, z: -2 };
+        await tracker.tick();
+
+        assert.equal(activations.length, 1);
+        assert.equal(activations[0].name, 'oak_door');
     });
 
     it('forgets a tracked door that closes on its own', async () => {
@@ -374,9 +418,9 @@ describe('DoorTracker integration', () => {
             facing: 'east'
         });
 
-        bot.entity.position = { x: 3.5, y: 64, z: 2.5 };
+        bot.entity.position = { x: 1, y: 64, z: 2.5 };
         await tracker.tick();
-        bot.entity.position = { x: 0.2, y: 64, z: 2.5 };
+        bot.entity.position = { x: 4, y: 64, z: 2.5 };
         await tracker.tick();
         assert.equal(activations.length, 1);
         assert.equal(activations[0].name, 'oak_fence_gate');
@@ -405,7 +449,88 @@ describe('DoorTracker integration', () => {
         await tracker.tick();
         assert.equal(activations.length, 2);
         assert.equal(activations[1].name, 'oak_door');
+        assert.equal(tracker.trackedCount, 1);
+
+        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        await tracker.tick();
         assert.equal(tracker.trackedCount, 0);
+    });
+
+    it('keeps bot-opened tracking while the open state is delayed', async () => {
+        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        await bot.activateBlock(closed);
+
+        await tracker.tick();
+        now += 2000;
+        await tracker.tick();
+
+        assert.equal(tracker.trackedCount, 1);
+        assert.equal(activations.length, 1);
+
+        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: true,
+            facing: 'north',
+            half: 'lower'
+        });
+        await tracker.tick();
+        assert.equal(tracker.trackedCount, 1);
+    });
+
+    it('retries closing after activateBlock fails', async () => {
+        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.entity.position = { x: 0.5, y: 64, z: -2 };
+        activationFailures = 1;
+
+        await tracker.tick();
+        assert.equal(activations.length, 1);
+        assert.equal(tracker.trackedCount, 1);
+
+        now += 599;
+        await tracker.tick();
+        assert.equal(activations.length, 1);
+
+        now += 1;
+        await tracker.tick();
+        assert.equal(activations.length, 2);
+
+        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        await tracker.tick();
+        assert.equal(tracker.trackedCount, 0);
+    });
+
+    it('retries closing when the world state stays open', async () => {
+        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.entity.position = { x: 0.5, y: 64, z: -2 };
+
+        await tracker.tick();
+        assert.equal(activations.length, 1);
+
+        now += 1201;
+        await tracker.tick();
+        assert.equal(activations.length, 1);
+
+        now += 600;
+        await tracker.tick();
+        assert.equal(activations.length, 2);
+        assert.equal(tracker.trackedCount, 1);
     });
 
     it('does not track already-open doors activated by the bot', async () => {
@@ -437,8 +562,16 @@ describe('DoorTracker integration', () => {
         bot.entity.position = { x: 0.5, y: 64, z: -2 };
         await tracker.tick();
 
-        assert.equal(tracker.trackedCount, 0);
+        assert.equal(tracker.trackedCount, 1);
         assert.equal(activations.length, 2);
+
+        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            open: false,
+            facing: 'north',
+            half: 'lower'
+        });
+        await tracker.tick();
+        assert.equal(tracker.trackedCount, 0);
     });
 
     it('does not track iron doors or trapdoors opened by the bot', async () => {

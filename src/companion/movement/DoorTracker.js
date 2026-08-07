@@ -9,9 +9,9 @@ const OWNER_LOOK_RANGE = 5;
  */
 const OWNER_NEAR_DOOR_FOR_TRACK = 4;
 /** After a swing, accept a matching closed→open update for this long. */
-const SWING_MATCH_MS = 450;
+const SWING_MATCH_MS = 1500;
 /** Drop a tracked door if the bot never finishes passing through. */
-const TRACK_TTL_MS = 20000;
+const TRACK_TTL_MS = 45000;
 /** Record which side the bot approached from once this close. */
 const APPROACH_DISTANCE = 2.25;
 /** Require this clearance past the door before closing. */
@@ -23,6 +23,12 @@ const OPEN_COOLDOWN_MS = 1200;
  * still read as closed. Never touch the same door again inside this window.
  */
 const REOPEN_GUARD_MS = 2500;
+/** Allow the server time to publish the open state after our activation. */
+const OPEN_CONFIRM_MS = 2500;
+/** Allow the server time to publish the closed state after our activation. */
+const CLOSE_CONFIRM_MS = 1200;
+/** Back off briefly before retrying a failed or unconfirmed close. */
+const CLOSE_RETRY_MS = 600;
 
 /**
  * Wooden doors and fence gates the companion may close after passing through.
@@ -147,21 +153,35 @@ export function isClosedToOpen(oldBlock, newBlock) {
 export class DoorTracker {
     /**
      * @param {import('mineflayer').Bot} bot
-     * @param {{ getOwnerEntity?: () => import('prismarine-entity').Entity|null }} [options]
+     * @param {{
+     *   getOwnerEntity?: () => import('prismarine-entity').Entity|null,
+     *   now?: () => number
+     * }} [options]
      */
     constructor(bot, options = {}) {
         this.bot = bot;
         this.getOwnerEntity = options.getOwnerEntity || (() => null);
+        this.now = options.now || Date.now;
 
         /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, at: number }[]} */
         this._pending = [];
-        /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, approachSide: -1|0|1|null, openedAt: number }[]} */
+        /** @type {{
+         *   key: string,
+         *   doorPos: {x:number,y:number,z:number},
+         *   facing?: string,
+         *   approachSide: -1|0|1|null,
+         *   openedAt: number,
+         *   openObserved: boolean,
+         *   closeRequestedAt: number|null,
+         *   retryCloseAt: number
+         * }[]} */
         this._tracked = [];
         this._closing = false;
         this._opening = false;
         this._openCooldownUntil = 0;
         /** @type {Map<string, number>} door key -> last activation time */
         this._recentOpens = new Map();
+        this._lastOwnerSwingAt = 0;
 
         this._onSwing = (entity) => this._handleSwing(entity);
         this._onBlockUpdate = (oldBlock, newBlock) => this._handleBlockUpdate(oldBlock, newBlock);
@@ -231,7 +251,7 @@ export class DoorTracker {
      * Expire stale entries, open a closed door blocking the path, and close after passage.
      */
     async tick() {
-        const now = Date.now();
+        const now = this.now();
         this._pending = this._pending.filter((p) => now - p.at <= SWING_MATCH_MS);
         this._tracked = this._tracked.filter((t) => now - t.openedAt <= TRACK_TTL_MS);
 
@@ -246,14 +266,28 @@ export class DoorTracker {
 
         for (const tracked of [...this._tracked]) {
             const block = this._blockAt(tracked.doorPos);
-            if (!block || !isCloseablePassage(block) || block._properties?.open !== true) {
+            if (!block || !isCloseablePassage(block)) {
                 this._forget(tracked.key);
                 continue;
             }
 
+            if (block._properties?.open !== true) {
+                if (tracked.openObserved || now - tracked.openedAt > OPEN_CONFIRM_MS) {
+                    this._forget(tracked.key);
+                }
+                continue;
+            }
+
+            tracked.openObserved = true;
+            if (tracked.closeRequestedAt != null) {
+                if (now - tracked.closeRequestedAt <= CLOSE_CONFIRM_MS) continue;
+                tracked.closeRequestedAt = null;
+                tracked.retryCloseAt = now + CLOSE_RETRY_MS;
+            }
+
             const result = evaluatePassage(tracked, botPos);
             tracked.approachSide = result.approachSide;
-            if (!result.readyToClose) continue;
+            if (!result.readyToClose || now < tracked.retryCloseAt) continue;
 
             await this._closeTracked(tracked, block);
             return;
@@ -266,7 +300,7 @@ export class DoorTracker {
      */
     async openBlockingDoorIfNeeded() {
         if (this._opening || this._closing) return false;
-        const now = Date.now();
+        const now = this.now();
         if (now < this._openCooldownUntil) return false;
 
         const botPos = this.bot.entity?.position;
@@ -358,7 +392,7 @@ export class DoorTracker {
      */
     _openSkipReason(door) {
         const lastOpen = this._recentOpens.get(posKey(door.position));
-        if (lastOpen != null && Date.now() - lastOpen < REOPEN_GUARD_MS) return 'recently-toggled';
+        if (lastOpen != null && this.now() - lastOpen < REOPEN_GUARD_MS) return 'recently-toggled';
 
         // Double doors: the leaf the owner already opened is the passage to use.
         const pos = door.position;
@@ -381,7 +415,7 @@ export class DoorTracker {
             this._noteBotOpened(block);
         }
         if (isCloseablePassage(block)) {
-            this._recentOpens.set(posKey(normalizeDoorPos(block)), Date.now());
+            this._recentOpens.set(posKey(normalizeDoorPos(block)), this.now());
         }
         return this._originalActivateBlock(block, ...args);
     }
@@ -392,7 +426,12 @@ export class DoorTracker {
     _noteBotOpened(block) {
         if (!block || !isCloseablePassage(block)) return;
         if (block._properties?.open === true) return;
-        this._startTracking(normalizeDoorPos(block), block._properties?.facing);
+        this._startTracking(
+            normalizeDoorPos(block),
+            block._properties?.facing,
+            this.now(),
+            { openObserved: false }
+        );
     }
 
     /**
@@ -401,6 +440,8 @@ export class DoorTracker {
     _handleSwing(entity) {
         const owner = this.getOwnerEntity();
         if (!owner || !entity || entity.id !== owner.id) return;
+        const now = this.now();
+        this._lastOwnerSwingAt = now;
 
         let target = null;
         try {
@@ -418,7 +459,7 @@ export class DoorTracker {
             key,
             doorPos,
             facing: target._properties?.facing,
-            at: Date.now()
+            at: now
         });
     }
 
@@ -431,11 +472,16 @@ export class DoorTracker {
 
         const doorPos = normalizeDoorPos(newBlock);
         const key = posKey(doorPos);
-        const now = Date.now();
+        const now = this.now();
         const pending = this._pending.find((p) => p.key === key && now - p.at <= SWING_MATCH_MS);
         if (pending) {
             this._pending = this._pending.filter((p) => p.key !== key);
-            this._startTracking(doorPos, newBlock._properties?.facing ?? pending.facing, now);
+            this._startTracking(
+                doorPos,
+                newBlock._properties?.facing ?? pending.facing,
+                now,
+                { openObserved: true }
+            );
             return;
         }
 
@@ -447,25 +493,43 @@ export class DoorTracker {
             owner.position.x - (doorPos.x + 0.5),
             owner.position.z - (doorPos.z + 0.5)
         );
-        if (ownerHoriz > OWNER_NEAR_DOOR_FOR_TRACK) return;
+        const ownerAtPassage = ownerHoriz <= APPROACH_DISTANCE;
+        const recentOwnerSwing = now - this._lastOwnerSwingAt <= SWING_MATCH_MS;
+        if (!ownerAtPassage && (!recentOwnerSwing || ownerHoriz > OWNER_NEAR_DOOR_FOR_TRACK)) return;
 
-        this._startTracking(doorPos, newBlock._properties?.facing, now);
+        this._startTracking(doorPos, newBlock._properties?.facing, now, { openObserved: true });
     }
 
     /**
      * @param {{ x: number, y: number, z: number }} doorPos
      * @param {string|undefined} facing
      * @param {number} [openedAt]
+     * @param {{ openObserved?: boolean }} [options]
      */
-    _startTracking(doorPos, facing, openedAt = Date.now()) {
+    _startTracking(doorPos, facing, openedAt = this.now(), options = {}) {
         const key = posKey(doorPos);
-        if (this._tracked.some((t) => t.key === key)) return;
+        const existing = this._tracked.find((t) => t.key === key);
+        if (existing) {
+            if (!existing.facing && facing) {
+                existing.facing = facing;
+                const botPos = this.bot.entity?.position;
+                existing.approachSide = botPos ? doorSide(botPos, doorPos, facing) || null : null;
+            }
+            if (options.openObserved) existing.openObserved = true;
+            return;
+        }
+
+        const botPos = this.bot.entity?.position;
+        const approachSide = botPos ? doorSide(botPos, doorPos, facing) : null;
         this._tracked.push({
             key,
             doorPos,
             facing,
-            approachSide: null,
-            openedAt
+            approachSide: approachSide || null,
+            openedAt,
+            openObserved: options.openObserved === true,
+            closeRequestedAt: null,
+            retryCloseAt: 0
         });
     }
 
@@ -488,11 +552,13 @@ export class DoorTracker {
             if (!current || !isCloseablePassage(current) || current._properties?.open !== true) {
                 return;
             }
+            tracked.closeRequestedAt = this.now();
             await this.bot.activateBlock(current);
         } catch (err) {
+            tracked.closeRequestedAt = null;
+            tracked.retryCloseAt = this.now() + CLOSE_RETRY_MS;
             console.warn('[companion] door close failed:', err?.message || err);
         } finally {
-            this._forget(tracked.key);
             this._closing = false;
         }
     }
