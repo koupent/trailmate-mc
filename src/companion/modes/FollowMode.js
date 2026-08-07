@@ -17,6 +17,7 @@ import {
     wouldPathPassNearPlayer
 } from '../movement/playerPathClearance.js';
 import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
+import { hasLineOfSight } from '../../world/lineOfSight.js';
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -38,6 +39,8 @@ export class FollowMode extends Mode {
         this._lastOwnerPos = null;
         /** @type {string|null} */
         this._lastOwnerDim = null;
+        /** Last owner position directly reachable before an enclosure blocked follow. */
+        this._lastReachableOwnerPos = null;
         /** True after reaching last-known pos while owner is still missing. */
         this._waitingAtLastKnown = false;
     }
@@ -88,6 +91,13 @@ export class FollowMode extends Mode {
         }
 
         this._rememberOwner(ctx, owner);
+        if (hasLineOfSight(bot, owner)) {
+            this._lastReachableOwnerPos = {
+                x: owner.position.x,
+                y: owner.position.y,
+                z: owner.position.z
+            };
+        }
         this._waitingAtLastKnown = false;
 
         const followMinDistance = config.follow_min_distance ?? DEFAULT_FOLLOW_MIN_DISTANCE;
@@ -118,13 +128,15 @@ export class FollowMode extends Mode {
 
             const anchor = computeTrailAnchor(owner, followMinDistance);
             ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE, {
-                endpointVisibilityTarget: owner
+                endpointVisibilityTarget: owner,
+                unreachableFallbackPosition: this._lastReachableOwnerPos
             });
             return;
         }
 
         ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE, {
-            endpointVisibilityTarget: owner
+            endpointVisibilityTarget: owner,
+            unreachableFallbackPosition: this._lastReachableOwnerPos
         });
     }
 
@@ -141,6 +153,7 @@ export class FollowMode extends Mode {
     _clearLastKnown() {
         this._lastOwnerPos = null;
         this._lastOwnerDim = null;
+        this._lastReachableOwnerPos = null;
         this._waitingAtLastKnown = false;
     }
 

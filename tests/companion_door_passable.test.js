@@ -139,7 +139,7 @@ describe('configureDoorAwareMovements', () => {
         assert.deepEqual(result.shapes, [[0.8125, 0, 0, 1, 1, 1]]);
     });
 
-    it('preserves explicit no-door mode for closest-reachable fallback paths', () => {
+    it('preserves explicit no-door mode for last-reachable fallback paths', () => {
         const movements = makeMovementsStub({ name: 'cobblestone' });
         movements._trailmateDisableDoorOpening = true;
 
