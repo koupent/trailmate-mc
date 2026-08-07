@@ -3,9 +3,11 @@ import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import {
     applyOwnerWorkRetreat,
+    getDeferringPlayerEntities,
     isBotInAnyPlayerWorkFov,
     wouldEnterOwnerWorkFov
 } from '../src/companion/ownerWorkMovement.js';
+import { isBotInOwnerFov } from '../src/companion/followPosition.js';
 import {
     OWNER_WORK_PHASES,
     seedPlayerWorkPhase
@@ -104,10 +106,95 @@ describe('ownerWorkMovement', () => {
     });
 
     it('retreats from a non-owner working player', () => {
-        const ctx = makeCtx();
+        const ctx = makeCtx({
+            bot: {
+                entity: { id: 1, position: { x: 8, y: 64, z: -4 } },
+                players: makeCtx().bot.players,
+                entities: makeCtx().bot.entities
+            }
+        });
         seedPlayerWorkPhase(ctx, 42, OWNER_WORK_PHASES.deferring);
         assert.equal(applyOwnerWorkRetreat(ctx), true);
         assert.ok(ctx.movement.goCalls.length >= 1 || ctx.movement.stopCalls >= 1);
+    });
+
+    it('does not approach an unrelated equipped player when already clear of their view', () => {
+        const ctx = makeCtx({
+            bot: {
+                entity: { id: 1, position: { x: 0, y: 64, z: 6 } },
+                players: makeCtx().bot.players,
+                entities: makeCtx().bot.entities
+            }
+        });
+        seedPlayerWorkPhase(ctx, 42, OWNER_WORK_PHASES.deferring);
+
+        assert.equal(applyOwnerWorkRetreat(ctx), false);
+        assert.equal(ctx.movement.goCalls.length, 0);
+        assert.equal(ctx.movement.stopCalls, 0);
+    });
+
+    it('keeps a nearby out-of-view anchor while equipment remains held', () => {
+        const ctx = makeCtx({
+            bot: {
+                entity: { id: 1, position: { x: 0, y: 64, z: 8 } },
+                players: makeCtx().bot.players,
+                entities: makeCtx().bot.entities
+            }
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+
+        assert.equal(applyOwnerWorkRetreat(ctx), true);
+        assert.equal(ctx.movement.goCalls.length, 1);
+        assert.equal(isBotInOwnerFov(ctx.ownerEntity, ctx.movement.goCalls[0], 100), false);
+    });
+
+    it('repositions when a turn brings the bot into the equipped player view', () => {
+        const owner = { id: 7, position: { x: 0, y: 64, z: 0 }, yaw: 0 };
+        const ctx = makeCtx({
+            ownerEntity: owner,
+            bot: {
+                entity: { id: 1, position: { x: 0, y: 64, z: 3 } },
+                players: { Steve: { entity: owner } },
+                entities: { 7: owner }
+            }
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        assert.equal(isBotInOwnerFov(owner, ctx.bot.entity.position, 100), false);
+
+        owner.yaw = Math.PI;
+        assert.equal(isBotInOwnerFov(owner, ctx.bot.entity.position, 100), true);
+        assert.equal(applyOwnerWorkRetreat(ctx), true);
+        assert.equal(ctx.movement.goCalls.length, 1);
+        assert.equal(isBotInOwnerFov(owner, ctx.movement.goCalls[0], 100), false);
+    });
+
+    it('chooses a retreat target outside every working player FOV', () => {
+        const owner = { id: 7, position: { x: 0, y: 64, z: 0 }, yaw: 0 };
+        const other = { id: 42, position: { x: 3, y: 64, z: 3 }, yaw: 0 };
+        const ctx = makeCtx({
+            ownerEntity: owner,
+            bot: {
+                entity: { id: 1, position: { x: 0, y: 64, z: -2 } },
+                players: {
+                    Steve: { entity: owner },
+                    Other: { entity: other }
+                },
+                entities: { 7: owner, 42: other }
+            }
+        });
+        seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        seedPlayerWorkPhase(ctx, 42, OWNER_WORK_PHASES.deferring);
+
+        assert.equal(applyOwnerWorkRetreat(ctx), true);
+        assert.equal(ctx.movement.goCalls.length, 1);
+        const target = ctx.movement.goCalls[0];
+        for (const worker of getDeferringPlayerEntities(ctx)) {
+            assert.equal(isBotInOwnerFov(worker, target, 100), false);
+            assert.ok(
+                Math.hypot(target.x - worker.position.x, target.z - worker.position.z) >= 3,
+                'target must clear the worker proximity radius'
+            );
+        }
     });
 
     it('retreats laterally when the bot is ahead in the mining lane', () => {

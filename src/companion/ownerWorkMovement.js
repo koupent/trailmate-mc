@@ -4,8 +4,7 @@ import {
 } from './ownerWorkTracker.js';
 import { isBotInOwnerFov } from './followPosition.js';
 import {
-    DEFAULT_FOLLOW_DISTANCE,
-    FOLLOW_GOAL_RANGE
+    DEFAULT_FOLLOW_DISTANCE
 } from './movement/followConstants.js';
 import { horizontalDistanceBetween } from './movement/followGeometry.js';
 import {
@@ -13,9 +12,13 @@ import {
     wouldPathPassNearPlayer
 } from './movement/playerPathClearance.js';
 import { notifyPathBlocked } from './movement/playerBlockNotify.js';
-import { computeWorkYieldTarget } from './movement/workYieldPosition.js';
+import {
+    computeSharedWorkYieldTarget,
+    isClearOfAllWorkers
+} from './movement/workYieldPosition.js';
 
 const DEFAULT_OWNER_WORK_FOV = 100;
+const WORK_POSITION_GOAL_RANGE = 0.5;
 
 function ownerWorkEnabled(ctx) {
     return ctx?.config?.owner_work?.enabled !== false;
@@ -39,42 +42,30 @@ export function resolvePlayerEntity(ctx, entityId) {
     return bot.entities?.[entityId] || null;
 }
 
-/**
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- */
+/** @param {import('./CompanionContext.js').CompanionContext} ctx */
 export function getDeferringPlayerEntities(ctx) {
     return getDeferringPlayerIds(ctx)
         .map((entityId) => resolvePlayerEntity(ctx, entityId))
         .filter(Boolean);
 }
 
-/**
- * True when the bot is inside any working player's FOV cone.
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- */
+/** Backward-compatible owner-named alias. */
 export function isBotInOwnerWorkFov(ctx) {
     return isBotInAnyPlayerWorkFov(ctx);
 }
 
-/**
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- */
+/** @param {import('./CompanionContext.js').CompanionContext} ctx */
 export function isBotInAnyPlayerWorkFov(ctx) {
     if (!isOwnerWorkDeferring(ctx)) return false;
     const botPos = ctx?.bot?.entity?.position;
     if (!botPos) return false;
     const fov = ownerWorkFovDegrees(ctx);
-    for (const player of getDeferringPlayerEntities(ctx)) {
-        if (player?.position && isBotInOwnerFov(player, botPos, fov)) return true;
-    }
-    return false;
+    return getDeferringPlayerEntities(ctx).some((player) => (
+        player?.position && isBotInOwnerFov(player, botPos, fov)
+    ));
 }
 
-/**
- * True when a world position lies inside any working player's FOV cone.
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- * @param {{ x: number, y: number, z: number }} pos
- */
+/** Backward-compatible owner-named alias. */
 export function isPositionInOwnerWorkFov(ctx, pos) {
     return isPositionInAnyPlayerWorkFov(ctx, pos);
 }
@@ -86,14 +77,13 @@ export function isPositionInOwnerWorkFov(ctx, pos) {
 export function isPositionInAnyPlayerWorkFov(ctx, pos) {
     if (!isOwnerWorkDeferring(ctx) || !pos) return false;
     const fov = ownerWorkFovDegrees(ctx);
-    for (const player of getDeferringPlayerEntities(ctx)) {
-        if (player?.position && isBotInOwnerFov(player, pos, fov)) return true;
-    }
-    return false;
+    return getDeferringPlayerEntities(ctx).some((player) => (
+        player?.position && isBotInOwnerFov(player, pos, fov)
+    ));
 }
 
 /**
- * True when pathing to `targetPos` during player work would enter a worker's FOV.
+ * True when pathing to `targetPos` would enter any active worker's FOV.
  * Items already within pickup magnet range are allowed.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} targetPos
@@ -106,14 +96,11 @@ export function wouldEnterOwnerWorkFov(ctx, targetPos, opts = {}) {
     if (isBotInAnyPlayerWorkFov(ctx)) return false;
 
     const fov = ownerWorkFovDegrees(ctx);
-    const withinPickupRange = opts.withinPickupRange;
     const botPos = ctx.bot?.entity?.position;
-
     for (const player of getDeferringPlayerEntities(ctx)) {
-        if (!player?.position) continue;
-        if (!isBotInOwnerFov(player, targetPos, fov)) continue;
-        if (withinPickupRange != null && withinPickupRange > 0 && botPos) {
-            if (distanceBetween(botPos, targetPos) <= withinPickupRange) continue;
+        if (!player?.position || !isBotInOwnerFov(player, targetPos, fov)) continue;
+        if (opts.withinPickupRange > 0 && botPos) {
+            if (distanceBetween(botPos, targetPos) <= opts.withinPickupRange) continue;
         }
         return true;
     }
@@ -127,85 +114,67 @@ function distanceBetween(a, b) {
 }
 
 /**
- * Pick the working player the bot should retreat from this tick.
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- */
-function pickRetreatWorker(ctx) {
-    const botPos = ctx?.bot?.entity?.position;
-    if (!botPos) return null;
-    const fov = ownerWorkFovDegrees(ctx);
-    let best = null;
-    let bestScore = Infinity;
-    for (const player of getDeferringPlayerEntities(ctx)) {
-        if (!player?.position) continue;
-        const dist = horizontalDistanceBetween(botPos, player.position);
-        const inFov = isBotInOwnerFov(player, botPos, fov);
-        const score = inFov ? dist : dist + 1000;
-        if (score < bestScore) {
-            bestScore = score;
-            best = player;
-        }
-    }
-    return best;
-}
-
-/**
- * Step aside from a working player's mining lane.
- * Yield target prefers a lateral FOV-out spot; if the only path crosses the
- * player and no lateral option exists, chat and stop until the way clears.
- * Returns true when movement was handled for this tick.
+ * Maintain a nearby position outside every equipped player's current view.
+ * The target is refreshed while equipment remains held so the companion keeps
+ * following instead of stopping at the first safe point.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
  */
 export function applyOwnerWorkRetreat(ctx) {
     if (!ownerWorkEnabled(ctx) || !isOwnerWorkDeferring(ctx)) return false;
 
-    const worker = pickRetreatWorker(ctx);
     const bot = ctx.bot;
-    if (!worker?.position || !bot?.entity) return false;
+    const workers = getDeferringPlayerEntities(ctx);
+    if (!bot?.entity || workers.length === 0) return false;
     if (ctx.movement?.isHeld) return false;
 
     const followDistance = ctx.config?.follow_distance ?? DEFAULT_FOLLOW_DISTANCE;
-    const fov = ownerWorkFovDegrees(ctx);
-    const inHorizFov = isBotInOwnerFov(worker, bot.entity.position, fov);
-    const horiz = horizontalDistanceBetween(bot.entity.position, worker.position);
+    const clearance = {
+        distance: followDistance,
+        fovDegrees: ownerWorkFovDegrees(ctx)
+    };
+    const isCurrentlyClear = isClearOfAllWorkers(workers, bot.entity.position, clearance);
+    const equippedOwnerId = ctx.ownerEntity?.id;
+    const ownerNeedsSafeFollow = equippedOwnerId != null
+        && workers.some((worker) => worker.id === equippedOwnerId);
 
-    const { target } = computeWorkYieldTarget(
-        worker,
-        bot.entity.position,
-        {
-            distance: followDistance,
-            fovDegrees: fov,
-            isPathBlocked: (pos) => wouldPathPassNearPlayer(ctx, pos)
-        }
-    );
+    // Other equipped players are avoidance constraints, not follow targets.
+    // If the bot is already clear of them, normal owner-follow movement may
+    // continue until one of their current view cones actually becomes relevant.
+    if (isCurrentlyClear && !ownerNeedsSafeFollow) return false;
+
+    const target = computeSharedWorkYieldTarget(workers, bot.entity.position, {
+        ...clearance,
+        isPathBlocked: (pos) => wouldPathPassNearPlayer(ctx, pos)
+    });
+    if (!target) {
+        notifyPathBlocked(ctx);
+        ctx.movement.stop();
+        return true;
+    }
+
+    if (
+        isCurrentlyClear
+        && horizontalDistanceBetween(bot.entity.position, target) <= WORK_POSITION_GOAL_RANGE
+    ) {
+        ctx.movement.stop();
+        return true;
+    }
 
     const directBlocked = wouldPathPassNearPlayer(ctx, target);
-
-    // Already clear of the cone and far enough — hold.
-    if (!inHorizFov && horiz >= followDistance) {
-        ctx.movement.stop();
-        return true;
-    }
-
-    const distToTarget = horizontalDistanceBetween(bot.entity.position, target);
-    if (!inHorizFov && distToTarget < FOLLOW_GOAL_RANGE) {
-        ctx.movement.stop();
-        return true;
-    }
-
-    // Already scraping the player — any pathfinder step will push them.
-    // Wait (and say so) until they create space; do not chase a lateral goal.
-    const tooCloseToMove = horiz <= PLAYER_PUSH_LANE;
-
-    // Never path through / scrape a player — stop and ask them to clear the way.
+    const tooCloseToMove = workers.some((worker) => (
+        horizontalDistanceBetween(bot.entity.position, worker.position) <= PLAYER_PUSH_LANE
+    ));
     if (directBlocked || tooCloseToMove) {
         notifyPathBlocked(ctx);
         ctx.movement.stop();
         return true;
     }
 
-    ctx.movement.goToward(target, FOLLOW_GOAL_RANGE, {
-        rejectIf: () => wouldPathPassNearPlayer(ctx, target)
+    ctx.movement.goToward(target, WORK_POSITION_GOAL_RANGE, {
+        rejectIf: () => (
+            wouldPathPassNearPlayer(ctx, target)
+            || !isClearOfAllWorkers(getDeferringPlayerEntities(ctx), target, clearance)
+        )
     });
     return true;
 }

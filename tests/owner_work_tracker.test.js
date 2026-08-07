@@ -1,30 +1,47 @@
+import { EventEmitter } from 'node:events';
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    attachOwnerWorkTracker,
+    getHeldItemName,
     isOwnerWorkDeferring,
-    notePlayerBlockBreakProgress,
+    isWorkItemName,
     OWNER_WORK_PHASES,
     seedPlayerWorkPhase,
     tickOwnerWork
 } from '../src/companion/ownerWorkTracker.js';
 
+function makePlayer(id, heldItem = null) {
+    return {
+        id,
+        type: 'player',
+        position: { x: 0, y: 64, z: 0 },
+        yaw: 0,
+        heldItem,
+        equipment: [heldItem]
+    };
+}
+
+function setHeldItem(player, item) {
+    player.heldItem = item;
+    player.equipment[0] = item;
+}
+
 function makeCtx(overrides = {}) {
-    const owner = { id: 7, type: 'player', position: { x: 0, y: 64, z: 0 } };
+    const owner = makePlayer(7);
+    const bot = Object.assign(new EventEmitter(), {
+        entity: { id: 1, type: 'player', position: { x: 0, y: 64, z: 3 } },
+        entities: { 7: owner },
+        players: { Steve: { entity: owner } }
+    });
     return {
         ownerEntity: owner,
-        bot: {
-            entity: { id: 1, position: { x: 0, y: 64, z: 0 } },
-            players: {
-                Steve: { entity: owner }
-            }
-        },
+        bot,
         config: {
             owner_work: {
                 enabled: true,
                 all_players: true,
-                fov_degrees: 100,
-                swing_idle_ms: 1000,
-                post_work_cooldown_ms: 4000
+                fov_degrees: 100
             }
         },
         playerWorkById: new Map(),
@@ -33,63 +50,119 @@ function makeCtx(overrides = {}) {
 }
 
 describe('ownerWorkTracker', () => {
-    it('starts idle', () => {
-        const ctx = makeCtx();
-        assert.equal(isOwnerWorkDeferring(ctx), false);
+    it('classifies weapons and work tools', () => {
+        for (const name of [
+            'diamond_sword',
+            'netherite_axe',
+            'iron_pickaxe',
+            'stone_shovel',
+            'wooden_hoe',
+            'bow',
+            'crossbow',
+            'trident',
+            'mace',
+            'shears'
+        ]) {
+            assert.equal(isWorkItemName(name), true, name);
+        }
     });
 
-    it('stays idle without block break progress', () => {
-        const ctx = makeCtx();
-        assert.equal(isOwnerWorkDeferring(ctx), false);
-        tickOwnerWork(ctx, 1_000_000);
-        assert.equal(isOwnerWorkDeferring(ctx), false);
+    it('does not classify ordinary held items as work equipment', () => {
+        for (const name of ['air', 'bread', 'torch', 'cobblestone', 'shield']) {
+            assert.equal(isWorkItemName(name), false, name);
+        }
     });
 
-    it('enters deferring on block break progress', () => {
-        const ctx = makeCtx();
-        notePlayerBlockBreakProgress(ctx, ctx.ownerEntity, 1_000_000);
-        assert.equal(isOwnerWorkDeferring(ctx), true);
+    it('reads held equipment from Mineflayer equipment slot zero', () => {
+        assert.equal(getHeldItemName({ equipment: [{ name: 'diamond_pickaxe' }] }), 'diamond_pickaxe');
     });
 
-    it('moves to cooldown after break idle, then back to idle', () => {
+    it('activates before any swing when the owner is holding a weapon', () => {
         const ctx = makeCtx();
-        const t0 = 1_000_000;
-        notePlayerBlockBreakProgress(ctx, ctx.ownerEntity, t0);
-        tickOwnerWork(ctx, t0 + 500);
-        assert.equal(isOwnerWorkDeferring(ctx), true);
+        setHeldItem(ctx.ownerEntity, { name: 'bow' });
 
-        tickOwnerWork(ctx, t0 + 1000);
-        assert.equal(isOwnerWorkDeferring(ctx), true);
+        tickOwnerWork(ctx);
 
-        tickOwnerWork(ctx, t0 + 1000 + 3999);
-        assert.equal(isOwnerWorkDeferring(ctx), true);
-
-        tickOwnerWork(ctx, t0 + 1000 + 4000);
-        assert.equal(isOwnerWorkDeferring(ctx), false);
-    });
-
-    it('stays deferring while block break progress continues', () => {
-        const ctx = makeCtx();
-        const t0 = 1_000_000;
-        notePlayerBlockBreakProgress(ctx, ctx.ownerEntity, t0);
-        notePlayerBlockBreakProgress(ctx, ctx.ownerEntity, t0 + 800);
-        tickOwnerWork(ctx, t0 + 1500);
-        assert.equal(isOwnerWorkDeferring(ctx), true);
-        tickOwnerWork(ctx, t0 + 800 + 1000);
+        assert.equal(ctx.playerWorkById.has(7), true);
         assert.equal(isOwnerWorkDeferring(ctx), true);
     });
 
-    it('does nothing when owner_work is disabled', () => {
+    it('tracks held work equipment from non-owner players by default', () => {
+        const ctx = makeCtx();
+        const other = makePlayer(42, { name: 'iron_pickaxe' });
+        ctx.bot.players.Other = { entity: other };
+        ctx.bot.entities[42] = other;
+
+        tickOwnerWork(ctx);
+
+        assert.equal(ctx.playerWorkById.has(42), true);
+    });
+
+    it('can retain owner-only behavior when all_players is disabled', () => {
         const ctx = makeCtx({
-            config: { owner_work: { enabled: false } }
+            config: { owner_work: { enabled: true, all_players: false, fov_degrees: 100 } }
         });
-        notePlayerBlockBreakProgress(ctx, ctx.ownerEntity, Date.now());
+        const other = makePlayer(42, { name: 'iron_pickaxe' });
+        ctx.bot.players.Other = { entity: other };
+
+        tickOwnerWork(ctx);
+
+        assert.equal(ctx.playerWorkById.has(42), false);
+    });
+
+    it('deactivates immediately after switching away from a work item', () => {
+        const ctx = makeCtx();
+        setHeldItem(ctx.ownerEntity, { name: 'diamond_sword' });
+        tickOwnerWork(ctx);
+        assert.equal(isOwnerWorkDeferring(ctx), true);
+
+        setHeldItem(ctx.ownerEntity, { name: 'bread' });
+        tickOwnerWork(ctx);
+
         assert.equal(isOwnerWorkDeferring(ctx), false);
     });
 
-    it('seedPlayerWorkPhase supports test fixtures', () => {
+    it('reacts immediately to remote-player equipment events', () => {
+        const ctx = makeCtx();
+        const other = makePlayer(42, { name: 'crossbow' });
+        ctx.bot.players.Other = { entity: other };
+        const dispose = attachOwnerWorkTracker(ctx);
+
+        ctx.bot.emit('entityEquip', other);
+        assert.equal(ctx.playerWorkById.has(42), true);
+
+        setHeldItem(other, null);
+        ctx.bot.emit('entityEquip', other);
+        dispose();
+        assert.equal(ctx.playerWorkById.has(42), false);
+    });
+
+    it('removes equipment state when a player unloads', () => {
+        const ctx = makeCtx();
+        setHeldItem(ctx.ownerEntity, { name: 'iron_shovel' });
+        tickOwnerWork(ctx);
+        ctx.bot.players = {};
+
+        tickOwnerWork(ctx);
+
+        assert.equal(isOwnerWorkDeferring(ctx), false);
+    });
+
+    it('clears state when owner_work is disabled', () => {
+        const ctx = makeCtx();
+        setHeldItem(ctx.ownerEntity, { name: 'iron_axe' });
+        tickOwnerWork(ctx);
+        ctx.config.owner_work.enabled = false;
+
+        tickOwnerWork(ctx);
+
+        assert.equal(isOwnerWorkDeferring(ctx), false);
+    });
+
+    it('seedPlayerWorkPhase supports movement and recovery fixtures', () => {
         const ctx = makeCtx();
         seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.deferring);
+        tickOwnerWork(ctx);
         assert.equal(isOwnerWorkDeferring(ctx), true);
         seedPlayerWorkPhase(ctx, 7, OWNER_WORK_PHASES.idle);
         assert.equal(isOwnerWorkDeferring(ctx), false);

@@ -1,10 +1,6 @@
 /**
- * Tracks player mining so movement stays out of their view.
- *
- * States per player: idle → deferring (while breaking blocks) → cooldown → idle
- *
- * Arm swings alone do NOT count as work — item drops (Q) also emit entitySwingArm.
- * Only blockBreakProgressObserved enters deferring.
+ * Tracks players who are holding a weapon or work tool. While a player keeps
+ * one equipped, follow movement stays outside that player's current view.
  */
 
 export const OWNER_WORK_PHASES = Object.freeze({
@@ -13,146 +9,144 @@ export const OWNER_WORK_PHASES = Object.freeze({
     cooldown: 'cooldown'
 });
 
-const DEFAULT_SWING_IDLE_MS = 1000;
-const DEFAULT_POST_WORK_COOLDOWN_MS = 4000;
+const EXACT_WORK_ITEMS = new Set([
+    'bow',
+    'crossbow',
+    'trident',
+    'mace',
+    'spear',
+    'shears'
+]);
+
+const WORK_ITEM_SUFFIXES = [
+    '_sword',
+    '_axe',
+    '_pickaxe',
+    '_shovel',
+    '_hoe'
+];
 
 /**
  * @typedef {{
  *   phase: 'idle'|'deferring'|'cooldown',
- *   until: number,
- *   lastBreakProgressAt: number
+ *   source?: 'equipment'|'fixture'
  * }} OwnerWorkState
  */
 
-/** @returns {OwnerWorkState} */
-export function createOwnerWorkState() {
-    return {
-        phase: OWNER_WORK_PHASES.idle,
-        until: 0,
-        lastBreakProgressAt: 0
-    };
+/**
+ * Weapons plus tools used for mining, digging, harvesting, or shearing.
+ * @param {string|null|undefined} itemName
+ */
+export function isWorkItemName(itemName) {
+    const name = String(itemName || '');
+    return EXACT_WORK_ITEMS.has(name) || WORK_ITEM_SUFFIXES.some((suffix) => name.endsWith(suffix));
+}
+
+/**
+ * @param {{ heldItem?: { name?: string }|null, equipment?: Array<{ name?: string }|null> }} entity
+ */
+export function getHeldItemName(entity) {
+    return entity?.heldItem?.name || entity?.equipment?.[0]?.name || null;
 }
 
 /** @param {import('./CompanionContext.js').CompanionContext} ctx */
 function getPlayerWorkMap(ctx) {
-    if (!ctx.playerWorkById) {
-        ctx.playerWorkById = new Map();
-    }
+    if (!ctx.playerWorkById) ctx.playerWorkById = new Map();
     return ctx.playerWorkById;
 }
 
 /**
  * @param {import('./CompanionContext.js').CompanionContext} ctx
- * @param {number} entityId
+ * @param {{ id?: number, type?: string, name?: string }} entity
  */
-function getOrCreatePlayerWork(ctx, entityId) {
-    const map = getPlayerWorkMap(ctx);
-    let state = map.get(entityId);
-    if (!state) {
-        state = createOwnerWorkState();
-        map.set(entityId, state);
-    }
-    return state;
+function shouldTrackPlayerEntity(ctx, entity) {
+    if (entity?.id == null || entity.id === ctx.bot?.entity?.id) return false;
+    if (ctx.config?.owner_work?.all_players === false) return entity.id === ctx.ownerEntity?.id;
+    if (entity.type === 'player' || entity.name === 'player') return true;
+    return Object.values(ctx.bot?.players || {}).some((player) => player?.entity?.id === entity.id);
 }
 
 /**
  * @param {import('./CompanionContext.js').CompanionContext} ctx
- * @param {{ id?: number, type?: string, name?: string }} entity
+ * @returns {Array<{ id: number, heldItem?: { name?: string }|null, equipment?: Array<{ name?: string }|null> }>}
  */
-function shouldTrackPlayerWork(ctx, entity) {
-    if (!entity?.id) return false;
+function getTrackedPlayerEntities(ctx) {
     const bot = ctx.bot;
-    if (bot?.entity?.id === entity.id) return false;
     if (ctx.config?.owner_work?.all_players === false) {
-        const owner = ctx.ownerEntity;
-        return Boolean(owner && entity.id === owner.id);
+        return ctx.ownerEntity ? [ctx.ownerEntity] : [];
     }
-    return isPlayerEntity(entity, bot);
+
+    const players = [];
+    const seen = new Set();
+    for (const player of Object.values(bot?.players || {})) {
+        const entity = player?.entity;
+        if (!shouldTrackPlayerEntity(ctx, entity) || seen.has(entity.id)) continue;
+        seen.add(entity.id);
+        players.push(entity);
+    }
+    return players;
 }
 
 /**
- * @param {{ id?: number, type?: string, name?: string }} entity
- * @param {import('mineflayer').Bot} [bot]
+ * Synchronize one player's active state from their main-hand equipment.
+ * @param {import('./CompanionContext.js').CompanionContext} ctx
+ * @param {{ id?: number, heldItem?: { name?: string }|null, equipment?: Array<{ name?: string }|null> }} entity
  */
-function isPlayerEntity(entity, bot) {
-    if (!entity) return false;
-    if (entity.type === 'player' || entity.name === 'player') return true;
-    if (!bot) return false;
-    for (const name of Object.keys(bot.players || {})) {
-        if (bot.players[name]?.entity?.id === entity.id) return true;
+export function syncPlayerWorkEquipment(ctx, entity) {
+    if (!shouldTrackPlayerEntity(ctx, entity)) return false;
+    const map = getPlayerWorkMap(ctx);
+    const active = isWorkItemName(getHeldItemName(entity));
+
+    if (active) {
+        const existing = map.get(entity.id);
+        if (existing?.source !== 'fixture') {
+            map.set(entity.id, {
+                phase: OWNER_WORK_PHASES.deferring,
+                source: 'equipment'
+            });
+        }
+        return true;
     }
+
+    if (map.get(entity.id)?.source === 'equipment') map.delete(entity.id);
     return false;
 }
 
 /**
- * Subscribe to block-break progress from players. Returns a dispose function.
+ * Equipment events make switching immediate; the regular tick remains the
+ * source of truth in case a player was already holding a tool when observed.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
  * @returns {() => void}
  */
 export function attachOwnerWorkTracker(ctx) {
-    const bot = ctx.bot;
-    const onBreakProgress = (_block, stage, entity) => {
+    const onEquip = (entity) => {
         if (ctx.config?.owner_work?.enabled === false) return;
-        if (!entity || stage < 0) return;
-        if (!shouldTrackPlayerWork(ctx, entity)) return;
-        notePlayerBlockBreakProgress(ctx, entity);
+        syncPlayerWorkEquipment(ctx, entity);
     };
 
-    bot.on('blockBreakProgressObserved', onBreakProgress);
-    return () => {
-        bot.off('blockBreakProgressObserved', onBreakProgress);
-    };
+    ctx.bot.on('entityEquip', onEquip);
+    return () => ctx.bot.off('entityEquip', onEquip);
 }
 
 /**
- * Definite mining / digging — enters deferring.
+ * Refresh active players from their currently held equipment.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
- * @param {{ id: number }} entity
- * @param {number} [now]
  */
-export function notePlayerBlockBreakProgress(ctx, entity, now = Date.now()) {
-    if (ctx.config?.owner_work?.enabled === false) return;
-    if (!shouldTrackPlayerWork(ctx, entity)) return;
-    if (!entity?.id) return;
-    const state = getOrCreatePlayerWork(ctx, entity.id);
-    state.lastBreakProgressAt = now;
-    state.phase = OWNER_WORK_PHASES.deferring;
-    state.until = 0;
-}
-
-/**
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- * @param {number} [now]
- */
-export function tickOwnerWork(ctx, now = Date.now()) {
-    const cfg = ctx.config?.owner_work || {};
+export function tickOwnerWork(ctx) {
     const map = getPlayerWorkMap(ctx);
-
-    if (cfg.enabled === false) {
+    if (ctx.config?.owner_work?.enabled === false) {
         map.clear();
         return;
     }
 
-    const swingIdleMs = cfg.swing_idle_ms ?? DEFAULT_SWING_IDLE_MS;
-    const cooldownMs = cfg.post_work_cooldown_ms ?? DEFAULT_POST_WORK_COOLDOWN_MS;
+    const observed = new Set();
+    for (const entity of getTrackedPlayerEntities(ctx)) {
+        observed.add(entity.id);
+        syncPlayerWorkEquipment(ctx, entity);
+    }
 
     for (const [entityId, state] of map) {
-        if (state.phase === OWNER_WORK_PHASES.deferring) {
-            if (state.lastBreakProgressAt > 0 && now - state.lastBreakProgressAt >= swingIdleMs) {
-                state.phase = OWNER_WORK_PHASES.cooldown;
-                state.until = now + cooldownMs;
-            }
-            continue;
-        }
-
-        if (state.phase === OWNER_WORK_PHASES.cooldown) {
-            if (now >= state.until) {
-                map.delete(entityId);
-            }
-            continue;
-        }
-
-        map.delete(entityId);
+        if (state.source === 'equipment' && !observed.has(entityId)) map.delete(entityId);
     }
 }
 
@@ -172,31 +166,21 @@ export function getDeferringPlayerIds(ctx) {
     return ids;
 }
 
-/**
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- */
+/** @param {import('./CompanionContext.js').CompanionContext} ctx */
 export function isOwnerWorkDeferring(ctx) {
     return getDeferringPlayerIds(ctx).length > 0;
 }
 
 /**
+ * Test-fixture helper retained for movement and recovery scenarios.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
  * @param {number} entityId
  * @param {'idle'|'deferring'|'cooldown'} phase
- * @param {number} [now]
  */
-export function seedPlayerWorkPhase(ctx, entityId, phase, now = Date.now()) {
+export function seedPlayerWorkPhase(ctx, entityId, phase) {
     if (phase === OWNER_WORK_PHASES.idle) {
         ctx.playerWorkById?.delete(entityId);
         return;
     }
-    const state = getOrCreatePlayerWork(ctx, entityId);
-    state.phase = phase;
-    state.lastBreakProgressAt = phase === OWNER_WORK_PHASES.deferring ? now : 0;
-    if (phase === OWNER_WORK_PHASES.cooldown) {
-        const cooldownMs = ctx.config?.owner_work?.post_work_cooldown_ms ?? DEFAULT_POST_WORK_COOLDOWN_MS;
-        state.until = now + cooldownMs;
-    } else {
-        state.until = 0;
-    }
+    getPlayerWorkMap(ctx).set(entityId, { phase, source: 'fixture' });
 }

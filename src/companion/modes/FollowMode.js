@@ -25,8 +25,8 @@ import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
  * When the owner entity is unloaded, walk toward the last known position;
  * after arriving, wait in place until the entity reappears.
  *
- * While the owner is mining/placing (ownerWork deferring/cooldown), path to a
- * behind-the-owner anchor so the companion stays out of the owner's view.
+ * While nearby players hold weapons or work tools, maintain a shared safe
+ * position outside every equipped player's view and proximity.
  */
 export class FollowMode extends Mode {
     constructor() {
