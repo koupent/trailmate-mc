@@ -235,11 +235,12 @@ npx tsx src/simulator/server.ts
 | `nearby_loot.grace_ms` | 拾い開始直後の出現待ち | `2500` |
 | `nearby_loot.give_suppress_ms` | 全回収・余剰受け渡し後に再拾いしない時間 | `12000` |
 | `torch_light_threshold` | この明るさ以下で松明を置く（近くの松明と日光から推定）。上げるほど松明が増える | `7` |
-| `item_share.enabled` | 余剰アイテムをオーナーへ定期的に渡す | `true` |
-| `item_share.interval_ms` | 受け渡し判定の間隔 | `60000` |
+| `item_share.enabled` | オーナーがBot前方に置いたチェストへ余剰アイテムを収納する | `true` |
 | `item_share.keep_torch_stacks` | 手元に残す松明のスタック数 | `3` |
 | `item_share.keep_food_stacks` | 手元に残す食料のスタック数 | `3` |
-| `item_share.keep_equipment_sets` | 装備部位ごとに残すセット数（装備中含む） | `3` |
+| `item_share.keep_weapon_stacks` | 装備中の武器とは別に残す予備武器のスタック数 | `3` |
+| `item_share.keep_bow_stacks` | 遠距離戦闘用に残す弓のスタック数 | `1` |
+| `item_share.keep_arrow_stacks` | 遠距離戦闘用に残す矢のスタック数 | `1` |
 
 挙動の要点:
 
@@ -250,7 +251,7 @@ npx tsx src/simulator/server.ts
 5. ネザー / エンドなど**別ワールド種別**への自動ポータル移動はしません。同じワールド種別に戻った時点で死亡復帰を続けます。
 6. 通常の `nearby_loot` は `awareness_radius` 内のドロップを拾い続けます。Recoveryでは墓破壊前の既存IDを除外し、破壊直後の短い取得期間で確定した墓由来IDだけを優先します。無関係なドロップはRecoveryを妨げず、通常収集へ戻った後に扱います。
 7. オーナーが採掘・設置などで腕を振っている間は視界外（後方）へ退避し、作業終了後も `post_work_cooldown_ms` の間は戻らず通常回収 interrupt も止めます。振り向いただけでは退避しません。死亡復帰・墓回収中は例外で回収を続けます。全回収・余剰受け渡し直後は `give_suppress_ms` の間拾いません。
-8. `item_share` はロック済みオーナーが近く、戦闘・回収中でないときに余剰を渡します。松明・食料は各指定スタック、装備は部位ごとに性能上位の指定セット数を残し、それ以外を渡します。チャットの「全回収」は従来どおり全アイテムを渡します。
+8. `item_share` は、追従中のロック済みオーナーがBotの前方にチェストを置いたとき、そのチェストへ余剰を収納します。現在装備中の防具・盾・武器、予備武器3スタック、食料3スタック、松明3スタック（および遠距離戦闘用の矢）は残します。チャットの「全回収」は従来どおり全アイテムをプレイヤーへ渡します。
 
 **秘密情報（`.env`、実 `viaproxy.yml`、`saves.json`）はコミットしないでください。**
 

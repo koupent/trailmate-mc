@@ -86,10 +86,15 @@ export type OwnerWorkConfig = {
 
 export type ItemShareConfig = {
   enabled: boolean;
+  /** @deprecated Transfers are triggered by an owner-placed chest. */
   interval_ms: number;
   keep_torch_stacks: number;
   keep_food_stacks: number;
+  keep_weapon_stacks: number;
+  /** @deprecated Chest handoff keeps only currently worn armor. */
   keep_equipment_sets: number;
+  keep_bow_stacks: number;
+  keep_arrow_stacks: number;
 };
 
 export type CompanionConfig = {
@@ -167,7 +172,10 @@ const DEFAULT_COMPANION: CompanionConfig = {
     interval_ms: 60000,
     keep_torch_stacks: 3,
     keep_food_stacks: 3,
-    keep_equipment_sets: 3
+    keep_weapon_stacks: 3,
+    keep_equipment_sets: 3,
+    keep_bow_stacks: 1,
+    keep_arrow_stacks: 1
   },
   reflexes: {
     self_defense: true,
