@@ -44,9 +44,7 @@
       "enabled": true,
       "keep_torch_stacks": 3,
       "keep_food_stacks": 3,
-      "keep_weapon_stacks": 3,
-      "keep_bow_stacks": 1,
-      "keep_arrow_stacks": 1
+      "keep_weapon_stacks": 3
     },
     "reflexes": {
       "self_defense": true,

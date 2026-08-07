@@ -30,9 +30,7 @@ export const DEFAULT_CHEST_TRANSFER_CONFIG = {
     front_dot_min: 0.25,
     keep_torch_stacks: DEFAULT_RETENTION.keep_torch_stacks,
     keep_food_stacks: DEFAULT_RETENTION.keep_food_stacks,
-    keep_weapon_stacks: DEFAULT_RETENTION.keep_weapon_stacks,
-    keep_bow_stacks: DEFAULT_RETENTION.keep_bow_stacks,
-    keep_arrow_stacks: DEFAULT_RETENTION.keep_arrow_stacks
+    keep_weapon_stacks: DEFAULT_RETENTION.keep_weapon_stacks
 };
 
 /** @param {object} [config] */

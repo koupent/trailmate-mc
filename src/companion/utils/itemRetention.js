@@ -9,9 +9,7 @@ export const DEFAULT_RETENTION = {
     keep_torch_stacks: 3,
     keep_food_stacks: 3,
     keep_equipment_sets: 3,
-    keep_weapon_stacks: 3,
-    keep_bow_stacks: 1,
-    keep_arrow_stacks: 1
+    keep_weapon_stacks: 3
 };
 
 const TIER_SCORE = {
@@ -58,16 +56,6 @@ export function isTorch(name) {
     return name === 'torch' || name === 'soul_torch';
 }
 
-export function isBowWeapon(name) {
-    const n = String(name || '');
-    return n === 'bow' || n === 'crossbow';
-}
-
-export function isArrowAmmo(name) {
-    const n = String(name || '');
-    return n === 'arrow' || n === 'spectral_arrow' || n.endsWith('_arrow');
-}
-
 /**
  * @param {string} name
  * @param {Record<string, { foodPoints?: number, saturation?: number }>} foodsByName
@@ -92,7 +80,6 @@ export function equipmentGroup(name) {
     if (n.includes('boots')) return 'boots';
     if (n.includes('sword')) return 'weapon';
     if (n.includes('axe') && !n.includes('pickaxe')) return 'weapon';
-    if (isBowWeapon(n)) return 'weapon';
     if (n === 'trident' || n === 'mace') return 'weapon';
     return null;
 }
@@ -132,6 +119,78 @@ function compareFoodDesc(a, b, foodsByName) {
     const points = (fb.foodPoints || 0) - (fa.foodPoints || 0);
     if (points !== 0) return points;
     return (fb.saturation || 0) - (fa.saturation || 0);
+}
+
+const COMMON_STACK_RETENTION_RULES = Object.freeze([
+    {
+        id: 'torch',
+        limitKey: 'keep_torch_stacks',
+        matches: (stack) => isTorch(stack.name),
+        compare: (a, b) => b.count - a.count
+    },
+    {
+        id: 'food',
+        limitKey: 'keep_food_stacks',
+        matches: (stack, context) => isKeepableFood(
+            stack.name,
+            context.foodsByName,
+            context.bannedFood
+        ),
+        compare: (a, b, context) => compareFoodDesc(a, b, context.foodsByName)
+    }
+]);
+
+/**
+ * Chest retention is intentionally data-driven. Adding or removing a retained
+ * inventory category should only require editing this list and its config key.
+ */
+export const CHEST_RETENTION_RULES = Object.freeze([
+    ...COMMON_STACK_RETENTION_RULES,
+    {
+        id: 'melee_weapon',
+        limitKey: 'keep_weapon_stacks',
+        matches: (stack, context) => (
+            equipmentGroup(stack.name) === 'weapon'
+            && !context.keepSlots.has(stack.slot)
+        ),
+        compare: (a, b) => equipmentScore(b) - equipmentScore(a)
+    }
+]);
+
+/**
+ * @param {Array<{ slot: number }>} stacks
+ * @param {Partial<typeof DEFAULT_RETENTION>} policy
+ * @param {{ foodsByName: object, bannedFood: Set<string>, keepSlots: Set<number> }} context
+ * @param {ReadonlyArray<{
+ *   limitKey: keyof typeof DEFAULT_RETENTION,
+ *   matches: (stack: any, context: any) => boolean,
+ *   compare: (a: any, b: any, context: any) => number
+ * }>} rules
+ */
+function applyRetentionRules(stacks, policy, context, rules) {
+    for (const rule of rules) {
+        const configured = policy[rule.limitKey] ?? DEFAULT_RETENTION[rule.limitKey] ?? 0;
+        const keepCount = Math.max(0, Math.trunc(Number(configured) || 0));
+        keepTopStacks(
+            stacks.filter((stack) => rule.matches(stack, context)),
+            keepCount,
+            (a, b) => rule.compare(a, b, context),
+            context.keepSlots
+        );
+    }
+}
+
+/**
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ foodsByName?: object, bannedFood?: string[] }} options
+ * @param {Set<number>} keepSlots
+ */
+function createRetentionContext(bot, options, keepSlots) {
+    return {
+        foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
+        bannedFood: new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS),
+        keepSlots
+    };
 }
 
 /**
@@ -191,8 +250,7 @@ export function equippedItemSlots(bot) {
  *
  * Keep:
  * - currently equipped armor / shield / weapon
- * - three spare weapon stacks (with a bow retained when available)
- * - configured food, torch, and arrow stacks
+ * - configured spare melee weapon, food, and torch stacks
  * Everything else is deposited.
  *
  * @param {import('mineflayer').Bot} bot
@@ -200,48 +258,10 @@ export function equippedItemSlots(bot) {
  * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
  */
 export function listChestDepositStacks(bot, policy = {}, options = {}) {
-    const keepTorch = policy.keep_torch_stacks ?? DEFAULT_RETENTION.keep_torch_stacks;
-    const keepFood = policy.keep_food_stacks ?? DEFAULT_RETENTION.keep_food_stacks;
-    const keepWeapons = policy.keep_weapon_stacks ?? DEFAULT_RETENTION.keep_weapon_stacks;
-    const keepBow = policy.keep_bow_stacks ?? DEFAULT_RETENTION.keep_bow_stacks;
-    const keepArrow = policy.keep_arrow_stacks ?? DEFAULT_RETENTION.keep_arrow_stacks;
-    const foodsByName = options.foodsByName || bot?.registry?.foodsByName || {};
-    const bannedFood = new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS);
     const stacks = listOccupiedStacks(bot);
     const keepSlots = equippedItemSlots(bot);
-
-    keepTopStacks(
-        stacks.filter((s) => isTorch(s.name)),
-        keepTorch,
-        (a, b) => b.count - a.count,
-        keepSlots
-    );
-    keepTopStacks(
-        stacks.filter((s) => isKeepableFood(s.name, foodsByName, bannedFood)),
-        keepFood,
-        (a, b) => compareFoodDesc(a, b, foodsByName),
-        keepSlots
-    );
-
-    const spareWeapons = stacks
-        .filter((s) => equipmentGroup(s.name) === 'weapon' && !keepSlots.has(s.slot))
-        .sort((a, b) => equipmentScore(b) - equipmentScore(a));
-    const selectedWeapons = spareWeapons.slice(0, Math.max(0, keepWeapons));
-
-    // A bow has no attackDamage and would otherwise lose every tie to melee
-    // weapons. Keep ranged capability inside (not in addition to) the budget.
-    if (keepBow > 0 && selectedWeapons.length > 0 && !selectedWeapons.some((s) => isBowWeapon(s.name))) {
-        const bow = spareWeapons.find((s) => isBowWeapon(s.name));
-        if (bow) selectedWeapons[selectedWeapons.length - 1] = bow;
-    }
-    for (const stack of selectedWeapons) keepSlots.add(stack.slot);
-
-    keepTopStacks(
-        stacks.filter((s) => isArrowAmmo(s.name)),
-        keepArrow,
-        (a, b) => b.count - a.count,
-        keepSlots
-    );
+    const context = createRetentionContext(bot, options, keepSlots);
+    applyRetentionRules(stacks, policy, context, CHEST_RETENTION_RULES);
 
     return stacks
         .filter((s) => !keepSlots.has(s.slot))
@@ -263,29 +283,13 @@ export function listChestDepositStacks(bot, policy = {}, options = {}) {
  * @returns {Array<{ slot: number, type: number, count: number, name: string }>}
  */
 export function listGiveableStacks(bot, policy = {}, options = {}) {
-    const keepTorch = policy.keep_torch_stacks ?? DEFAULT_RETENTION.keep_torch_stacks;
-    const keepFood = policy.keep_food_stacks ?? DEFAULT_RETENTION.keep_food_stacks;
     const keepEquip = policy.keep_equipment_sets ?? DEFAULT_RETENTION.keep_equipment_sets;
-
-    const foodsByName = options.foodsByName || bot?.registry?.foodsByName || {};
-    const bannedFood = new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS);
 
     const stacks = listOccupiedStacks(bot);
     /** @type {Set<number>} */
     const keepSlots = new Set();
-
-    keepTopStacks(
-        stacks.filter((s) => isTorch(s.name)),
-        keepTorch,
-        (a, b) => b.count - a.count,
-        keepSlots
-    );
-    keepTopStacks(
-        stacks.filter((s) => isKeepableFood(s.name, foodsByName, bannedFood)),
-        keepFood,
-        (a, b) => compareFoodDesc(a, b, foodsByName),
-        keepSlots
-    );
+    const context = createRetentionContext(bot, options, keepSlots);
+    applyRetentionRules(stacks, policy, context, COMMON_STACK_RETENTION_RULES);
 
     /** @type {Record<string, typeof stacks>} */
     const byGroup = Object.fromEntries(EQUIPMENT_GROUPS.map((group) => [group, []]));
