@@ -106,3 +106,77 @@ export function computeWorkYieldTarget(worker, botPos, opts) {
     const target = best || computeOutOfSightAnchor(worker, distance);
     return { target, hasLateralAlternative };
 }
+
+/**
+ * Pick the nearest position that clears every active worker at once.
+ * Candidate rings cover cases where the lateral escape from one worker enters
+ * another worker's mining cone.
+ *
+ * @param {Array<{ position: { x: number, y: number, z: number }, yaw?: number }>} workers
+ * @param {{ x: number, y: number, z: number }} botPos
+ * @param {{
+ *   distance: number,
+ *   fovDegrees: number,
+ *   isPathBlocked?: (target: { x: number, y: number, z: number }) => boolean
+ * }} opts
+ * @returns {{ x: number, y: number, z: number }|null}
+ */
+export function computeSharedWorkYieldTarget(workers, botPos, opts) {
+    const activeWorkers = workers.filter((worker) => worker?.position);
+    if (activeWorkers.length === 0) return null;
+
+    const distance = Math.max(0.5, opts.distance);
+    const candidates = [];
+    const seen = new Set();
+    const addCandidate = (candidate) => {
+        const key = `${candidate.x.toFixed(3)}:${candidate.z.toFixed(3)}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        candidates.push(candidate);
+    };
+
+    for (const worker of activeWorkers) {
+        for (const candidate of buildWorkYieldCandidates(worker, botPos, distance)) {
+            addCandidate(candidate);
+        }
+
+        // Sample complete rings so overlapping work cones can escape to a
+        // shared clear sector instead of oscillating between two workers.
+        for (const multiplier of [1, 1.5, 2]) {
+            const radius = distance * multiplier;
+            for (let step = 0; step < 16; step += 1) {
+                const angle = (step / 16) * Math.PI * 2;
+                addCandidate({
+                    x: worker.position.x + Math.sin(angle) * radius,
+                    y: worker.position.y,
+                    z: worker.position.z + Math.cos(angle) * radius
+                });
+            }
+        }
+    }
+
+    let best = null;
+    let bestDistance = Infinity;
+    for (const candidate of candidates) {
+        if (!isClearOfAllWorkers(activeWorkers, candidate, opts)) continue;
+        if (opts.isPathBlocked?.(candidate)) continue;
+        const candidateDistance = horizontalDistanceBetween(botPos, candidate);
+        if (candidateDistance < bestDistance) {
+            bestDistance = candidateDistance;
+            best = candidate;
+        }
+    }
+    return best;
+}
+
+/**
+ * @param {Array<{ position: { x: number, z: number }, yaw?: number }>} workers
+ * @param {{ x: number, z: number }} position
+ * @param {{ distance: number, fovDegrees: number }} opts
+ */
+export function isClearOfAllWorkers(workers, position, opts) {
+    return workers.every((worker) => (
+        horizontalDistanceBetween(worker.position, position) >= opts.distance
+        && !isBotInOwnerFov(worker, position, opts.fovDegrees)
+    ));
+}

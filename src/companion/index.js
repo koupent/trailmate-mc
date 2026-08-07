@@ -39,9 +39,7 @@ const DEFAULT_CONFIG = {
     owner_work: {
         enabled: true,
         all_players: true,
-        fov_degrees: 100,
-        swing_idle_ms: 1000,
-        post_work_cooldown_ms: 4000
+        fov_degrees: 100
     },
     death_return: {
         enabled: true,
