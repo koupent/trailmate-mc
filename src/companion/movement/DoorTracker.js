@@ -1,5 +1,6 @@
 import Vec3 from 'vec3';
 import { isDoorPassableName } from '../blockProtection.js';
+import { hasLineOfSightFrom } from '../../world/lineOfSight.js';
 
 /** Max reach used when reading what the owner is looking at. */
 const OWNER_LOOK_RANGE = 5;
@@ -187,7 +188,11 @@ export class DoorTracker {
      *   getOwnerEntity?: () => import('prismarine-entity').Entity|null,
      *   getMode?: () => string|null,
      *   now?: () => number,
-     *   log?: (...args: any[]) => void
+     *   log?: (...args: any[]) => void,
+     *   isPathEndpointVisible?: (
+     *     endpoint: {x:number,y:number,z:number},
+     *     owner: import('prismarine-entity').Entity
+     *   ) => boolean
      * }} [options]
      */
     constructor(bot, options = {}) {
@@ -196,6 +201,12 @@ export class DoorTracker {
         this.getMode = options.getMode || (() => null);
         this.now = options.now || Date.now;
         this.log = options.log || console.log;
+        this.isPathEndpointVisible = options.isPathEndpointVisible
+            || ((endpoint, owner) => hasLineOfSightFrom(
+                this.bot.world,
+                { position: new Vec3(endpoint.x + 0.5, endpoint.y, endpoint.z + 0.5), height: 1.8 },
+                owner
+            ));
 
         /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, at: number }[]} */
         this._pending = [];
@@ -219,6 +230,7 @@ export class DoorTracker {
         this._lastOwnerSwingAt = 0;
         this._pathStatus = 'idle';
         this._successfulPathDoors = new Set();
+        this._pathBlockResult = 'blocked-incomplete-route';
 
         this._onSwing = (entity) => this._handleSwing(entity);
         this._onBlockUpdate = (oldBlock, newBlock) => this._handleBlockUpdate(oldBlock, newBlock);
@@ -360,8 +372,15 @@ export class DoorTracker {
         if (!isCloseablePassage(current) || current._properties?.open === true) return false;
         if (this._openSkipReason(current)) return false;
 
+        const source = options.source || 'recovery-front';
+        const blockResult = this._pathDoorBlockResult(posKey(lowerPos));
+        if (blockResult) {
+            this._logDoorInteraction(current, source, blockResult);
+            return false;
+        }
+
         this._opening = true;
-        this._activationSource = options.source || 'recovery-front';
+        this._activationSource = source;
         this._openCooldownUntil = now + OPEN_COOLDOWN_MS;
         this._recentOpens.set(posKey(lowerPos), now);
         try {
@@ -397,14 +416,39 @@ export class DoorTracker {
     }
 
     /**
-     * Authorize door actions only after A* has produced a complete route.
-     * Partial routes may end at an unrelated gate when the owner is unreachable.
-     * @param {{ status?: string, path?: Array<{ toPlace?: Array<{ x:number,y:number,z:number,useOne?:boolean }> }> }} result
+     * Authorize door actions only when A* produced a complete route whose endpoint
+     * can actually see the owner. GoalFollow can otherwise report success at a
+     * cell beside an enclosed owner and route through an unrelated passage.
+     * @param {{ status?: string, path?: Array<{
+     *   x?:number,y?:number,z?:number,
+     *   toPlace?: Array<{ x:number,y:number,z:number,useOne?:boolean }>
+     * }> }} result
      */
     _handlePathUpdate(result) {
         this._pathStatus = result?.status || 'unknown';
         this._successfulPathDoors.clear();
+        this._pathBlockResult = 'blocked-incomplete-route';
         if (this._pathStatus !== 'success' || !Array.isArray(result?.path)) return;
+
+        const endpoint = result.path.at(-1);
+        const owner = this.getOwnerEntity();
+        if (!owner || !Number.isFinite(endpoint?.x) || !Number.isFinite(endpoint?.y)
+            || !Number.isFinite(endpoint?.z)) {
+            this._pathBlockResult = 'blocked-unverified-route';
+            return;
+        }
+
+        try {
+            if (!this.isPathEndpointVisible(endpoint, owner)) {
+                this._pathBlockResult = 'blocked-obstructed-owner';
+                return;
+            }
+        } catch {
+            this._pathBlockResult = 'blocked-unverified-route';
+            return;
+        }
+
+        this._pathBlockResult = null;
 
         for (const node of result.path) {
             for (const action of node.toPlace || []) {
@@ -417,6 +461,14 @@ export class DoorTracker {
     _clearPathAuthorization() {
         this._pathStatus = 'invalidated';
         this._successfulPathDoors.clear();
+        this._pathBlockResult = 'blocked-incomplete-route';
+    }
+
+    /** @param {string} doorKey */
+    _pathDoorBlockResult(doorKey) {
+        if (this._pathBlockResult) return this._pathBlockResult;
+        if (!this._successfulPathDoors.has(doorKey)) return 'blocked-unverified-route';
+        return null;
     }
 
     /**
@@ -433,8 +485,9 @@ export class DoorTracker {
         const opening = passage && block._properties?.open !== true;
 
         if (source === 'pathfinder-route' && opening) {
-            if (this._pathStatus !== 'success' || !this._successfulPathDoors.has(doorKey)) {
-                this._logDoorInteraction(block, source, 'blocked-incomplete-route');
+            const blockResult = this._pathDoorBlockResult(doorKey);
+            if (blockResult) {
+                this._logDoorInteraction(block, source, blockResult);
                 return Promise.resolve();
             }
 
@@ -495,6 +548,7 @@ export class DoorTracker {
             mode: this.getMode(),
             pathfinderGoal: goal?.constructor?.name || null,
             pathStatus: this._pathStatus,
+            pathAuthorization: this._pathBlockResult || 'authorized',
             error: err?.message || (err ? String(err) : null)
         };
         this.log(`[companion] door-interaction ${JSON.stringify(event)}`);

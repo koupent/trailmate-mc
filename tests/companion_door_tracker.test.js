@@ -216,6 +216,7 @@ describe('DoorTracker integration', () => {
     let now;
     let activationFailures;
     let doorLogs;
+    let pathEndpointVisible;
 
     function makeBlock(name, pos, props) {
         return {
@@ -236,6 +237,9 @@ describe('DoorTracker integration', () => {
         bot.emit('path_update', {
             status,
             path: [{
+                x: owner.position.x,
+                y: owner.position.y,
+                z: owner.position.z,
                 toPlace: [{ ...doorPos, useOne: true }]
             }]
         });
@@ -260,6 +264,7 @@ describe('DoorTracker integration', () => {
         now = 10_000;
         activationFailures = 0;
         doorLogs = [];
+        pathEndpointVisible = true;
         owner = {
             id: 42,
             position: { x: 0, y: 64, z: 0, offset() { return this; } },
@@ -285,7 +290,8 @@ describe('DoorTracker integration', () => {
             getOwnerEntity: () => owner,
             getMode: () => 'follow',
             now: () => now,
-            log: (line) => doorLogs.push(line)
+            log: (line) => doorLogs.push(line),
+            isPathEndpointVisible: () => pathEndpointVisible
         });
     });
 
@@ -534,6 +540,41 @@ describe('DoorTracker integration', () => {
         assert.match(doorLogs[0], /"pathStatus":"partial"/);
     });
 
+    it('blocks a successful GoalFollow route that ends outside an enclosed owner', async () => {
+        const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
+            open: false,
+            facing: 'north'
+        });
+        bot.entity.position = { x: -327.5, y: 75, z: 226.5 };
+        owner.position = { x: -331.32, y: 75, z: 226.41 };
+        pathEndpointVisible = false;
+        authorizePathDoor(gate, 'success');
+
+        await bot.activateBlock(gate);
+
+        assert.equal(activations.length, 0);
+        assert.equal(tracker.trackedCount, 0);
+        assert.equal(doorLogs.length, 1);
+        assert.match(doorLogs[0], /"result":"blocked-obstructed-owner"/);
+        assert.match(doorLogs[0], /"pathStatus":"success"/);
+    });
+
+    it('also blocks recovery from opening an obstructed successful route', async () => {
+        const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
+            open: false,
+            facing: 'north'
+        });
+        pathEndpointVisible = false;
+        authorizePathDoor(gate, 'success');
+
+        const opened = await tracker.openPassageAt(gate.position, { source: 'recovery-front' });
+
+        assert.equal(opened, false);
+        assert.equal(activations.length, 0);
+        assert.match(doorLogs[0], /"source":"recovery-front"/);
+        assert.match(doorLogs[0], /"result":"blocked-obstructed-owner"/);
+    });
+
     it('keeps bot-opened tracking while the open state is delayed', async () => {
         const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
             open: false,
@@ -696,6 +737,8 @@ describe('DoorTracker integration', () => {
         });
         bot.entity.position = { x: 22.5, y: 63, z: 550.05 };
         owner.position = { x: 22.5, y: 63, z: 553.5 };
+        const door = blocks.get('22,63,551');
+        authorizePathDoor(door);
 
         const opened = await tracker.openPassageAt(
             { x: 22, y: 63, z: 551 },
