@@ -231,6 +231,16 @@ describe('DoorTracker integration', () => {
         return block;
     }
 
+    function authorizePathDoor(block, status = 'success') {
+        const doorPos = normalizeDoorPos(block);
+        bot.emit('path_update', {
+            status,
+            path: [{
+                toPlace: [{ ...doorPos, useOne: true }]
+            }]
+        });
+    }
+
     /**
      * Owner swing + look + closed→open update, then leave the door open in the world.
      * @returns {any} open block
@@ -477,6 +487,7 @@ describe('DoorTracker integration', () => {
             facing: 'north',
             half: 'lower'
         });
+        authorizePathDoor(closed);
         await bot.activateBlock(closed);
         assert.equal(tracker.trackedCount, 1);
         assert.equal(activations.length, 1);
@@ -505,12 +516,31 @@ describe('DoorTracker integration', () => {
         assert.equal(tracker.trackedCount, 0);
     });
 
+    it('blocks a door action from an incomplete path to an unreachable owner', async () => {
+        const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
+            open: false,
+            facing: 'north'
+        });
+        bot.entity.position = { x: -327.5, y: 75, z: 226.5 };
+        owner.position = { x: -331.28, y: 75, z: 230.75 };
+        authorizePathDoor(gate, 'partial');
+
+        await bot.activateBlock(gate);
+
+        assert.equal(activations.length, 0);
+        assert.equal(tracker.trackedCount, 0);
+        assert.equal(doorLogs.length, 1);
+        assert.match(doorLogs[0], /"result":"blocked-incomplete-route"/);
+        assert.match(doorLogs[0], /"pathStatus":"partial"/);
+    });
+
     it('keeps bot-opened tracking while the open state is delayed', async () => {
         const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
             open: false,
             facing: 'north',
             half: 'lower'
         });
+        authorizePathDoor(closed);
         await bot.activateBlock(closed);
 
         await tracker.tick();
@@ -595,6 +625,7 @@ describe('DoorTracker integration', () => {
             facing: 'north',
             half: 'lower'
         });
+        authorizePathDoor(closed);
         await bot.activateBlock(closed);
         setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
             open: true,
@@ -636,9 +667,12 @@ describe('DoorTracker integration', () => {
             facing: 'north',
             half: 'lower'
         });
+        authorizePathDoor(closed);
         await bot.activateBlock(closed);
         await bot.activateBlock(closed);
         assert.equal(tracker.trackedCount, 1);
+        assert.equal(activations.length, 1);
+        assert.match(doorLogs[1], /"result":"blocked-recent-toggle"/);
     });
 
     it('does not proactively open an unrelated gate when owner is unreachable', async () => {

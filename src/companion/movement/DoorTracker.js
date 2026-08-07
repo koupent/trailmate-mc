@@ -217,9 +217,13 @@ export class DoorTracker {
         /** @type {Map<string, number>} door key -> last activation time */
         this._recentOpens = new Map();
         this._lastOwnerSwingAt = 0;
+        this._pathStatus = 'idle';
+        this._successfulPathDoors = new Set();
 
         this._onSwing = (entity) => this._handleSwing(entity);
         this._onBlockUpdate = (oldBlock, newBlock) => this._handleBlockUpdate(oldBlock, newBlock);
+        this._onPathUpdate = (result) => this._handlePathUpdate(result);
+        this._onPathInvalidated = () => this._clearPathAuthorization();
         this._originalActivateBlock = typeof bot.activateBlock === 'function'
             ? bot.activateBlock.bind(bot)
             : null;
@@ -230,11 +234,17 @@ export class DoorTracker {
 
         bot.on('entitySwingArm', this._onSwing);
         bot.on('blockUpdate', this._onBlockUpdate);
+        bot.on('path_update', this._onPathUpdate);
+        bot.on('path_reset', this._onPathInvalidated);
+        bot.on('goal_updated', this._onPathInvalidated);
     }
 
     dispose() {
         this.bot.off('entitySwingArm', this._onSwing);
         this.bot.off('blockUpdate', this._onBlockUpdate);
+        this.bot.off('path_update', this._onPathUpdate);
+        this.bot.off('path_reset', this._onPathInvalidated);
+        this.bot.off('goal_updated', this._onPathInvalidated);
         if (this._originalActivateBlock) {
             this.bot.activateBlock = this._originalActivateBlock;
             this._originalActivateBlock = null;
@@ -387,6 +397,29 @@ export class DoorTracker {
     }
 
     /**
+     * Authorize door actions only after A* has produced a complete route.
+     * Partial routes may end at an unrelated gate when the owner is unreachable.
+     * @param {{ status?: string, path?: Array<{ toPlace?: Array<{ x:number,y:number,z:number,useOne?:boolean }> }> }} result
+     */
+    _handlePathUpdate(result) {
+        this._pathStatus = result?.status || 'unknown';
+        this._successfulPathDoors.clear();
+        if (this._pathStatus !== 'success' || !Array.isArray(result?.path)) return;
+
+        for (const node of result.path) {
+            for (const action of node.toPlace || []) {
+                if (action?.useOne !== true) continue;
+                this._successfulPathDoors.add(posKey(action));
+            }
+        }
+    }
+
+    _clearPathAuthorization() {
+        this._pathStatus = 'invalidated';
+        this._successfulPathDoors.clear();
+    }
+
+    /**
      * pathfinder opens doors via activateBlock; record closed passages we open.
      * @param {import('prismarine-block').Block} block
      * @param {...any} args
@@ -396,11 +429,27 @@ export class DoorTracker {
         const source = this._closing
             ? 'close-after-passage'
             : this._activationSource || 'pathfinder-route';
+        const doorKey = passage ? posKey(normalizeDoorPos(block)) : null;
+        const opening = passage && block._properties?.open !== true;
+
+        if (source === 'pathfinder-route' && opening) {
+            if (this._pathStatus !== 'success' || !this._successfulPathDoors.has(doorKey)) {
+                this._logDoorInteraction(block, source, 'blocked-incomplete-route');
+                return Promise.resolve();
+            }
+
+            const lastToggle = this._recentOpens.get(doorKey);
+            if (lastToggle != null && this.now() - lastToggle < REOPEN_GUARD_MS) {
+                this._logDoorInteraction(block, source, 'blocked-recent-toggle');
+                return Promise.resolve();
+            }
+        }
+
         if (!this._closing) {
             this._noteBotOpened(block);
         }
         if (passage) {
-            this._recentOpens.set(posKey(normalizeDoorPos(block)), this.now());
+            this._recentOpens.set(doorKey, this.now());
         }
 
         let activation;
@@ -428,7 +477,7 @@ export class DoorTracker {
      * Log enough context to reproduce unexpected door choices without polling.
      * @param {import('prismarine-block').Block} block
      * @param {string} source
-     * @param {'success'|'failed'} result
+     * @param {string} result
      * @param {unknown} [err]
      */
     _logDoorInteraction(block, source, result, err) {
@@ -445,6 +494,7 @@ export class DoorTracker {
             owner: compactPosition(owner?.position),
             mode: this.getMode(),
             pathfinderGoal: goal?.constructor?.name || null,
+            pathStatus: this._pathStatus,
             error: err?.message || (err ? String(err) : null)
         };
         this.log(`[companion] door-interaction ${JSON.stringify(event)}`);
