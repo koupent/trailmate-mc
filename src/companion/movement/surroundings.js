@@ -84,6 +84,9 @@ function describeFront(bot, cells, facing, baseX, feetY, baseZ) {
             side,
             rise: cell ? cell.rise : null,
             block: name,
+            position: obstacle?.position
+                ? { x: obstacle.position.x, y: obstacle.position.y, z: obstacle.position.z }
+                : { x: baseX + dx, y: feetY, z: baseZ + dz },
             solid: !openPassage && obstacle?.boundingBox === 'block'
         };
     });

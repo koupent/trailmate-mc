@@ -16,6 +16,8 @@ const TRACK_TTL_MS = 45000;
 const APPROACH_DISTANCE = 2.25;
 /** Require this clearance past the door before closing. */
 const CLEAR_DISTANCE = 1.35;
+/** Maximum sideways offset for a passage to lie between bot and owner. */
+const PASSAGE_CORRIDOR_HALF_WIDTH = 1.1;
 /** Avoid double-activate toggle (open then immediately close). */
 const OPEN_COOLDOWN_MS = 1200;
 /**
@@ -61,6 +63,16 @@ export function posKey(pos) {
     return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
 }
 
+/** @param {{ x: number, y: number, z: number }|null|undefined} pos */
+function compactPosition(pos) {
+    if (!pos) return null;
+    return {
+        x: Number(pos.x.toFixed(2)),
+        y: Number(pos.y.toFixed(2)),
+        z: Number(pos.z.toFixed(2))
+    };
+}
+
 /**
  * Which side of the door the position is on, using facing when available.
  * @param {{ x: number, z: number }} pos
@@ -92,6 +104,24 @@ export function isDoorBetween(botPos, ownerPos, doorPos, facing, clearDistance =
     const botSide = doorSide(botPos, doorPos, facing);
     const ownerSide = doorSide(ownerPos, doorPos, facing);
     if (botSide === 0 || ownerSide === 0 || botSide === ownerSide) return false;
+
+    const segmentX = ownerPos.x - botPos.x;
+    const segmentZ = ownerPos.z - botPos.z;
+    const segmentLengthSq = segmentX * segmentX + segmentZ * segmentZ;
+    if (segmentLengthSq === 0) return false;
+
+    const doorX = doorPos.x + 0.5;
+    const doorZ = doorPos.z + 0.5;
+    const projection = (
+        (doorX - botPos.x) * segmentX
+        + (doorZ - botPos.z) * segmentZ
+    ) / segmentLengthSq;
+    if (projection <= 0 || projection >= 1) return false;
+
+    const closestX = botPos.x + segmentX * projection;
+    const closestZ = botPos.z + segmentZ * projection;
+    const lateralOffset = Math.hypot(doorX - closestX, doorZ - closestZ);
+    if (lateralOffset > PASSAGE_CORRIDOR_HALF_WIDTH) return false;
 
     const ownerHoriz = Math.hypot(
         ownerPos.x - (doorPos.x + 0.5),
@@ -155,13 +185,17 @@ export class DoorTracker {
      * @param {import('mineflayer').Bot} bot
      * @param {{
      *   getOwnerEntity?: () => import('prismarine-entity').Entity|null,
-     *   now?: () => number
+     *   getMode?: () => string|null,
+     *   now?: () => number,
+     *   log?: (...args: any[]) => void
      * }} [options]
      */
     constructor(bot, options = {}) {
         this.bot = bot;
         this.getOwnerEntity = options.getOwnerEntity || (() => null);
+        this.getMode = options.getMode || (() => null);
         this.now = options.now || Date.now;
+        this.log = options.log || console.log;
 
         /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, at: number }[]} */
         this._pending = [];
@@ -178,6 +212,7 @@ export class DoorTracker {
         this._tracked = [];
         this._closing = false;
         this._opening = false;
+        this._activationSource = null;
         this._openCooldownUntil = 0;
         /** @type {Map<string, number>} door key -> last activation time */
         this._recentOpens = new Map();
@@ -257,8 +292,6 @@ export class DoorTracker {
 
         if (this._closing) return;
 
-        await this.openBlockingDoorIfNeeded();
-
         if (this._tracked.length === 0) return;
 
         const botPos = this.bot.entity?.position;
@@ -295,32 +328,32 @@ export class DoorTracker {
     }
 
     /**
-     * Open one closed door between the bot and owner. Shared entry point for recovery.
+     * Open the exact closed passage detected directly ahead by recovery.
+     * Normal movement leaves door selection to pathfinder's active route.
+     * @param {{ x: number, y: number, z: number }} doorPos
+     * @param {{ source?: string }} [options]
      * @returns {Promise<boolean>} true if an open was attempted
      */
-    async openBlockingDoorIfNeeded() {
+    async openPassageAt(doorPos, options = {}) {
         if (this._opening || this._closing) return false;
         const now = this.now();
         if (now < this._openCooldownUntil) return false;
-
-        const botPos = this.bot.entity?.position;
-        const owner = this.getOwnerEntity();
-        if (!botPos || !owner?.position) return false;
 
         for (const [key, at] of this._recentOpens) {
             if (now - at > REOPEN_GUARD_MS) this._recentOpens.delete(key);
         }
 
-        const door = this._findBlockingClosedDoor(botPos, owner.position);
-        if (!door) return false;
-
-        // Re-read right before activate to avoid toggling an already-open door.
-        const current = this._blockAt(door.position) || door;
+        const block = this._blockAt(doorPos);
+        if (!block || !isCloseablePassage(block)) return false;
+        const lowerPos = normalizeDoorPos(block);
+        const current = this._blockAt(lowerPos) || block;
         if (!isCloseablePassage(current) || current._properties?.open === true) return false;
+        if (this._openSkipReason(current)) return false;
 
         this._opening = true;
+        this._activationSource = options.source || 'recovery-front';
         this._openCooldownUntil = now + OPEN_COOLDOWN_MS;
-        this._recentOpens.set(posKey(current.position), now);
+        this._recentOpens.set(posKey(lowerPos), now);
         try {
             await this.bot.activateBlock(current);
             return true;
@@ -328,61 +361,9 @@ export class DoorTracker {
             console.warn('[companion] door open failed:', err?.message || err);
             return false;
         } finally {
+            this._activationSource = null;
             this._opening = false;
         }
-    }
-
-    /**
-     * @param {{ x: number, y: number, z: number }} botPos
-     * @param {{ x: number, y: number, z: number }} ownerPos
-     * @returns {import('prismarine-block').Block|null}
-     */
-    _findBlockingClosedDoor(botPos, ownerPos) {
-        const baseX = Math.floor(botPos.x);
-        const baseY = Math.floor(botPos.y);
-        const baseZ = Math.floor(botPos.z);
-        const towardX = ownerPos.x - botPos.x;
-        const towardZ = ownerPos.z - botPos.z;
-        const towardLen = Math.hypot(towardX, towardZ) || 1;
-        const ux = towardX / towardLen;
-        const uz = towardZ / towardLen;
-
-        /** @type {{ block: import('prismarine-block').Block, score: number }[]} */
-        const candidates = [];
-        for (let dx = -2; dx <= 2; dx++) {
-            for (let dz = -2; dz <= 2; dz++) {
-                if (dx === 0 && dz === 0) continue;
-                const block = this._blockAt({ x: baseX + dx, y: baseY, z: baseZ + dz });
-                if (!block || !isCloseablePassage(block)) continue;
-                if (block._properties?.open === true) continue;
-
-                // Prefer the lower half so activateBlock toggles the full door.
-                const lower = block._properties?.half === 'upper'
-                    ? this._blockAt({ x: block.position.x, y: block.position.y - 1, z: block.position.z })
-                    : block;
-                if (!lower || !isCloseablePassage(lower) || lower._properties?.open === true) continue;
-
-                const cx = lower.position.x + 0.5 - botPos.x;
-                const cz = lower.position.z + 0.5 - botPos.z;
-                const dist = Math.hypot(cx, cz);
-                if (dist > 2.6) continue;
-                const alignment = (cx * ux + cz * uz) / (dist || 1);
-                if (alignment < 0.15) continue;
-
-                if (this._openSkipReason(lower)) continue;
-
-                // Same room / threshold: door is toward the owner but they have not
-                // actually gone through it — do not open and let mobs in.
-                if (!isDoorBetween(botPos, ownerPos, lower.position, lower._properties?.facing)) {
-                    continue;
-                }
-
-                candidates.push({ block: lower, score: alignment * 2 - dist });
-            }
-        }
-
-        candidates.sort((a, b) => b.score - a.score);
-        return candidates[0]?.block || null;
     }
 
     /**
@@ -411,13 +392,62 @@ export class DoorTracker {
      * @param {...any} args
      */
     _wrappedActivateBlock(block, ...args) {
+        const passage = isCloseablePassage(block);
+        const source = this._closing
+            ? 'close-after-passage'
+            : this._activationSource || 'pathfinder-route';
         if (!this._closing) {
             this._noteBotOpened(block);
         }
-        if (isCloseablePassage(block)) {
+        if (passage) {
             this._recentOpens.set(posKey(normalizeDoorPos(block)), this.now());
         }
-        return this._originalActivateBlock(block, ...args);
+
+        let activation;
+        try {
+            activation = this._originalActivateBlock(block, ...args);
+        } catch (err) {
+            if (passage) this._logDoorInteraction(block, source, 'failed', err);
+            throw err;
+        }
+
+        if (!passage) return activation;
+        return Promise.resolve(activation).then(
+            (result) => {
+                this._logDoorInteraction(block, source, 'success');
+                return result;
+            },
+            (err) => {
+                this._logDoorInteraction(block, source, 'failed', err);
+                throw err;
+            }
+        );
+    }
+
+    /**
+     * Log enough context to reproduce unexpected door choices without polling.
+     * @param {import('prismarine-block').Block} block
+     * @param {string} source
+     * @param {'success'|'failed'} result
+     * @param {unknown} [err]
+     */
+    _logDoorInteraction(block, source, result, err) {
+        const owner = this.getOwnerEntity();
+        const goal = this.bot.pathfinder?.goal;
+        const event = {
+            at: this.now(),
+            source,
+            action: block._properties?.open === true ? 'close' : 'open',
+            result,
+            passage: block.name,
+            door: compactPosition(normalizeDoorPos(block)),
+            bot: compactPosition(this.bot.entity?.position),
+            owner: compactPosition(owner?.position),
+            mode: this.getMode(),
+            pathfinderGoal: goal?.constructor?.name || null,
+            error: err?.message || (err ? String(err) : null)
+        };
+        this.log(`[companion] door-interaction ${JSON.stringify(event)}`);
     }
 
     /**

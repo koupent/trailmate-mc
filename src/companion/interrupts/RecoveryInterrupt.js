@@ -85,8 +85,8 @@ export class RecoveryInterrupt {
         const ahead = around.front?.find((f) => f.side === 'ahead');
         // solid=true means a closed passage is still blocking the forward column.
         if (!ahead?.solid || !isCloseablePassage({ name: ahead.block })) return false;
-        if (typeof ctx.doors?.openBlockingDoorIfNeeded !== 'function') return false;
-        return ctx.doors.openBlockingDoorIfNeeded();
+        if (!ahead.position || typeof ctx.doors?.openPassageAt !== 'function') return false;
+        return ctx.doors.openPassageAt(ahead.position, { source: 'recovery-front' });
     }
 
     async _perform(ctx, plan) {
