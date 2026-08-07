@@ -58,6 +58,8 @@ describe('itemRetention helpers', () => {
         assert.equal(equipmentGroup('diamond_sword'), 'weapon');
         assert.equal(equipmentGroup('iron_axe'), 'weapon');
         assert.equal(equipmentGroup('iron_pickaxe'), null);
+        assert.equal(equipmentGroup('bow'), null);
+        assert.equal(equipmentGroup('crossbow'), null);
         assert.equal(equipmentGroup('cobblestone'), null);
     });
 
@@ -134,6 +136,20 @@ describe('listGiveableStacks', () => {
         });
         assert.ok(giveable.some((s) => s.name === 'golden_apple'));
         assert.equal(giveable.some((s) => s.name === 'bread'), false);
+    });
+
+    it('does not retain ranged weapons or ammunition', () => {
+        const bot = makeBot([
+            makeItem(9, 'bow'),
+            makeItem(10, 'crossbow'),
+            makeItem(11, 'arrow', 64),
+            makeItem(12, 'spectral_arrow', 16)
+        ]);
+
+        assert.deepEqual(
+            listGiveableStacks(bot).map((stack) => stack.name),
+            ['bow', 'crossbow', 'arrow', 'spectral_arrow']
+        );
     });
 });
 

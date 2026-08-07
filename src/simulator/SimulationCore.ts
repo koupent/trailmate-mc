@@ -344,12 +344,12 @@ function stepRecovery(state: SimulationState): SimulationDecision {
         status = observeRecoveryItemCollection(recoveryContext(state), state.now);
       }
     }
-    const hasWeapon = state.inventory.some((item) => /sword|axe|bow|crossbow|trident|mace/.test(item));
+    const hasWeapon = state.inventory.some((item) => /sword|axe|trident|mace/.test(item));
     const quietReady = Boolean(status?.captureComplete)
       && status!.remainingIds.length === 0
       && status!.quietForMs >= 300;
     if ((quietReady && hasWeapon) || status?.deadlineReached) {
-      state.equipped = state.inventory.find((item) => /sword|axe|bow|crossbow|trident|mace/.test(item)) || null;
+      state.equipped = state.inventory.find((item) => /sword|axe|trident|mace/.test(item)) || null;
       recovery.phase = 'done';
       recovery.active = false;
       state.transitions.push(`${state.tick}: アイテム回収 → 戦闘復帰可能`);

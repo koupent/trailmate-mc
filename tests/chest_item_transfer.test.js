@@ -46,6 +46,8 @@ describe('handoff chest retention', () => {
     it('classifies modern melee weapons as equipment', () => {
         assert.equal(equipmentGroup('trident'), 'weapon');
         assert.equal(equipmentGroup('mace'), 'weapon');
+        assert.equal(equipmentGroup('bow'), null);
+        assert.equal(equipmentGroup('crossbow'), null);
     });
 
     it('keeps equipped gear, three spare weapons, three foods and three torches', () => {
@@ -65,26 +67,42 @@ describe('handoff chest retention', () => {
             item(19, 'soul_torch', 64),
             item(20, 'torch', 16),
             item(21, 'iron_chestplate'),
-            item(22, 'cobblestone', 64)
+            item(22, 'cobblestone', 64),
+            item(23, 'crossbow'),
+            item(24, 'arrow', 64),
+            item(25, 'spectral_arrow', 16)
         ], 36);
 
         const deposit = listChestDepositStacks(bot, {
             keep_weapon_stacks: 3,
             keep_food_stacks: 3,
-            keep_torch_stacks: 3,
-            keep_bow_stacks: 1,
-            keep_arrow_stacks: 0
+            keep_torch_stacks: 3
         });
         const slots = deposit.map((stack) => stack.slot);
 
         assert.equal(slots.includes(5), false, 'worn armor stays equipped');
         assert.equal(slots.includes(36), false, 'held weapon stays equipped');
-        assert.equal([9, 10, 11, 12].filter((slot) => !slots.includes(slot)).length, 3);
-        assert.equal(slots.includes(11), false, 'bow remains within the three-weapon reserve');
+        assert.deepEqual([9, 10, 12].filter((slot) => slots.includes(slot)), []);
+        assert.equal(slots.includes(11), true, 'bow is deposited');
+        assert.equal(slots.includes(23), true, 'crossbow is deposited');
+        assert.equal(slots.includes(24), true, 'arrows are deposited');
+        assert.equal(slots.includes(25), true, 'special arrows are deposited');
         assert.equal(slots.includes(16), true, 'fourth food stack is deposited');
         assert.equal(slots.includes(20), true, 'fourth torch stack is deposited');
         assert.equal(slots.includes(21), true, 'unworn spare armor is deposited');
         assert.equal(slots.includes(22), true, 'ordinary blocks are deposited');
+    });
+
+    it('deposits a selected bow because ranged gear is not equipment', () => {
+        const bot = makeRetentionBot([
+            item(36, 'bow'),
+            item(9, 'arrow', 64)
+        ], 36);
+
+        assert.deepEqual(
+            listChestDepositStacks(bot).map((stack) => stack.name),
+            ['arrow', 'bow']
+        );
     });
 });
 
