@@ -3,10 +3,11 @@ import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import { suppressUnsafeFollowPath } from '../src/companion/movement/MovementController.js';
 
-function makeBot(position, blocked) {
+function makeBot(position, blocked, block = null) {
     return {
         entity: { position, height: 1.8 },
-        world: { raycast: () => (blocked ? { name: 'wall' } : null) }
+        world: { raycast: () => (blocked ? { name: 'wall' } : null) },
+        blockAt: () => block
     };
 }
 
@@ -74,6 +75,58 @@ describe('suppressUnsafeFollowPath', () => {
 
         const reason = suppressUnsafeFollowPath(
             makeBot(new Vec3(0, 64, 0), false),
+            result,
+            makeTarget(new Vec3(10, 64, 0))
+        );
+
+        assert.equal(reason, null);
+        assert.equal(result.path.length, 1);
+    });
+
+    it('rejects a successful route through an unrelated nearby gate', () => {
+        const gate = {
+            name: 'pale_oak_fence_gate',
+            position: new Vec3(5, 64, 5),
+            _properties: { open: false, facing: 'west' }
+        };
+        const result = {
+            status: 'success',
+            path: [{
+                x: 9.5,
+                y: 64,
+                z: 0.5,
+                toPlace: [{ x: 5, y: 64, z: 5, useOne: true }]
+            }]
+        };
+
+        const reason = suppressUnsafeFollowPath(
+            makeBot(new Vec3(0, 64, 0), false, gate),
+            result,
+            makeTarget(new Vec3(10, 64, 0))
+        );
+
+        assert.equal(reason, 'unrelated-passage-route');
+        assert.deepEqual(result.path, []);
+    });
+
+    it('keeps a successful route through a gate that separates bot and owner', () => {
+        const gate = {
+            name: 'pale_oak_fence_gate',
+            position: new Vec3(5, 64, 0),
+            _properties: { open: false, facing: 'west' }
+        };
+        const result = {
+            status: 'success',
+            path: [{
+                x: 9.5,
+                y: 64,
+                z: 0.5,
+                toPlace: [{ x: 5, y: 64, z: 0, useOne: true }]
+            }]
+        };
+
+        const reason = suppressUnsafeFollowPath(
+            makeBot(new Vec3(0, 64, 0), false, gate),
             result,
             makeTarget(new Vec3(10, 64, 0))
         );

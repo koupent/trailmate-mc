@@ -91,7 +91,10 @@ export class FollowMode extends Mode {
         }
 
         this._rememberOwner(ctx, owner);
-        if (hasLineOfSight(bot, owner)) {
+        // Seed the checkpoint when acquiring an already-visible owner. Once a
+        // route exists, MovementController advances it only after a successful
+        // path result; visibility alone must not move it through an enclosure.
+        if (!this._lastReachableOwnerPos && hasLineOfSight(bot, owner)) {
             this._lastReachableOwnerPos = {
                 x: owner.position.x,
                 y: owner.position.y,
@@ -116,6 +119,14 @@ export class FollowMode extends Mode {
         const horiz = horizontalDistanceBetween(botPos, owner.position);
 
         if (phase === 'near') {
+            // Only advance this checkpoint when the owner is actually nearby
+            // on the same floor. Sight alone can remain true through an
+            // enclosure that the bot cannot enter.
+            this._lastReachableOwnerPos = {
+                x: owner.position.x,
+                y: owner.position.y,
+                z: owner.position.z
+            };
             ctx.movement.stop();
             return;
         }
