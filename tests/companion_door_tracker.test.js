@@ -9,6 +9,7 @@ import {
     isCloseablePassage,
     isClosedToOpen,
     isDoorBetween,
+    isPassageRequiredForOwner,
     normalizeDoorPos,
     posKey
 } from '../src/companion/movement/DoorTracker.js';
@@ -172,6 +173,34 @@ describe('isDoorBetween', () => {
             false
         );
     });
+
+    it('rejects the reproduced sideways gate detour', () => {
+        assert.equal(
+            isPassageRequiredForOwner(
+                {
+                    position: { x: -329, y: 75, z: 226 },
+                    _properties: { facing: 'north' }
+                },
+                { x: -329.69, y: 75, z: 226.5 },
+                { x: -337.49, y: 76.5, z: 226.5 }
+            ),
+            false
+        );
+    });
+
+    it('accepts a passage with bot and owner clearly on opposite sides', () => {
+        assert.equal(
+            isPassageRequiredForOwner(
+                {
+                    position: { x: 22, y: 63, z: 551 },
+                    _properties: { facing: 'north', half: 'lower' }
+                },
+                { x: 22.5, y: 63, z: 550.05 },
+                { x: 22.5, y: 63, z: 553.5 }
+            ),
+            true
+        );
+    });
 });
 
 describe('RecoveryInterrupt door targeting', () => {
@@ -217,6 +246,7 @@ describe('DoorTracker integration', () => {
     let activationFailures;
     let doorLogs;
     let pathEndpointVisible;
+    let passageRequired;
 
     function makeBlock(name, pos, props) {
         return {
@@ -265,6 +295,7 @@ describe('DoorTracker integration', () => {
         activationFailures = 0;
         doorLogs = [];
         pathEndpointVisible = true;
+        passageRequired = true;
         owner = {
             id: 42,
             position: { x: 0, y: 64, z: 0, offset() { return this; } },
@@ -291,7 +322,8 @@ describe('DoorTracker integration', () => {
             getMode: () => 'follow',
             now: () => now,
             log: (line) => doorLogs.push(line),
-            isPathEndpointVisible: () => pathEndpointVisible
+            isPathEndpointVisible: () => pathEndpointVisible,
+            isPassageRequired: () => passageRequired
         });
     });
 
@@ -559,12 +591,12 @@ describe('DoorTracker integration', () => {
         assert.match(doorLogs[0], /"pathStatus":"success"/);
     });
 
-    it('also blocks recovery from opening an obstructed successful route', async () => {
+    it('blocks recovery when the passage does not separate bot and owner', async () => {
         const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
             open: false,
             facing: 'north'
         });
-        pathEndpointVisible = false;
+        passageRequired = false;
         authorizePathDoor(gate, 'success');
 
         const opened = await tracker.openPassageAt(gate.position, { source: 'recovery-front' });
@@ -572,7 +604,22 @@ describe('DoorTracker integration', () => {
         assert.equal(opened, false);
         assert.equal(activations.length, 0);
         assert.match(doorLogs[0], /"source":"recovery-front"/);
-        assert.match(doorLogs[0], /"result":"blocked-obstructed-owner"/);
+        assert.match(doorLogs[0], /"result":"blocked-not-between-owner"/);
+    });
+
+    it('blocks an authorized pathfinder route when the passage is not between bot and owner', async () => {
+        const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
+            open: false,
+            facing: 'north'
+        });
+        passageRequired = false;
+        authorizePathDoor(gate, 'success');
+
+        await bot.activateBlock(gate);
+
+        assert.equal(activations.length, 0);
+        assert.equal(tracker.trackedCount, 0);
+        assert.match(doorLogs[0], /"result":"blocked-not-between-owner"/);
     });
 
     it('keeps bot-opened tracking while the open state is delayed', async () => {

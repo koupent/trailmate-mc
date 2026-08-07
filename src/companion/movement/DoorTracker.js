@@ -134,6 +134,21 @@ export function isDoorBetween(botPos, ownerPos, doorPos, facing, clearDistance =
 }
 
 /**
+ * A closed passage may be opened only when it physically separates the bot
+ * from its owner. Pathfinder can include a nearby gate as a sideways detour;
+ * that does not make the gate a required passage.
+ * @param {{ position: {x:number,y:number,z:number}, _properties?: {facing?:string,half?:string} }} block
+ * @param {{x:number,y:number,z:number}} botPos
+ * @param {{x:number,y:number,z:number}} ownerPos
+ */
+export function isPassageRequiredForOwner(block, botPos, ownerPos) {
+    if (!block?.position || !botPos || !ownerPos) return false;
+    const doorPos = normalizeDoorPos(block);
+    if (Math.abs(ownerPos.y - doorPos.y) > 2.5) return false;
+    return isDoorBetween(botPos, ownerPos, doorPos, block._properties?.facing);
+}
+
+/**
  * Whether the bot has approached and fully crossed to the other side.
  * @param {{
  *   approachSide: -1|0|1|null,
@@ -192,6 +207,11 @@ export class DoorTracker {
      *   isPathEndpointVisible?: (
      *     endpoint: {x:number,y:number,z:number},
      *     owner: import('prismarine-entity').Entity
+     *   ) => boolean,
+     *   isPassageRequired?: (
+     *     block: import('prismarine-block').Block,
+     *     botPos: {x:number,y:number,z:number},
+     *     ownerPos: {x:number,y:number,z:number}
      *   ) => boolean
      * }} [options]
      */
@@ -207,6 +227,7 @@ export class DoorTracker {
                 { position: new Vec3(endpoint.x + 0.5, endpoint.y, endpoint.z + 0.5), height: 1.8 },
                 owner
             ));
+        this.isPassageRequired = options.isPassageRequired || isPassageRequiredForOwner;
 
         /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, at: number }[]} */
         this._pending = [];
@@ -373,7 +394,7 @@ export class DoorTracker {
         if (this._openSkipReason(current)) return false;
 
         const source = options.source || 'recovery-front';
-        const blockResult = this._pathDoorBlockResult(posKey(lowerPos));
+        const blockResult = this._passageGeometryBlockResult(current);
         if (blockResult) {
             this._logDoorInteraction(current, source, blockResult);
             return false;
@@ -464,10 +485,22 @@ export class DoorTracker {
         this._pathBlockResult = 'blocked-incomplete-route';
     }
 
-    /** @param {string} doorKey */
-    _pathDoorBlockResult(doorKey) {
+    /** @param {import('prismarine-block').Block} block */
+    _pathDoorBlockResult(block) {
         if (this._pathBlockResult) return this._pathBlockResult;
+        const doorKey = posKey(normalizeDoorPos(block));
         if (!this._successfulPathDoors.has(doorKey)) return 'blocked-unverified-route';
+        return this._passageGeometryBlockResult(block);
+    }
+
+    /** @param {import('prismarine-block').Block} block */
+    _passageGeometryBlockResult(block) {
+        const owner = this.getOwnerEntity();
+        const botPos = this.bot.entity?.position;
+        if (!owner?.position || !botPos) return 'blocked-unverified-passage';
+        if (!this.isPassageRequired(block, botPos, owner.position)) {
+            return 'blocked-not-between-owner';
+        }
         return null;
     }
 
@@ -485,7 +518,7 @@ export class DoorTracker {
         const opening = passage && block._properties?.open !== true;
 
         if (source === 'pathfinder-route' && opening) {
-            const blockResult = this._pathDoorBlockResult(doorKey);
+            const blockResult = this._pathDoorBlockResult(block);
             if (blockResult) {
                 this._logDoorInteraction(block, source, blockResult);
                 return Promise.resolve();
@@ -543,6 +576,7 @@ export class DoorTracker {
             result,
             passage: block.name,
             door: compactPosition(normalizeDoorPos(block)),
+            doorFacing: block._properties?.facing || null,
             bot: compactPosition(this.bot.entity?.position),
             owner: compactPosition(owner?.position),
             mode: this.getMode(),
