@@ -22,6 +22,10 @@ export type ChatConfig = {
   stuck_seconds: number;
   hostile_range: number;
   hostile_approach_distances: number[];
+  /** Exactly three ascending milestones: high, critical, and full. */
+  inventory_fill_thresholds: [number, number, number];
+  /** Slots that must be freed before a milestone can notify again. */
+  inventory_fill_rearm_slots: number;
 };
 
 export type CombatLearningConfig = {
@@ -200,7 +204,9 @@ const DEFAULT_COMPANION: CompanionConfig = {
     low_food_hunger: 14,
     stuck_seconds: 5,
     hostile_range: 16,
-    hostile_approach_distances: [10, 6, 3]
+    hostile_approach_distances: [10, 6, 3],
+    inventory_fill_thresholds: [75, 90, 100],
+    inventory_fill_rearm_slots: 2
   }
 };
 

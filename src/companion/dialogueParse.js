@@ -275,8 +275,9 @@ export function deriveOwnerLockedKey(followPhase) {
  * @param {string} language
  * @param {string} eventId
  * @param {object} snap
+ * @param {{ excludeMessage?: string }} [options]
  */
-export function renderCommentary(language, eventId, snap = {}) {
+export function renderCommentary(language, eventId, snap = {}, options = {}) {
     const vars = {
         owner: snap.owner || 'だれか',
         distance: snap.ownerDistance != null ? snap.ownerDistance : '?',
@@ -287,9 +288,13 @@ export function renderCommentary(language, eventId, snap = {}) {
         stuckSeconds: snap.stuckSeconds != null ? snap.stuckSeconds : '?',
         hostile: snap.combatTarget || snap.hostile?.name || '敵',
         hostileDistance: snap.hostile?.distance != null ? snap.hostile.distance : '?',
-        mode: snap.mode || '?'
+        mode: snap.mode || '?',
+        inventoryFillPercent: snap.inventoryFillPercent ?? '?',
+        inventoryUsedSlots: snap.inventoryUsedSlots ?? '?',
+        inventoryTotalSlots: snap.inventoryTotalSlots ?? '?',
+        inventoryEmptySlots: snap.inventoryEmptySlots ?? '?'
     };
-    return tEvent(language || 'ja', String(eventId || ''), vars);
+    return tEvent(language || 'ja', String(eventId || ''), vars, options);
 }
 
 const DEFAULT_APPROACH_DISTANCES = [10, 6, 3];

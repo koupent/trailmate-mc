@@ -164,6 +164,21 @@
       "暗い、松明ほしい",
       "松明持ってない…"
     ],
+    "inventory_fill_high": [
+      "荷物、けっこう増えてきたよ！ いま{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）くらい",
+      "たくさん集まったね。インベントリは{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）まで埋まってるよ",
+      "まだ持てるけど、荷物が増えてきたよ。{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）！"
+    ],
+    "inventory_fill_critical": [
+      "そろそろ荷物がいっぱいになりそう…！ {inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ",
+      "あと少ししか持てないかも。いま{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）！",
+      "かなりいっぱいになってきたよ。{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）、チェストがあると安心かも"
+    ],
+    "inventory_fill_full": [
+      "あっ、もう持てないよ〜！ インベントリ満杯（{inventoryUsedSlots}/{inventoryTotalSlots}枠・{inventoryFillPercent}%）！",
+      "荷物でいっぱいになっちゃった！ {inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ",
+      "いっぱい集めたね！ でもインベントリが満杯（{inventoryUsedSlots}/{inventoryTotalSlots}枠・{inventoryFillPercent}%）。チェストを置いてくれたら預けるね"
+    ],
     "generic": [
       "えへへ、なんとなく元気だよ",
       "うんうん、そばにいるね",

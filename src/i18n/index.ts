@@ -28,11 +28,27 @@ export function tCommand(language: string, key: string, vars: CommentaryVars = {
   return applyVars(template, vars);
 }
 
-export function tEvent(language: string, eventId: string, vars: CommentaryVars = {}): string {
+export function tEvent(
+  language: string,
+  eventId: string,
+  vars: CommentaryVars = {},
+  options: { excludeMessage?: string } = {}
+): string {
   const bundle = loadLocale(language);
   const lines = bundle.events[eventId] || bundle.events.generic || ['…'];
-  const template = lines[Math.floor(Math.random() * lines.length)];
-  return applyVars(template, vars);
+  const rendered = lines.map((template) => applyVars(template, vars));
+  const excludedPattern = options.excludeMessage
+    ? messagePattern(options.excludeMessage)
+    : null;
+  const alternatives = rendered.length > 1 && excludedPattern
+    ? rendered.filter((message) => messagePattern(message) !== excludedPattern)
+    : rendered;
+  const choices = alternatives.length > 0 ? alternatives : rendered;
+  return choices[Math.floor(Math.random() * choices.length)];
+}
+
+function messagePattern(message: string): string {
+  return message.replace(/\d+(?:\.\d+)?/g, '#');
 }
 
 export function tMovement(language: string, key: string, vars: CommentaryVars = {}): string {

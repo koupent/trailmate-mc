@@ -11,7 +11,15 @@ import {
 } from './dialogueParse.js';
 import { buildOwnerFollowFacts, isPlayerEligible, lockOwner } from './ownerLock.js';
 import { giveAllItemsToPlayer, countAllItems } from './utils/giveAllItems.js';
-import { countSupplyItems } from './utils/inventorySnapshot.js';
+import {
+    countSupplyItems,
+    snapshotInventoryFill
+} from './utils/inventorySnapshot.js';
+import {
+    DEFAULT_INVENTORY_FILL_REARM_SLOTS,
+    DEFAULT_INVENTORY_FILL_THRESHOLDS,
+    InventoryFillTracker
+} from './utils/InventoryFillTracker.js';
 import { tCommand } from '../i18n/index.js';
 import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
@@ -29,7 +37,9 @@ export const DEFAULT_CHAT_CONFIG = {
     low_food_hunger: 14,
     stuck_seconds: 5,
     hostile_range: 12,
-    hostile_approach_distances: [10, 6, 3]
+    hostile_approach_distances: [10, 6, 3],
+    inventory_fill_thresholds: [...DEFAULT_INVENTORY_FILL_THRESHOLDS],
+    inventory_fill_rearm_slots: DEFAULT_INVENTORY_FILL_REARM_SLOTS
 };
 
 /**
@@ -50,6 +60,11 @@ export class CompanionDialogue {
         this.lastPlayerChatAt = 0;
         /** @type {Record<string, number>} */
         this.lastEventAt = {};
+        this.inventoryFillTracker = new InventoryFillTracker({
+            thresholds: this.config.inventory_fill_thresholds,
+            rearmSlots: this.config.inventory_fill_rearm_slots
+        });
+        this._lastInventoryFillMessage = '';
         this._prev = null;
         this._actionBusy = false;
         console.log('[companion] dialogue ready (keyword commands + rule commentary)');
@@ -96,8 +111,15 @@ export class CompanionDialogue {
 
         const snapshot = this._buildSnapshot();
         const dialogueConfig = this._dialogueConfig();
-        let event = detectSituationEvent(this._prev, snapshot, this.config);
+        const inventoryFillEvent = this.inventoryFillTracker.observe(snapshot);
+        const situationEvent = detectSituationEvent(this._prev, snapshot, this.config);
         this._prev = snapshot;
+
+        // Urgent state changes keep precedence. Inventory milestones are
+        // guaranteed and outrank low-priority situation chatter.
+        let event = situationEvent?.priority >= 2
+            ? situationEvent
+            : inventoryFillEvent || situationEvent;
 
         if (!event) {
             event = detectCombatCommentary(snapshot);
@@ -126,12 +148,27 @@ export class CompanionDialogue {
             if (this.agent.companion?.ctx?.movement?.isHeld) return;
         }
 
-        this.lastEventAt[event.id] = now;
-
         const language = this.agent.language || 'ja';
-        const message = renderCommentary(language, event.id, snapshot);
+        const inventoryFill = event.inventoryFill;
+        const renderSnapshot = inventoryFill
+            ? {
+                ...snapshot,
+                inventoryFillPercent: inventoryFill.percent,
+                inventoryUsedSlots: inventoryFill.usedSlots,
+                inventoryTotalSlots: inventoryFill.totalSlots,
+                inventoryEmptySlots: inventoryFill.emptySlots
+            }
+            : snapshot;
+        const message = renderCommentary(language, event.id, renderSnapshot, {
+            excludeMessage: inventoryFill ? this._lastInventoryFillMessage : ''
+        });
         if (!message) return;
         await this._say(message);
+        this.lastEventAt[event.id] = now;
+        if (inventoryFill) {
+            this._lastInventoryFillMessage = message;
+            this.inventoryFillTracker.markDelivered();
+        }
         if (isStuckEvent) {
             const ctx = this.agent.companion?.ctx;
             if (ctx) ctx.stuckChat = null;
@@ -285,6 +322,10 @@ export class CompanionDialogue {
             hunger: null,
             foodCount: 0,
             torchCount: 0,
+            inventoryUsedSlots: 0,
+            inventoryTotalSlots: 36,
+            inventoryEmptySlots: 36,
+            inventoryFillPercent: 0,
             timeOfDay: null,
             isNight: false,
             stuckSeconds: 0,
@@ -331,6 +372,7 @@ export class CompanionDialogue {
             : null;
 
         const { foodCount, torchCount } = countSupplyItems(bot);
+        const inventoryFill = snapshotInventoryFill(bot);
         const combatTarget = bot.pvp?.target?.name || hostile?.name || null;
         const hostileBand = hostile
             ? deriveHostileBand(
@@ -346,6 +388,7 @@ export class CompanionDialogue {
             hunger: bot.food,
             foodCount,
             torchCount,
+            ...inventoryFill,
             timeOfDay,
             isNight,
             stuckSeconds: Number(
