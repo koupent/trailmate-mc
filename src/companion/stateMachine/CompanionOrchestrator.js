@@ -100,9 +100,14 @@ export class CompanionOrchestrator {
     }
 
     async tick() {
-        if (this._busy || this.targets.paused) return;
+        if (this._busy) return;
         this._busy = true;
         try {
+            // Environmental damage can happen in every FSM state, including
+            // wait and paused item-transfer work. Safety owns this tick until
+            // the bot reaches a clear standable position.
+            if (this.ctx.hazardEscape?.tick?.()) return;
+            if (this.targets.paused) return;
             await prepareCompanionWorldTick(this.ctx);
             await refreshDutyFlags(this.targets);
 

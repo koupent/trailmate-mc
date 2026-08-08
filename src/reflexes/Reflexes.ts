@@ -307,7 +307,7 @@ export class Reflexes {
       }
     }
     if (this.config.self_preservation) {
-      this.preserve();
+      this.keepAfloat();
     }
     if (!opts.recovery?.active) {
       if (this.recoveryOwned) {
@@ -497,23 +497,14 @@ export class Reflexes {
     };
   }
 
-  private preserve(): void {
+  private keepAfloat(): void {
     const bot = this.bot;
     if (!bot.entity) return;
-    const block = bot.blockAt(bot.entity.position) || { name: 'air' };
     const blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0)) || { name: 'air' };
 
     if (blockAbove.name === 'water' && !bot.pathfinder?.goal) {
       bot.setControlState('jump', true);
       return;
-    }
-
-    if (
-      block.name === 'lava' || block.name === 'fire'
-      || blockAbove.name === 'lava' || blockAbove.name === 'fire'
-    ) {
-      bot.setControlState('jump', true);
-      bot.setControlState('forward', true);
     }
   }
 

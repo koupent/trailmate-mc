@@ -3,15 +3,17 @@
  * 移動・視線・行動を発行できるコンテキストだけを決める。
  *
  * @param {{
+ *   hazardActive?: boolean,
  *   recoveryActive?: boolean,
  *   recoveryEmergency?: boolean,
  *   combatActive?: boolean,
  *   transferActive?: boolean,
  *   upperMode?: 'follow' | 'wait'
  * }} input
- * @returns {'survival' | 'recovery' | 'combat' | 'transfer' | 'follow' | 'wait'}
+ * @returns {'hazard' | 'survival' | 'recovery' | 'combat' | 'transfer' | 'follow' | 'wait'}
  */
 export function selectControlOwner(input = {}) {
+    if (input.hazardActive) return 'hazard';
     if (input.recoveryActive && input.recoveryEmergency) return 'survival';
     if (input.recoveryActive) return 'recovery';
     if (input.combatActive) return 'combat';
@@ -21,6 +23,9 @@ export function selectControlOwner(input = {}) {
 
 /** 現在の CompanionContext 状態から所有権方針を解決する。 */
 export function currentControlOwner(ctx, upperMode = 'follow', now = Date.now()) {
+    if (ctx?.hazardEscape?.active) {
+        return 'hazard';
+    }
     const fsmId = ctx?.agent?.companion?.manager?.getActiveFsmId?.();
     if (fsmId === 'combat') {
         return 'combat';
