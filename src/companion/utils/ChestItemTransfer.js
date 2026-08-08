@@ -67,7 +67,13 @@ export function frontDot(botPos, yaw, blockPos) {
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ name?: string }|null} oldBlock
  * @param {{ name?: string, position?: { x: number, y: number, z: number } }|null} newBlock
- * @param {{ now?: number, lastOwnerSwingAt?: number, config?: object, manager?: object }} [options]
+ * @param {{
+ *   now?: number,
+ *   lastOwnerSwingAt?: number,
+ *   config?: object,
+ *   manager?: object,
+ *   allowTransferControl?: boolean
+ * }} [options]
  */
 export function isOwnerHandoffChestPlacement(ctx, oldBlock, newBlock, options = {}) {
     const config = createChestTransferConfig(options.config);
@@ -77,7 +83,10 @@ export function isOwnerHandoffChestPlacement(ctx, oldBlock, newBlock, options = 
 
     const manager = options.manager || ctx.agent?.companion?.manager;
     if (manager?.getCurrentModeId?.() !== 'follow') return false;
-    if (currentControlOwner(ctx, 'follow') !== 'follow') return false;
+    const controlOwner = currentControlOwner(ctx, 'follow');
+    const transferCanQueue = options.allowTransferControl === true
+        && controlOwner === 'transfer';
+    if (controlOwner !== 'follow' && !transferCanQueue) return false;
     if (!isPlayerEligible(ctx, ctx.ownerName)) return false;
 
     const now = options.now ?? Date.now();
@@ -111,6 +120,7 @@ export class ChestItemTransfer {
         this.dialogue = deps.dialogue || null;
         this._lastOwnerSwingAt = 0;
         this._pendingPlacement = null;
+        this._queuedPlacements = [];
         this._busy = false;
         this._dispose = null;
     }
@@ -141,7 +151,8 @@ export class ChestItemTransfer {
                 // case the server broadcasts the arm animation after the block.
                 lastOwnerSwingAt: now,
                 config: this.config,
-                manager: this.manager
+                manager: this.manager,
+                allowTransferControl: this._busy
             })) {
                 this._pendingPlacement = { oldBlock, newBlock, at: now };
                 return;
@@ -163,6 +174,7 @@ export class ChestItemTransfer {
         this._dispose?.();
         this._dispose = null;
         this._pendingPlacement = null;
+        this._queuedPlacements = [];
     }
 
     /**
@@ -183,21 +195,32 @@ export class ChestItemTransfer {
      * @param {number} [now]
      */
     async handleBlockUpdate(ctx, oldBlock, newBlock, now = Date.now()) {
-        if (this._busy) return 'busy';
-        if (this.dialogue?.isActionBusy) return 'deferred';
+        const transferInProgress = this._busy;
+        if (!transferInProgress && this.dialogue?.isActionBusy) return 'deferred';
         if (!isOwnerHandoffChestPlacement(ctx, oldBlock, newBlock, {
             now,
             lastOwnerSwingAt: this._lastOwnerSwingAt,
             config: this.config,
-            manager: this.manager
-        })) return 'ignored';
+            manager: this.manager,
+            allowTransferControl: transferInProgress
+        })) return transferInProgress ? 'busy' : 'ignored';
 
         // Consume the placement gesture so a second unrelated block update from
         // a double chest cannot trigger another transfer.
         this._lastOwnerSwingAt = 0;
+        if (transferInProgress) {
+            this._enqueuePlacement(newBlock);
+            return 'queued';
+        }
         const stacks = listChestDepositStacks(ctx.bot, this.config);
         if (stacks.length === 0) return 'empty';
-        return this._deposit(ctx, newBlock, stacks);
+        return this._runDepositQueue(ctx, { placedBlock: newBlock, stacks });
+    }
+
+    _enqueuePlacement(placedBlock) {
+        const key = blockPositionKey(placedBlock);
+        if (this._queuedPlacements.some((pending) => pending.key === key)) return;
+        this._queuedPlacements.push({ key, placedBlock });
     }
 
     _shouldAbort(ctx) {
@@ -209,16 +232,13 @@ export class ChestItemTransfer {
      * @param {{ position: { x: number, y: number, z: number } }} placedBlock
      * @param {Array<{ slot: number, type: number, metadata?: number|null, nbt?: object|null, count: number, name: string }>} stacks
      */
-    async _deposit(ctx, placedBlock, stacks) {
+    async _runDepositQueue(ctx, initialTransfer) {
         this._busy = true;
         ctx.itemTransfer = ctx.itemTransfer || { active: false };
         ctx.itemTransfer.active = true;
         this.manager?.pause?.();
         this.autoEquip?.pause?.();
         ctx.movement?.stop?.();
-        let container = null;
-        let deposited = 0;
-
         try {
             try {
                 ctx.bot.pvp?.stop?.();
@@ -227,6 +247,40 @@ export class ChestItemTransfer {
             }
             if (this._shouldAbort(ctx)) return 'deferred';
 
+            let result = 'empty';
+            let nextTransfer = initialTransfer;
+            while (nextTransfer) {
+                result = await this._depositIntoChest(
+                    ctx,
+                    nextTransfer.placedBlock,
+                    nextTransfer.stacks
+                );
+                if (result === 'deferred') break;
+                nextTransfer = this._takeNextQueuedTransfer(ctx);
+            }
+            return result;
+        } finally {
+            this._queuedPlacements = [];
+            this.autoEquip?.resume?.();
+            this.manager?.resume?.();
+            ctx.itemTransfer.active = false;
+            this._busy = false;
+        }
+    }
+
+    _takeNextQueuedTransfer(ctx) {
+        const pending = this._queuedPlacements.shift();
+        if (!pending) return null;
+        const stacks = listChestDepositStacks(ctx.bot, this.config);
+        return stacks.length > 0
+            ? { placedBlock: pending.placedBlock, stacks }
+            : null;
+    }
+
+    async _depositIntoChest(ctx, placedBlock, stacks) {
+        let container = null;
+        let deposited = 0;
+        try {
             const center = placedBlock.position.offset
                 ? placedBlock.position.offset(0.5, 0.5, 0.5)
                 : {
@@ -252,10 +306,13 @@ export class ChestItemTransfer {
                     );
                     deposited += 1;
                 } catch (err) {
-                    console.warn(
-                        `[companion] chest item-share stopped at ${live.name}:`,
-                        err?.message || err
+                    const shouldContinue = await handleDepositFailure(
+                        ctx.bot,
+                        container,
+                        live,
+                        err
                     );
+                    if (shouldContinue) continue;
                     break;
                 }
             }
@@ -279,11 +336,58 @@ export class ChestItemTransfer {
             } catch {
                 /* ignore */
             }
-            this.autoEquip?.resume?.();
-            this.manager?.resume?.();
-            ctx.itemTransfer.active = false;
-            this._busy = false;
         }
+    }
+}
+
+function blockPositionKey(block) {
+    const position = block?.position;
+    return position ? `${position.x},${position.y},${position.z}` : 'unknown';
+}
+
+function isUnavailableSourceError(err) {
+    const message = String(err?.message || err || '');
+    return message.startsWith("Can't find ") && message.includes(' in slots [');
+}
+
+async function handleDepositFailure(bot, container, stack, err) {
+    await restoreContainerCursor(bot, container);
+    if (isUnavailableSourceError(err)) {
+        console.warn(
+            `[companion] chest item-share skipped stale ${stack.name} stack:`,
+            err?.message || err
+        );
+        return true;
+    }
+    console.warn(
+        `[companion] chest item-share stopped at ${stack.name}:`,
+        err?.message || err
+    );
+    return false;
+}
+
+async function restoreContainerCursor(bot, container) {
+    if (!container?.selectedItem || typeof bot?.putSelectedItemRange !== 'function') return;
+    const fallbackSlot = container.firstEmptySlotRange?.(
+        container.inventoryStart,
+        container.inventoryEnd
+    );
+    if (!Number.isInteger(fallbackSlot)) {
+        console.warn('[companion] chest item-share could not find a safe cursor return slot');
+        return;
+    }
+    try {
+        await bot.putSelectedItemRange(
+            container.inventoryStart,
+            container.inventoryEnd,
+            container,
+            fallbackSlot
+        );
+    } catch (err) {
+        console.warn(
+            '[companion] chest item-share could not restore cursor item:',
+            err?.message || err
+        );
     }
 }
 

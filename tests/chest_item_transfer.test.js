@@ -29,6 +29,28 @@ function item(slot, name, count = 1, extras = {}) {
     };
 }
 
+function chestAt(x, y, z) {
+    return {
+        name: 'chest',
+        position: {
+            x,
+            y,
+            z,
+            offset(dx, dy, dz) {
+                return { x: this.x + dx, y: this.y + dy, z: this.z + dz };
+            }
+        }
+    };
+}
+
+function deferred() {
+    let resolve;
+    const promise = new Promise((done) => {
+        resolve = done;
+    });
+    return { promise, resolve };
+}
+
 function makeRetentionBot(items, heldSlot = null) {
     const slots = [];
     for (const stack of items) slots[stack.slot] = stack;
@@ -115,15 +137,7 @@ function makeTransferWorld() {
     slots[9] = cobble;
     slots[36] = sword;
     const events = [];
-    const chest = {
-        name: 'chest',
-        position: {
-            x: 0,
-            y: 64,
-            z: -2,
-            offset(x, y, z) { return { x: this.x + x, y: this.y + y, z: this.z + z }; }
-        }
-    };
+    const chest = chestAt(0, 64, -2);
 
     bot.entity = { id: 1, yaw: 0, position: { x: 0.5, y: 64, z: 0.5 } };
     bot.players = { Owner: { entity: owner } };
@@ -249,5 +263,115 @@ describe('ChestItemTransfer', () => {
         assert.ok(world.events.includes('resume'));
         assert.equal(world.ctx.itemTransfer.active, false);
         assert.ok(world.slots[9]);
+    });
+
+    it('continues with a second chest placed while the first full chest is still processing', async () => {
+        const world = makeTransferWorld();
+        world.slots[10] = item(10, 'phantom_membrane', 8);
+        world.slots[11] = item(11, 'dirt', 64);
+        const secondChest = chestAt(1, 64, -2);
+        let openCount = 0;
+        const firstDepositStarted = deferred();
+        const firstDepositBlocked = deferred();
+        world.bot.putSelectedItemRange = async (_start, _end, container, fallbackSlot) => {
+            assert.equal(fallbackSlot, 28);
+            const selected = container.selectedItem;
+            world.events.push(`restore:${selected.name}`);
+            world.slots[selected.slot] = selected;
+            container.selectedItem = null;
+        };
+        world.bot.openContainer = async () => {
+            openCount += 1;
+            const currentOpen = openCount;
+            return {
+                inventoryStart: 27,
+                inventoryEnd: 63,
+                selectedItem: null,
+                firstEmptySlotRange() { return 28; },
+                async deposit(type) {
+                    const live = world.slots.find((stack) => stack?.type === type);
+                    if (currentOpen === 1) {
+                        if (live.name === 'cobblestone') {
+                            world.slots[live.slot] = null;
+                            return;
+                        }
+                        this.selectedItem = live;
+                        world.slots[live.slot] = null;
+                        firstDepositStarted.resolve();
+                        await firstDepositBlocked.promise;
+                        throw new Error('destination full');
+                    }
+                    world.slots[live.slot] = null;
+                },
+                close() { world.events.push(`close:${currentOpen}`); }
+            };
+        };
+
+        const transfer = new ChestItemTransfer({ enabled: true }, { manager: world.manager });
+        transfer.attach(world.ctx);
+        transfer.noteOwnerSwing(world.ctx, world.owner, 1000);
+        const firstTransfer = transfer.handleBlockUpdate(
+            world.ctx,
+            { name: 'air' },
+            world.chest,
+            1100
+        );
+        await firstDepositStarted.promise;
+
+        // Some servers publish the block update before the matching arm swing.
+        world.bot.emit('blockUpdate', { name: 'air' }, secondChest);
+        world.bot.emit('entitySwingArm', world.owner);
+        firstDepositBlocked.resolve();
+        const firstResult = await firstTransfer;
+
+        assert.equal(firstResult, 'ok');
+        assert.equal(openCount, 2);
+        assert.equal(world.slots[9], null);
+        assert.equal(world.slots[10], null);
+        assert.equal(world.slots[11], null);
+        assert.ok(world.events.includes('restore:phantom_membrane'));
+        assert.deepEqual(
+            world.events.filter((event) => event.startsWith('close:')),
+            ['close:1', 'close:2']
+        );
+        assert.equal(world.ctx.itemTransfer.active, false);
+        assert.equal(world.manager.paused, false);
+        transfer.detach();
+    });
+
+    it('skips an unavailable stale stack and still deposits later surplus', async () => {
+        const world = makeTransferWorld();
+        world.slots[10] = item(10, 'phantom_membrane', 8);
+        world.slots[11] = item(11, 'dirt', 64);
+        const attempts = [];
+        world.bot.openContainer = async () => ({
+            selectedItem: null,
+            async deposit(type) {
+                const live = world.slots.find((stack) => stack?.type === type);
+                attempts.push(live.name);
+                if (live.name === 'phantom_membrane') {
+                    throw new Error("Can't find phantom_membrane in slots [27 - 63]");
+                }
+                world.slots[live.slot] = null;
+            },
+            close() { world.events.push('close'); }
+        });
+        const transfer = new ChestItemTransfer({ enabled: true }, { manager: world.manager });
+        transfer.noteOwnerSwing(world.ctx, world.owner, 1000);
+
+        const result = await transfer.handleBlockUpdate(
+            world.ctx,
+            { name: 'air' },
+            world.chest,
+            1100
+        );
+
+        assert.equal(result, 'partial');
+        assert.deepEqual(attempts, ['cobblestone', 'phantom_membrane', 'dirt']);
+        assert.equal(world.slots[9], null);
+        assert.ok(world.slots[10]);
+        assert.equal(world.slots[11], null);
+        assert.ok(world.events.includes('close'));
+        assert.equal(world.ctx.itemTransfer.active, false);
     });
 });
