@@ -239,7 +239,7 @@ export class DoorTracker {
         this._recentOpens = new Map();
         this._lastOwnerSwingAt = 0;
         this._pathStatus = 'idle';
-        this._successfulPathDoors = new Set();
+        this._authorizedPathPassages = new Set();
         this._pathBlockResult = 'blocked-incomplete-route';
 
         this._onSwing = (entity) => this._handleSwing(entity);
@@ -437,7 +437,7 @@ export class DoorTracker {
      */
     _handlePathUpdate(result) {
         this._pathStatus = result?.status || 'unknown';
-        this._successfulPathDoors.clear();
+        this._authorizedPathPassages.clear();
         this._pathBlockResult = 'blocked-incomplete-route';
         if (this._pathStatus !== 'success' || !Array.isArray(result?.path)) return;
 
@@ -453,22 +453,22 @@ export class DoorTracker {
         for (const node of result.path) {
             for (const action of node.toPlace || []) {
                 if (action?.useOne !== true) continue;
-                this._successfulPathDoors.add(posKey(action));
+                this._authorizedPathPassages.add(posKey(action));
             }
         }
     }
 
     _clearPathAuthorization() {
         this._pathStatus = 'invalidated';
-        this._successfulPathDoors.clear();
+        this._authorizedPathPassages.clear();
         this._pathBlockResult = 'blocked-incomplete-route';
     }
 
     /** @param {import('prismarine-block').Block} block */
-    _pathDoorBlockResult(block) {
+    _pathPassageBlockResult(block) {
         if (this._pathBlockResult) return this._pathBlockResult;
-        const doorKey = posKey(normalizeDoorPos(block));
-        if (!this._successfulPathDoors.has(doorKey)) return 'blocked-unverified-route';
+        const passageKey = posKey(normalizeDoorPos(block));
+        if (!this._authorizedPathPassages.has(passageKey)) return 'blocked-unverified-route';
         return null;
     }
 
@@ -497,7 +497,7 @@ export class DoorTracker {
         const opening = passage && block._properties?.open !== true;
 
         if (source === 'pathfinder-route' && opening) {
-            const blockResult = this._pathDoorBlockResult(block);
+            const blockResult = this._pathPassageBlockResult(block);
             if (blockResult) {
                 this._logDoorInteraction(block, source, blockResult);
                 return Promise.resolve();

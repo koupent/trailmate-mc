@@ -3,11 +3,10 @@ import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import { suppressUnsafeFollowPath } from '../src/companion/movement/MovementController.js';
 
-function makeBot(position, blocked, block = null) {
+function makeBot(position, blocked) {
     return {
         entity: { position, height: 1.8 },
-        world: { raycast: () => (blocked ? { name: 'wall' } : null) },
-        blockAt: () => block
+        world: { raycast: () => (blocked ? { name: 'wall' } : null) }
     };
 }
 
@@ -84,11 +83,6 @@ describe('suppressUnsafeFollowPath', () => {
     });
 
     it('keeps a successful detour through a gate outside the direct owner line', () => {
-        const gate = {
-            name: 'pale_oak_fence_gate',
-            position: new Vec3(5, 64, 5),
-            _properties: { open: false, facing: 'west' }
-        };
         const result = {
             status: 'success',
             path: [{
@@ -100,7 +94,7 @@ describe('suppressUnsafeFollowPath', () => {
         };
 
         const reason = suppressUnsafeFollowPath(
-            makeBot(new Vec3(0, 64, 0), false, gate),
+            makeBot(new Vec3(0, 64, 0), false),
             result,
             makeTarget(new Vec3(10, 64, 0))
         );
@@ -110,11 +104,6 @@ describe('suppressUnsafeFollowPath', () => {
     });
 
     it('keeps a successful route through a gate that separates bot and owner', () => {
-        const gate = {
-            name: 'pale_oak_fence_gate',
-            position: new Vec3(5, 64, 0),
-            _properties: { open: false, facing: 'west' }
-        };
         const result = {
             status: 'success',
             path: [{
@@ -126,7 +115,7 @@ describe('suppressUnsafeFollowPath', () => {
         };
 
         const reason = suppressUnsafeFollowPath(
-            makeBot(new Vec3(0, 64, 0), false, gate),
+            makeBot(new Vec3(0, 64, 0), false),
             result,
             makeTarget(new Vec3(10, 64, 0))
         );

@@ -160,4 +160,24 @@ describe('MovementController unreachable cutoff', () => {
         assert.equal(movement.isUnreachableFallback, false);
         assert.equal(bot.pathfinder.goal.entity, owner);
     });
+
+    it('clears the pending cutoff timer when movement stops', async () => {
+        const { bot, movement, scheduled } = makeHarness();
+        const owner = ownerAt(10);
+        movement.followEntity(owner, 1, { endpointVisibilityTarget: owner });
+        bot.emit('path_update', {
+            status: 'partial',
+            path: [{ x: 4, y: 64, z: 0 }]
+        });
+        await Promise.resolve();
+
+        movement.stop();
+        assert.equal(scheduled[0].cancelled, true);
+        assert.equal(movement.isUnreachableFallback, false);
+        assert.equal(bot.pathfinder.goal, null);
+
+        scheduled[0].callback();
+        assert.equal(movement.isUnreachableFallback, false);
+        assert.equal(bot.pathfinder.goal, null);
+    });
 });
