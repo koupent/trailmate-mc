@@ -34,7 +34,6 @@ function mockMovement() {
                 skipped,
                 entityId: entity?.id,
                 endpointVisibilityTargetId: opts.endpointVisibilityTarget?.id,
-                unreachableFallbackPosition: opts.unreachableFallbackPosition,
                 range
             });
             if (!rejected && !skipped) this.hasGoal = true;
@@ -46,7 +45,6 @@ function mockMovement() {
                 type: 'goToward',
                 rejected,
                 endpointVisibilityTargetId: opts.endpointVisibilityTarget?.id,
-                unreachableFallbackPosition: opts.unreachableFallbackPosition,
                 pos,
                 range
             });
@@ -109,7 +107,6 @@ describe('FollowMode merge follow', () => {
         assert.ok(follow, 'expected followEntity call');
         assert.equal(follow.rejected, false);
         assert.equal(follow.endpointVisibilityTargetId, ctx.ownerEntity.id);
-        assert.deepEqual(follow.unreachableFallbackPosition, { x: 12, y: 64, z: 0 });
         assert.equal(ctx.movement.hasGoal, true);
     });
 
@@ -159,7 +156,6 @@ describe('FollowMode trail follow', () => {
         assert.ok(go, 'expected goToward in trail phase');
         assert.equal(go.rejected, false);
         assert.equal(go.endpointVisibilityTargetId, ctx.ownerEntity.id);
-        assert.deepEqual(go.unreachableFallbackPosition, { x: 0, y: 64, z: 0 });
         assert.equal(ctx.movement.calls.some((call) => call.type === 'stop'), false);
     });
 
@@ -177,24 +173,6 @@ describe('FollowMode trail follow', () => {
             assert.equal(last?.type, 'goToward', `tick at owner z=${ownerPos.z} should goToward`);
             assert.equal(last?.rejected, false);
         }
-    });
-});
-
-describe('FollowMode unreachable fallback position', () => {
-    it('keeps the last visible owner position after the owner enters an enclosure', async () => {
-        const mode = new FollowMode();
-        const visible = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(10, 64, 0));
-        await mode.tick(visible);
-
-        const enclosed = makeFollowCtx(
-            new Vec3(0, 64, 0),
-            new Vec3(14, 64, 0),
-            { blockedLos: true }
-        );
-        await mode.tick(enclosed);
-
-        const follow = enclosed.movement.calls.find((call) => call.type === 'followEntity');
-        assert.deepEqual(follow.unreachableFallbackPosition, { x: 10, y: 64, z: 0 });
     });
 });
 

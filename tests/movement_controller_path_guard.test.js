@@ -28,11 +28,11 @@ describe('suppressUnsafeFollowPath', () => {
             makeTarget(new Vec3(20, 64, 0))
         );
 
-        assert.equal(reason, 'partial-nearby-target');
+        assert.equal(reason, 'partial-follow-route');
         assert.deepEqual(result.path, []);
     });
 
-    it('allows a far partial path so long-distance following can make progress', () => {
+    it('holds a far partial path while the complete route search continues', () => {
         const result = {
             status: 'partial',
             path: [{ x: 4, y: 64, z: 2 }]
@@ -44,8 +44,8 @@ describe('suppressUnsafeFollowPath', () => {
             makeTarget(new Vec3(40, 64, 0))
         );
 
-        assert.equal(reason, null);
-        assert.equal(result.path.length, 1);
+        assert.equal(reason, 'partial-follow-route');
+        assert.deepEqual(result.path, []);
     });
 
     it('rejects a completed route whose endpoint is outside the owner enclosure', () => {
@@ -83,7 +83,7 @@ describe('suppressUnsafeFollowPath', () => {
         assert.equal(result.path.length, 1);
     });
 
-    it('rejects a successful route through an unrelated nearby gate', () => {
+    it('keeps a successful detour through a gate outside the direct owner line', () => {
         const gate = {
             name: 'pale_oak_fence_gate',
             position: new Vec3(5, 64, 5),
@@ -105,8 +105,8 @@ describe('suppressUnsafeFollowPath', () => {
             makeTarget(new Vec3(10, 64, 0))
         );
 
-        assert.equal(reason, 'unrelated-passage-route');
-        assert.deepEqual(result.path, []);
+        assert.equal(reason, null);
+        assert.equal(result.path.length, 1);
     });
 
     it('keeps a successful route through a gate that separates bot and owner', () => {

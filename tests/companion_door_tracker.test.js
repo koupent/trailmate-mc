@@ -245,7 +245,6 @@ describe('DoorTracker integration', () => {
     let now;
     let activationFailures;
     let doorLogs;
-    let pathEndpointVisible;
     let passageRequired;
 
     function makeBlock(name, pos, props) {
@@ -294,7 +293,6 @@ describe('DoorTracker integration', () => {
         now = 10_000;
         activationFailures = 0;
         doorLogs = [];
-        pathEndpointVisible = true;
         passageRequired = true;
         owner = {
             id: 42,
@@ -322,7 +320,6 @@ describe('DoorTracker integration', () => {
             getMode: () => 'follow',
             now: () => now,
             log: (line) => doorLogs.push(line),
-            isPathEndpointVisible: () => pathEndpointVisible,
             isPassageRequired: () => passageRequired
         });
     });
@@ -572,25 +569,6 @@ describe('DoorTracker integration', () => {
         assert.match(doorLogs[0], /"pathStatus":"partial"/);
     });
 
-    it('blocks a successful GoalFollow route that ends outside an enclosed owner', async () => {
-        const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
-            open: false,
-            facing: 'north'
-        });
-        bot.entity.position = { x: -327.5, y: 75, z: 226.5 };
-        owner.position = { x: -331.32, y: 75, z: 226.41 };
-        pathEndpointVisible = false;
-        authorizePathDoor(gate, 'success');
-
-        await bot.activateBlock(gate);
-
-        assert.equal(activations.length, 0);
-        assert.equal(tracker.trackedCount, 0);
-        assert.equal(doorLogs.length, 1);
-        assert.match(doorLogs[0], /"result":"blocked-obstructed-owner"/);
-        assert.match(doorLogs[0], /"pathStatus":"success"/);
-    });
-
     it('blocks recovery when the passage does not separate bot and owner', async () => {
         const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
             open: false,
@@ -607,7 +585,7 @@ describe('DoorTracker integration', () => {
         assert.match(doorLogs[0], /"result":"blocked-not-between-owner"/);
     });
 
-    it('blocks an authorized pathfinder route when the passage is not between bot and owner', async () => {
+    it('allows an authorized detour passage outside the direct bot-owner line', async () => {
         const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
             open: false,
             facing: 'north'
@@ -617,9 +595,9 @@ describe('DoorTracker integration', () => {
 
         await bot.activateBlock(gate);
 
-        assert.equal(activations.length, 0);
-        assert.equal(tracker.trackedCount, 0);
-        assert.match(doorLogs[0], /"result":"blocked-not-between-owner"/);
+        assert.equal(activations.length, 1);
+        assert.equal(tracker.trackedCount, 1);
+        assert.match(doorLogs[0], /"result":"success"/);
     });
 
     it('keeps bot-opened tracking while the open state is delayed', async () => {

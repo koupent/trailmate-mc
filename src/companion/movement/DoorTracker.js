@@ -1,6 +1,5 @@
 import Vec3 from 'vec3';
 import { isDoorPassableName } from '../blockProtection.js';
-import { hasLineOfSightFrom } from '../../world/lineOfSight.js';
 
 /** Max reach used when reading what the owner is looking at. */
 const OWNER_LOOK_RANGE = 5;
@@ -204,10 +203,6 @@ export class DoorTracker {
      *   getMode?: () => string|null,
      *   now?: () => number,
      *   log?: (...args: any[]) => void,
-     *   isPathEndpointVisible?: (
-     *     endpoint: {x:number,y:number,z:number},
-     *     owner: import('prismarine-entity').Entity
-     *   ) => boolean,
      *   isPassageRequired?: (
      *     block: import('prismarine-block').Block,
      *     botPos: {x:number,y:number,z:number},
@@ -221,12 +216,6 @@ export class DoorTracker {
         this.getMode = options.getMode || (() => null);
         this.now = options.now || Date.now;
         this.log = options.log || console.log;
-        this.isPathEndpointVisible = options.isPathEndpointVisible
-            || ((endpoint, owner) => hasLineOfSightFrom(
-                this.bot.world,
-                { position: new Vec3(endpoint.x + 0.5, endpoint.y, endpoint.z + 0.5), height: 1.8 },
-                owner
-            ));
         this.isPassageRequired = options.isPassageRequired || isPassageRequiredForOwner;
 
         /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, at: number }[]} */
@@ -437,9 +426,10 @@ export class DoorTracker {
     }
 
     /**
-     * Authorize door actions only when A* produced a complete route whose endpoint
-     * can actually see the owner. GoalFollow can otherwise report success at a
-     * cell beside an enclosed owner and route through an unrelated passage.
+     * Authorize door actions only when A* produced a complete current route.
+     * Follow-route endpoint validation belongs to MovementController, which
+     * runs first and clears invalid paths before this listener sees them. The
+     * passage may be a legitimate detour outside the direct bot-owner line.
      * @param {{ status?: string, path?: Array<{
      *   x?:number,y?:number,z?:number,
      *   toPlace?: Array<{ x:number,y:number,z:number,useOne?:boolean }>
@@ -452,19 +442,8 @@ export class DoorTracker {
         if (this._pathStatus !== 'success' || !Array.isArray(result?.path)) return;
 
         const endpoint = result.path.at(-1);
-        const owner = this.getOwnerEntity();
-        if (!owner || !Number.isFinite(endpoint?.x) || !Number.isFinite(endpoint?.y)
+        if (!Number.isFinite(endpoint?.x) || !Number.isFinite(endpoint?.y)
             || !Number.isFinite(endpoint?.z)) {
-            this._pathBlockResult = 'blocked-unverified-route';
-            return;
-        }
-
-        try {
-            if (!this.isPathEndpointVisible(endpoint, owner)) {
-                this._pathBlockResult = 'blocked-obstructed-owner';
-                return;
-            }
-        } catch {
             this._pathBlockResult = 'blocked-unverified-route';
             return;
         }
@@ -490,7 +469,7 @@ export class DoorTracker {
         if (this._pathBlockResult) return this._pathBlockResult;
         const doorKey = posKey(normalizeDoorPos(block));
         if (!this._successfulPathDoors.has(doorKey)) return 'blocked-unverified-route';
-        return this._passageGeometryBlockResult(block);
+        return null;
     }
 
     /** @param {import('prismarine-block').Block} block */

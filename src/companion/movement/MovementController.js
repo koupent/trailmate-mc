@@ -7,71 +7,42 @@ import {
     enforceSafeMovements
 } from '../blockProtection.js';
 import { hasLineOfSightFrom } from '../../world/lineOfSight.js';
-import {
-    isCloseablePassage,
-    isPassageRequiredForOwner
-} from './DoorTracker.js';
 
 /** Climb goals may block Follow only briefly. */
 const DEFAULT_CLIMB_HOLD_MS = 2000;
 /** Drop a climb lock if the bot has not moved this far within STALL_MS. */
 const STALL_DISTANCE = 0.4;
 const STALL_MS = 1500;
-/** Nearby partial follow routes stay paused until A* produces a final result. */
-const GUARDED_PARTIAL_DISTANCE = 32;
+/** Keep still while A* looks for a complete detour to the cutoff position. */
+export const UNREACHABLE_SEARCH_GRACE_MS = 2000;
+/** Recheck a waiting companion's live owner route at this interval. */
+export const UNREACHABLE_REPROBE_MS = 1000;
+/** Bound synchronous route probes so the companion loop stays responsive. */
+const UNREACHABLE_REPROBE_TIMEOUT_MS = 100;
 
 /**
- * Prevent a nearby partial route from moving the bot toward an arbitrary A*
- * frontier, and reject a completed route that only reaches the far side of a
- * wall around the followed player.
+ * Prevent an incomplete follow route from moving the bot toward an arbitrary
+ * A* frontier while the controller is still looking for a complete detour,
+ * and reject a completed route that only reaches the far side of a wall around
+ * the followed player.
  *
  * The path array is shared with mineflayer-pathfinder, so clearing it here
- * prevents that route from being executed. The controller then returns to the
- * last owner position confirmed by a successful route and waits there.
+ * prevents that route from being executed. The controller freezes the owner's
+ * position at that moment, then moves along a door-free best-effort route.
  *
  * @param {import('mineflayer').Bot} bot
  * @param {{status?:string,path?:Array<{
- *   x:number,y:number,z:number,
- *   toPlace?:Array<{x:number,y:number,z:number,useOne?:boolean}>
+ *   x:number,y:number,z:number
  * }>}} result
  * @param {import('prismarine-entity').Entity|null|undefined} target
- * @returns {'unrelated-passage-route'|'partial-nearby-target'|'obstructed-target-endpoint'|null}
+ * @returns {'partial-follow-route'|'obstructed-target-endpoint'|null}
  */
 export function suppressUnsafeFollowPath(bot, result, target) {
     if (!target?.position || !Array.isArray(result?.path)) return null;
 
-    const botPos = bot.entity?.position;
-    if (!botPos) return null;
-
-    // Pathfinder can report a successful route by detouring through a nearby
-    // door or gate that does not actually separate the bot from its owner.
-    // Reject that route before movement starts; blocking activateBlock later
-    // is too late because the bot has already walked to the passage.
-    for (const node of result.path) {
-        for (const action of node.toPlace || []) {
-            if (action?.useOne !== true) continue;
-            let block = null;
-            try {
-                block = bot.blockAt?.(new Vec3(action.x, action.y, action.z));
-            } catch {
-                continue;
-            }
-            if (!isCloseablePassage(block)) continue;
-            if (isPassageRequiredForOwner(block, botPos, target.position)) continue;
-
-            result.path.length = 0;
-            return 'unrelated-passage-route';
-        }
-    }
-
-    const distance = Math.hypot(
-        target.position.x - botPos.x,
-        target.position.z - botPos.z
-    );
-
-    if (result.status === 'partial' && distance <= GUARDED_PARTIAL_DISTANCE) {
+    if (result.status === 'partial') {
         result.path.length = 0;
-        return 'partial-nearby-target';
+        return 'partial-follow-route';
     }
 
     const endpoint = result.path.at(-1);
@@ -101,9 +72,17 @@ export function suppressUnsafeFollowPath(bot, result, target) {
 export class MovementController {
     /**
      * @param {import('mineflayer').Bot} bot
+     * @param {{
+     *   now?: () => number,
+     *   schedule?: (callback: () => void, delay: number) => any,
+     *   cancelSchedule?: (handle: any) => void
+     * }} [options]
      */
-    constructor(bot) {
+    constructor(bot, options = {}) {
         this.bot = bot;
+        this.now = options.now || Date.now;
+        this.schedule = options.schedule || setTimeout;
+        this.cancelSchedule = options.cancelSchedule || clearTimeout;
         this.movements = buildMovements(bot);
         this.unreachableFallbackMovements = buildMovements(bot);
         this.unreachableFallbackMovements._trailmateDisableDoorOpening = true;
@@ -128,13 +107,20 @@ export class MovementController {
         this._unreachableFallbackActive = false;
         this._unreachableFallbackScheduled = false;
         this._unreachableFallbackPosition = null;
-        this._fallbackTargetId = null;
         this._unreachableFallbackGoal = null;
+        this._unreachableVerificationTarget = null;
+        this._unreachableFallbackTimer = null;
+        this._unreachableFallbackWaiting = false;
+        this._lastUnreachableProbeAt = 0;
 
         bot.on('path_update', (result) => {
             if (this._unreachableFallbackActive) {
                 this.status = result.status;
                 alignPathToDoorGaps(bot, result.path);
+                if (result.status === 'noPath' || result.status === 'timeout') {
+                    if (Array.isArray(result.path)) result.path.length = 0;
+                    this._markUnreachableWaiting('fallback-no-path');
+                }
                 return;
             }
 
@@ -145,21 +131,52 @@ export class MovementController {
                 this._endpointVisibilityTarget
             );
             if (suppressed) {
-                this.status = 'unreachable';
+                this.status = 'searching';
                 this._logRouteSuppression(suppressed, result, rejectedEndpoint);
-                this._scheduleLastReachableFallback();
+                this._scheduleCutoffFallback(this._endpointVisibilityTarget?.position);
                 return;
             }
 
+            if (this._endpointVisibilityTarget?.position
+                && (result.status === 'noPath' || result.status === 'timeout')) {
+                if (Array.isArray(result.path)) result.path.length = 0;
+                this.status = 'unreachable';
+                this._logRouteSuppression(`follow-${result.status}`, result, rejectedEndpoint);
+                if (this._unreachableFallbackScheduled) {
+                    this._cancelPendingCutoffFallback();
+                }
+                this._scheduleCutoffFallback(this._endpointVisibilityTarget.position, 0);
+                return;
+            }
+
+            if (this._unreachableFallbackScheduled
+                && result.status === 'success'
+                && this._goal === this._unreachableFallbackGoal) {
+                this._cancelPendingCutoffFallback();
+                this._unreachableFallbackActive = true;
+                this._unreachableFallbackWaiting = false;
+                this.status = 'success';
+                this._lastRouteSuppressionKey = null;
+                alignPathToDoorGaps(bot, result.path);
+                console.log(`[companion] follow-route-fallback ${JSON.stringify({
+                    strategy: 'complete-route-to-cutoff-position',
+                    phase: 'catching-up',
+                    position: this._unreachableFallbackPosition
+                })}`);
+                return;
+            }
+
+            this._cancelPendingCutoffFallback();
             this._lastRouteSuppressionKey = null;
             this.status = result.status;
-            if (result.status === 'success') {
-                this._rememberAcceptedTargetPosition();
-            }
             alignPathToDoorGaps(bot, result.path);
         });
 
         bot.on('goal_reached', () => {
+            if (this._unreachableFallbackActive) {
+                this._markUnreachableWaiting('cutoff-endpoint-reached');
+                return;
+            }
             this.status = 'arrived';
             this._clearHold();
             if (this._goalKey && (this._goalKey.startsWith('climb:') || this._goalKey.startsWith('seek:'))) {
@@ -218,8 +235,7 @@ export class MovementController {
      * @param {number} range
      * @param {{
      *   rejectIf?: () => boolean,
-     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null,
-     *   unreachableFallbackPosition?: {x:number,y:number,z:number}|null
+     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null
      * }} [options]
      */
     followEntity(entity, range, options = {}) {
@@ -228,15 +244,16 @@ export class MovementController {
             return false;
         }
         this._releaseClimbHold();
-        if (this.isUnreachableFallback) return false;
         const visibilityTarget = options.endpointVisibilityTarget || null;
+        const goal = new pf.goals.GoalFollow(entity, range);
+        if (this.isUnreachableFallback
+            && !this._resumeFromUnreachableIfReachable(goal, visibilityTarget)) {
+            return false;
+        }
         const key = `follow:${entity.id}:${range}:${visibilityTarget ? 'guarded' : 'plain'}`;
         if (this._goalKey === key && this.hasGoal && !this.isBlocked) return false;
         this._goalKey = key;
-        this._setGoal(new pf.goals.GoalFollow(entity, range), {
-            visibilityTarget,
-            fallbackPosition: options.unreachableFallbackPosition
-        });
+        this._setGoal(goal, { visibilityTarget });
         return true;
     }
 
@@ -246,8 +263,7 @@ export class MovementController {
      * @param {number} [range=2]
      * @param {{
      *   rejectIf?: () => boolean,
-     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null,
-     *   unreachableFallbackPosition?: {x:number,y:number,z:number}|null
+     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null
      * }} [options]
      */
     goToward(pos, range = 2, options = {}) {
@@ -255,8 +271,12 @@ export class MovementController {
             return false;
         }
         this._releaseClimbHold();
-        if (this.isUnreachableFallback) return false;
         const visibilityTarget = options.endpointVisibilityTarget || null;
+        const goal = new pf.goals.GoalNear(pos.x, pos.y, pos.z, range);
+        if (this.isUnreachableFallback
+            && !this._resumeFromUnreachableIfReachable(goal, visibilityTarget)) {
+            return false;
+        }
         const key = `seek:${Math.floor(pos.x)}:${Math.floor(pos.y)}:${Math.floor(pos.z)}:${range}:${visibilityTarget ? 'guarded' : 'plain'}`;
         const last = this._lastSeekPos;
         const drifted = !last
@@ -265,10 +285,7 @@ export class MovementController {
         if (this._goalKey === key && this.hasGoal && !drifted) return false;
         this._goalKey = key;
         this._lastSeekPos = { x: pos.x, y: pos.y, z: pos.z };
-        this._setGoal(new pf.goals.GoalNear(pos.x, pos.y, pos.z, range), {
-            visibilityTarget,
-            fallbackPosition: options.unreachableFallbackPosition
-        });
+        this._setGoal(goal, { visibilityTarget });
         return true;
     }
 
@@ -310,6 +327,7 @@ export class MovementController {
     }
 
     stop() {
+        this._cancelPendingCutoffFallback();
         this._goalKey = null;
         this._goal = null;
         this._lastSeekPos = null;
@@ -318,8 +336,10 @@ export class MovementController {
         this._unreachableFallbackActive = false;
         this._unreachableFallbackScheduled = false;
         this._unreachableFallbackPosition = null;
-        this._fallbackTargetId = null;
         this._unreachableFallbackGoal = null;
+        this._unreachableVerificationTarget = null;
+        this._unreachableFallbackWaiting = false;
+        this._lastUnreachableProbeAt = 0;
         this.status = 'idle';
         this._clearHold();
         try {
@@ -338,7 +358,13 @@ export class MovementController {
         if (this.movements.allowSprinting === next) return;
         this.movements.allowSprinting = next;
         try {
-            this.bot.pathfinder.setMovements(this.movements);
+            const activeMovements = this._unreachableFallbackActive
+                ? this.unreachableFallbackMovements
+                : this.movements;
+            this.bot.pathfinder.setMovements(activeMovements);
+            if (this._unreachableFallbackActive) {
+                this.unreachableFallbackMovements.canOpenDoors = false;
+            }
         } catch {
             // pathfinderがまだ準備できていない場合がある
         }
@@ -360,63 +386,148 @@ export class MovementController {
 
     _setGoal(goal, options = {}) {
         // Re-apply after combat/legacy modes may have overwritten pathfinder movements.
+        this._cancelPendingCutoffFallback();
         this._endpointVisibilityTarget = options.visibilityTarget || null;
         this._lastRouteSuppressionKey = null;
         this._unreachableFallbackActive = false;
         this._unreachableFallbackScheduled = false;
         this._unreachableFallbackGoal = null;
-        const visibilityTarget = options.visibilityTarget || null;
-        const fallbackTargetId = visibilityTarget?.id ?? null;
-        if (fallbackTargetId !== this._fallbackTargetId) {
-            this._fallbackTargetId = fallbackTargetId;
-            this._unreachableFallbackPosition = null;
-        }
-        const fallback = options.fallbackPosition;
-        if (!this._unreachableFallbackPosition && fallback) {
-            this._unreachableFallbackPosition = new Vec3(fallback.x, fallback.y, fallback.z);
-        }
+        this._unreachableVerificationTarget = null;
+        this._unreachableFallbackPosition = null;
+        this._unreachableFallbackWaiting = false;
         this.bot.pathfinder.setMovements(this.movements);
         this.status = 'searching';
         this._goal = goal;
         this.bot.pathfinder.setGoal(goal, true);
     }
 
-    _scheduleLastReachableFallback() {
+    /**
+     * Freeze the owner's position at the first incomplete route. A* keeps its
+     * current search for a short grace period while the emitted partial path is
+     * held stationary. If no complete route appears, follow a door-free partial
+     * route toward this frozen cutoff position.
+     * @param {{x:number,y:number,z:number}|null|undefined} position
+     * @param {number} [delayMs]
+     */
+    _scheduleCutoffFallback(position, delayMs = UNREACHABLE_SEARCH_GRACE_MS) {
         if (this._unreachableFallbackActive || this._unreachableFallbackScheduled
-            || !this._goal || !this._unreachableFallbackPosition) return;
-        const expectedGoal = this._goal;
-        const expectedTarget = this._endpointVisibilityTarget;
-        const waitPosition = this._unreachableFallbackPosition.clone();
+            || !this._goal || !position) return;
+
+        this._unreachableFallbackPosition = new Vec3(position.x, position.y, position.z);
+        this._unreachableVerificationTarget = {
+            position: this._unreachableFallbackPosition.clone(),
+            height: this._endpointVisibilityTarget?.height ?? 1.8
+        };
+        this._unreachableFallbackGoal = new pf.goals.GoalNear(
+            this._unreachableFallbackPosition.x,
+            this._unreachableFallbackPosition.y,
+            this._unreachableFallbackPosition.z,
+            1
+        );
         this._unreachableFallbackScheduled = true;
-
+        this._unreachableFallbackTimer = this.schedule(() => {
+            this._unreachableFallbackTimer = null;
+            if (!this._unreachableFallbackScheduled) return;
+            this._startCutoffFallback();
+        }, delayMs);
         queueMicrotask(() => {
-            this._unreachableFallbackScheduled = false;
-            if (this._goal !== expectedGoal || this._endpointVisibilityTarget !== expectedTarget) return;
-
-            this._unreachableFallbackActive = true;
-            this._unreachableFallbackGoal = new pf.goals.GoalNear(
-                waitPosition.x,
-                waitPosition.y,
-                waitPosition.z,
-                1
-            );
-            this.status = 'searching';
-            this.unreachableFallbackMovements.canOpenDoors = false;
-            this.bot.pathfinder.setMovements(this.unreachableFallbackMovements);
-            // The safety wrapper re-applies defaults to the same object.
-            this.unreachableFallbackMovements.canOpenDoors = false;
+            if (!this._unreachableFallbackScheduled || !this._unreachableFallbackGoal) return;
+            this._goalKey = `cutoff:${this._unreachableFallbackPosition.x}:${this._unreachableFallbackPosition.y}:${this._unreachableFallbackPosition.z}`;
+            this._goal = this._unreachableFallbackGoal;
+            this._endpointVisibilityTarget = this._unreachableVerificationTarget;
+            this.bot.pathfinder.setMovements(this.movements);
             this.bot.pathfinder.setGoal(this._unreachableFallbackGoal, false);
-            console.log(`[companion] follow-route-fallback ${JSON.stringify({
-                strategy: 'wait-at-last-reachable-owner-position',
-                position: waitPosition
-            })}`);
         });
+        console.log(`[companion] follow-route-cutoff ${JSON.stringify({
+            phase: 'verifying',
+            graceMs: delayMs,
+            position: this._unreachableFallbackPosition
+        })}`);
     }
 
-    _rememberAcceptedTargetPosition() {
-        const position = this._endpointVisibilityTarget?.position;
-        if (!position || this._unreachableFallbackActive) return;
-        this._unreachableFallbackPosition = new Vec3(position.x, position.y, position.z);
+    _startCutoffFallback() {
+        const cutoff = this._unreachableFallbackPosition;
+        if (!cutoff || !this._goal) return;
+
+        this._unreachableFallbackScheduled = false;
+        this._unreachableFallbackActive = true;
+        this._unreachableFallbackWaiting = false;
+        this._goal = this._unreachableFallbackGoal;
+        this._endpointVisibilityTarget = this._unreachableVerificationTarget;
+        this.status = 'searching';
+        this.unreachableFallbackMovements.canOpenDoors = false;
+        this.bot.pathfinder.setMovements(this.unreachableFallbackMovements);
+        // The safety wrapper re-applies defaults to the same object.
+        this.unreachableFallbackMovements.canOpenDoors = false;
+        this.bot.pathfinder.setGoal(this._unreachableFallbackGoal, false);
+        console.log(`[companion] follow-route-fallback ${JSON.stringify({
+            strategy: 'best-effort-to-cutoff-position',
+            phase: 'catching-up',
+            position: cutoff
+        })}`);
+    }
+
+    _cancelPendingCutoffFallback() {
+        if (this._unreachableFallbackTimer != null) {
+            this.cancelSchedule(this._unreachableFallbackTimer);
+            this._unreachableFallbackTimer = null;
+        }
+        this._unreachableFallbackScheduled = false;
+    }
+
+    _markUnreachableWaiting(reason) {
+        if (!this._unreachableFallbackActive || this._unreachableFallbackWaiting) return;
+        this._unreachableFallbackWaiting = true;
+        this.status = 'unreachable';
+        this._lastUnreachableProbeAt = this.now() - UNREACHABLE_REPROBE_MS;
+        console.log(`[companion] follow-route-fallback ${JSON.stringify({
+            strategy: 'best-effort-to-cutoff-position',
+            phase: 'waiting',
+            reason,
+            position: this._unreachableFallbackPosition,
+            bot: this.bot.entity?.position || null
+        })}`);
+    }
+
+    _resumeFromUnreachableIfReachable(goal, visibilityTarget) {
+        if (!this._unreachableFallbackWaiting) return false;
+        const now = this.now();
+        if (now - this._lastUnreachableProbeAt < UNREACHABLE_REPROBE_MS) return false;
+        this._lastUnreachableProbeAt = now;
+
+        let result = null;
+        try {
+            const probe = this.bot.pathfinder.getPathFromTo(
+                this.movements,
+                this.bot.entity.position,
+                goal,
+                {
+                    timeout: UNREACHABLE_REPROBE_TIMEOUT_MS,
+                    tickTimeout: UNREACHABLE_REPROBE_TIMEOUT_MS
+                }
+            );
+            result = probe.next().value?.result || null;
+        } catch {
+            return false;
+        }
+        if (result?.status !== 'success') return false;
+
+        const rejected = suppressUnsafeFollowPath(this.bot, result, visibilityTarget);
+        if (rejected) return false;
+
+        console.log(`[companion] follow-route-fallback ${JSON.stringify({
+            strategy: 'best-effort-to-cutoff-position',
+            phase: 'resumed',
+            position: this._unreachableFallbackPosition,
+            target: visibilityTarget?.position || null
+        })}`);
+        this._unreachableFallbackActive = false;
+        this._unreachableFallbackWaiting = false;
+        this._unreachableFallbackGoal = null;
+        this._unreachableVerificationTarget = null;
+        this._unreachableFallbackPosition = null;
+        this._goalKey = null;
+        return true;
     }
 
     _logRouteSuppression(reason, result, endpoint = null) {
