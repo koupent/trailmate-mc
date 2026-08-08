@@ -1,6 +1,7 @@
 import { MovementController } from './movement/MovementController.js';
 import { StuckMonitor } from './movement/StuckMonitor.js';
 import { DoorTracker } from './movement/DoorTracker.js';
+import { HazardEscapeController } from './movement/HazardEscape.js';
 import { createDeathRecoveryState } from './deathRecovery.js';
 import { scanCompanionAwareness } from '../world/companionAwareness.js';
 import { resolvePickupRadius } from './utils/pickupItems.js';
@@ -20,6 +21,7 @@ export class CompanionContext {
         this.worldState = worldState;
         this.config = config;
         this.movement = new MovementController(agent.bot);
+        this.hazardEscape = new HazardEscapeController(agent.bot, this.movement);
         this.stuck = new StuckMonitor();
         /** @type {{ seconds: number, at: number }|null} sticky stuck signal for chat (survives stuck.reset) */
         this.stuckChat = null;

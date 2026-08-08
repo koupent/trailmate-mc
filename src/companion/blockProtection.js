@@ -1,5 +1,9 @@
 import pf from 'mineflayer-pathfinder';
 import { Vec3 } from 'vec3';
+import {
+    findContactHazards,
+    isDamageBlock
+} from './movement/hazardBlocks.js';
 
 /** Default block-light level at which spawn-proof torches may be placed (1.21 hostile spawn). */
 export const DEFAULT_TORCH_LIGHT_THRESHOLD = 0;
@@ -271,7 +275,32 @@ export function applySafeMovementFlags(movements, options = {}) {
     movements.maxDropDown = options.maxDropDown ?? DEFAULT_SAFE_MAX_DROP_DOWN;
     // Library typo: scafoldingBlocks. Empty = never place bridge/tower blocks.
     movements.scafoldingBlocks = [];
+    configureDamageBlockAvoidance(movements);
     configureDoorAwareMovements(movements);
+    return movements;
+}
+
+/**
+ * Keep A* routes off both pass-through hazards and damaging support blocks.
+ * Stock pathfinder only avoids fire/lava and otherwise permits magma,
+ * campfires, berry bushes, wither roses, powder snow, and similar blocks.
+ */
+export function configureDamageBlockAvoidance(movements) {
+    const registry = movements.bot?.registry;
+    for (const block of registry?.blocksArray || []) {
+        if (isDamageBlock(block)) movements.blocksToAvoid.add(block.id);
+    }
+    if (movements._trailmateDamageAvoidance) return movements;
+    movements._trailmateDamageAvoidance = true;
+    movements.exclusionAreasStep.push((block) => {
+        if (!block?.position) return 0;
+        const standPosition = new Vec3(
+            block.position.x + 0.5,
+            block.position.y,
+            block.position.z + 0.5
+        );
+        return findContactHazards(movements.bot, standPosition).length > 0 ? 100 : 0;
+    });
     return movements;
 }
 
