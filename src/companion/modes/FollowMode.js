@@ -60,7 +60,6 @@ export class FollowMode extends Mode {
         const config = ctx.config;
 
         ctx.movement.tickHoldWatchdog();
-        ctx.doors?.tick?.().catch?.(() => {});
 
         // FSM が combat/duty を所有するときは FollowBehavior 自体が動かない。
         // ここではラッチ中の wantsCombat で追従を止めない（二重ループ時代の名残）。
@@ -118,11 +117,15 @@ export class FollowMode extends Mode {
             }
 
             const anchor = computeTrailAnchor(owner, followMinDistance);
-            ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE);
+            ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE, {
+                endpointVisibilityTarget: owner
+            });
             return;
         }
 
-        ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE);
+        ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE, {
+            endpointVisibilityTarget: owner
+        });
     }
 
     /**

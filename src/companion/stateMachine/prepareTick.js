@@ -8,7 +8,7 @@ export async function prepareCompanionWorldTick(ctx) {
     ctx.invalidateCompanionAwareness?.();
     tickOwnerWork(ctx);
     ctx.worldState.update(ctx);
-    ctx.stuck.update(ctx.bot, ctx.movement.hasGoal);
+    ctx.stuck.update(ctx.bot, ctx.movement.isTryingToMove ?? ctx.movement.hasGoal);
     const detectSec = ctx.config?.stuck_detect_seconds ?? 1.5;
     if (ctx.stuck.seconds >= detectSec) {
         ctx.stuckChat = {

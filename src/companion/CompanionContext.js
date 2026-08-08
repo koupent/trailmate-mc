@@ -24,7 +24,8 @@ export class CompanionContext {
         /** @type {{ seconds: number, at: number }|null} sticky stuck signal for chat (survives stuck.reset) */
         this.stuckChat = null;
         this.doors = new DoorTracker(agent.bot, {
-            getOwnerEntity: () => this.ownerEntity
+            getOwnerEntity: () => this.ownerEntity,
+            getMode: () => agent.companion?.manager?.getActiveFsmId?.() || null
         });
         /** @type {string|null} locked follow target username */
         this.ownerName = null;

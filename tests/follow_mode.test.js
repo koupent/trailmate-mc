@@ -33,6 +33,7 @@ function mockMovement() {
                 rejected,
                 skipped,
                 entityId: entity?.id,
+                endpointVisibilityTargetId: opts.endpointVisibilityTarget?.id,
                 range
             });
             if (!rejected && !skipped) this.hasGoal = true;
@@ -40,7 +41,13 @@ function mockMovement() {
         },
         goToward(pos, range, opts = {}) {
             const rejected = Boolean(opts.rejectIf?.());
-            calls.push({ type: 'goToward', rejected, pos, range });
+            calls.push({
+                type: 'goToward',
+                rejected,
+                endpointVisibilityTargetId: opts.endpointVisibilityTarget?.id,
+                pos,
+                range
+            });
             if (!rejected) this.hasGoal = true;
             return !rejected;
         },
@@ -99,6 +106,7 @@ describe('FollowMode merge follow', () => {
         const follow = ctx.movement.calls.find((call) => call.type === 'followEntity');
         assert.ok(follow, 'expected followEntity call');
         assert.equal(follow.rejected, false);
+        assert.equal(follow.endpointVisibilityTargetId, ctx.ownerEntity.id);
         assert.equal(ctx.movement.hasGoal, true);
     });
 
@@ -147,6 +155,7 @@ describe('FollowMode trail follow', () => {
         const go = ctx.movement.calls.find((call) => call.type === 'goToward');
         assert.ok(go, 'expected goToward in trail phase');
         assert.equal(go.rejected, false);
+        assert.equal(go.endpointVisibilityTargetId, ctx.ownerEntity.id);
         assert.equal(ctx.movement.calls.some((call) => call.type === 'stop'), false);
     });
 
