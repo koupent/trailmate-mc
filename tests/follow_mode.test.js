@@ -4,6 +4,7 @@ import { Vec3 } from 'vec3';
 import { FollowMode } from '../src/companion/modes/FollowMode.js';
 import { resolveFollowPhase } from '../src/companion/movement/followPhase.js';
 import { wouldPathPassNearPlayer } from '../src/companion/movement/playerPathClearance.js';
+import { PICKUP_SETTLE_MS } from '../src/companion/utils/pickupItems.js';
 
 function solidBlock() {
     return { name: 'stone', boundingBox: 'block' };
@@ -93,6 +94,36 @@ function makeFollowCtx(botPos, ownerPos, overrides = {}) {
 }
 
 describe('FollowMode merge follow', () => {
+    it('pauses once for passive pickup, then resumes follow when the item remains', async () => {
+        const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(12, 64, 0));
+        ctx.config.nearby_loot.collector_enabled = true;
+        ctx.bot.entities = {
+            9: { id: 9, name: 'item', position: new Vec3(0.9, 64, 0) }
+        };
+        ctx.bot.inventory = { emptySlotCount: () => 1 };
+
+        const mode = new FollowMode();
+        await mode.tick(ctx);
+        assert.deepEqual(
+            ctx.movement.calls.map((call) => call.type),
+            ['stop'],
+            'the initial settle should own the tick'
+        );
+
+        ctx.nearbyLoot.pickupSettle.startedAt = Date.now() - PICKUP_SETTLE_MS;
+        await mode.tick(ctx);
+
+        assert.equal(
+            ctx.movement.calls.filter((call) => call.type === 'stop').length,
+            1,
+            'a persistent item must not stop follow every tick'
+        );
+        assert.ok(
+            ctx.movement.calls.some((call) => call.type === 'followEntity'),
+            'follow should resume so the FSM can hand the item to active pickup'
+        );
+    });
+
     it('does not reject followEntity when path check targets the owner', async () => {
         const ownerPos = new Vec3(12, 64, 0);
         const botPos = new Vec3(0, 64, 0);

@@ -1,10 +1,18 @@
 import {
-    dropDistanceFrom,
     findNearestDrop,
     scanCompanionAwareness
 } from '../../world/companionAwareness.js';
 import { isPositionInOwnerWorkFov } from '../ownerWorkMovement.js';
-import { PICKUP_MAGNET_RANGE, PICKUP_SETTLE_MS } from './pickupItems.js';
+import {
+    isWithinMagnetPickup,
+    PICKUP_MAGNET_RANGE
+} from './pickupItems.js';
+import {
+    beginPickupSettle,
+    clearPickupSettleWhenTargetMissing,
+    pickupNeedsCloseApproach,
+    pickupTargetKey
+} from './pickupSettle.js';
 import { canOpportunisticCollect } from '../combatGate.js';
 
 const DEFAULT_COLLECTOR_RADIUS = 4;
@@ -12,9 +20,10 @@ const DEFAULT_COLLECTOR_RADIUS = 4;
 /**
  * Lightweight nearby pickup while following — magnet range only, no pathfinder.
  * @param {import('../CompanionContext.js').CompanionContext} ctx
- * @returns {boolean} true when a settle pause was started
+ * @param {number} [now]
+ * @returns {boolean} true while the one-time settle pause owns this tick
  */
-export function tryOpportunisticCollect(ctx) {
+export function tryOpportunisticCollect(ctx, now = Date.now()) {
     const cfg = ctx.config?.nearby_loot || {};
     if (cfg.collector_enabled === false) return false;
     if (!canOpportunisticCollect(ctx)) return false;
@@ -36,17 +45,21 @@ export function tryOpportunisticCollect(ctx) {
     const candidates = snap.dropItems.filter((entity) => {
         if (!entity?.position) return false;
         if (isPositionInOwnerWorkFov(ctx, entity.position)) return false;
-        return dropDistanceFrom(bot.entity.position, entity.position) <= PICKUP_MAGNET_RANGE;
+        return isWithinMagnetPickup(bot.entity.position, entity.position, PICKUP_MAGNET_RANGE);
     });
+    clearPickupSettleWhenTargetMissing(ctx, candidates);
     if (candidates.length === 0) return false;
 
     const nearest = findNearestDrop(snap, bot.entity.position, candidates);
     if (!nearest?.position) return false;
 
-    ctx.movement?.stop?.();
-    const now = Date.now();
-    if (!ctx._opportunisticCollectUntil || now >= ctx._opportunisticCollectUntil) {
-        ctx._opportunisticCollectUntil = now + PICKUP_SETTLE_MS;
+    const targetKey = pickupTargetKey(nearest);
+    const startingSettle = ctx.nearbyLoot?.pickupSettle?.targetKey !== targetKey;
+    beginPickupSettle(ctx, nearest, now);
+    if (pickupNeedsCloseApproach(ctx, nearest, now)) return false;
+
+    if (startingSettle) {
+        ctx.movement?.stop?.();
     }
     return true;
 }

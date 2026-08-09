@@ -99,7 +99,9 @@ export class FollowMode extends Mode {
             return;
         }
 
-        tryOpportunisticCollect(ctx);
+        if (tryOpportunisticCollect(ctx)) {
+            return;
+        }
 
         const phase = resolveFollowPhase(ctx, owner);
         const botPos = bot.entity.position;

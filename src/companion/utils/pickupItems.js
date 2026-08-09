@@ -16,19 +16,28 @@ import {
 } from '../ownerWorkMovement.js';
 import { isOwnerWorkDeferring } from '../ownerWorkTracker.js';
 import { hasActiveLootPickupPriority } from '../deathRecovery.js';
+import {
+    beginPickupSettle,
+    clearPickupSettleWhenTargetMissing,
+    PICKUP_SETTLE_MS,
+    pickupNeedsCloseApproach,
+    pickupTargetKey
+} from './pickupSettle.js';
+
+export { PICKUP_SETTLE_MS } from './pickupSettle.js';
 
 const DEFAULT_AWARENESS_RADIUS = 10;
-/** Close enough for vanilla item magnet / pickup (horizontal). */
-export const DEFAULT_APPROACH_RANGE = 1.0;
-const DEFAULT_ARRIVAL_SLACK = 0.25;
+/** Force GoalNear onto the item's block instead of accepting an adjacent block. */
+export const DEFAULT_APPROACH_RANGE = 0.75;
+const DEFAULT_ARRIVAL_SLACK = 0.2;
 /** Items within this distance can be collected without crossing into owner FOV. */
 export const PICKUP_MAGNET_RANGE = DEFAULT_APPROACH_RANGE + DEFAULT_ARRIVAL_SLACK;
+/** If the item remains after the initial settle, move closer instead of waiting in place. */
+export const PICKUP_CLOSE_APPROACH_RANGE = 0.5;
 const DEFAULT_DURATION_MS = 6000;
 const DEFAULT_POLL_MS = 250;
 const DEFAULT_QUIET_MS = 1500;
 const DEFAULT_GRACE_MS = 2500;
-/** Pause after arriving so pickup has time to register. */
-export const PICKUP_SETTLE_MS = 350;
 const DEFAULT_OWNER_WORK_LOOT_CLEARANCE = 4;
 /** Item Y this far below the bot's feet needs a step-down approach, not magnet pickup. */
 const ITEM_BELOW_FEET_DY = 0.4;
@@ -64,6 +73,7 @@ const STEP_DOWN_ITEM_SLACK = 0.15;
  *   untilClear?: boolean,
  *   quietMs?: number,
  *   graceMs?: number,
+ *   settleMs?: number,
  *   ownerClearance?: number,
  *   around?: { x: number, y: number, z: number },
  *   onItemSeen?: (entity: any) => void,
@@ -86,6 +96,7 @@ export async function pickupNearbyItems(ctx, options = {}) {
     const untilClear = options.untilClear === true;
     const quietMs = options.quietMs ?? DEFAULT_QUIET_MS;
     const graceMs = options.graceMs ?? DEFAULT_GRACE_MS;
+    const settleMs = options.settleMs ?? PICKUP_SETTLE_MS;
     const ownerClearance = options.ownerClearance ?? 0;
     const requestedAbort = typeof options.shouldAbort === 'function' ? options.shouldAbort : null;
     const shouldAbort = () => requestedAbort?.() === true;
@@ -126,6 +137,7 @@ export async function pickupNearbyItems(ctx, options = {}) {
         if (shouldStop?.()) break;
 
         const candidates = snap.dropItems.filter((entity) => !exclude(entity));
+        clearPickupSettleWhenTargetMissing(ctx, candidates);
 
         if (
             candidates.length === 0
@@ -169,14 +181,16 @@ export async function pickupNearbyItems(ctx, options = {}) {
         const itemDist = dropDistanceFrom(bot.entity.position, item.position);
         const verticalGap = item.position.y - bot.entity.position.y;
         const inMagnetRange = isWithinMagnetPickup(bot.entity.position, item.position, magnetRange);
-        const targetKey = item.id ?? item;
+        const targetKey = pickupTargetKey(item);
+        const needsCloseApproach = pickupNeedsCloseApproach(ctx, item);
 
         const needsStepDown = verticalGap < -ITEM_BELOW_FEET_DY;
 
-        if (inMagnetRange) {
+        if (inMagnetRange && !needsCloseApproach) {
             ctx.movement?.stop?.();
             lastTargetKey = null;
-            await sleep(Math.max(pollMs, PICKUP_SETTLE_MS));
+            beginPickupSettle(ctx, item, Date.now(), settleMs);
+            await sleep(Math.max(pollMs, settleMs));
             continue;
         }
 
@@ -189,11 +203,16 @@ export async function pickupNearbyItems(ctx, options = {}) {
             y: item.position.y,
             z: item.position.z
         };
+        const arrivalRange = needsCloseApproach
+            ? PICKUP_CLOSE_APPROACH_RANGE
+            : approachRange;
+        const arrivalSlack = needsCloseApproach ? 0 : DEFAULT_ARRIVAL_SLACK;
+        const pickupRange = arrivalRange + arrivalSlack;
         const approachAbort = createPickupApproachAbort({
             shouldAbort,
             bot,
             item,
-            magnetRange,
+            pickupRange,
             radius,
             targetKey,
             exclude,
@@ -208,23 +227,26 @@ export async function pickupNearbyItems(ctx, options = {}) {
         );
         if (needsStepDown) {
             await approachDropBelowFeet(ctx, approachTarget, {
-                magnetRange,
+                magnetRange: pickupRange,
                 timeoutMs: approachTimeoutMs,
                 pollMs,
                 abort: approachAbort
             });
         } else {
             await approachPosition(ctx, approachTarget, {
-                range: magnetRange,
-                pathRange: magnetRange,
+                range: arrivalRange,
+                pathRange: arrivalRange,
                 horizontalArrival: true,
-                arrivalSlack: 0,
+                arrivalSlack,
                 timeoutMs: approachTimeoutMs,
                 pollMs,
                 abort: approachAbort
             });
         }
         if (shouldAbort()) break;
+        if (needsCloseApproach) {
+            await sleep(Math.max(pollMs, settleMs));
+        }
     }
 
     ctx.movement?.stop?.();
@@ -254,7 +276,7 @@ export function hasInventorySpace(bot) {
  * True when only magnet-range drops remain (OpportunisticCollector handles them).
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  */
-export function hasOnlyMagnetRangeDrops(ctx) {
+export function hasOnlyMagnetRangeDrops(ctx, now = Date.now()) {
     const bot = ctx?.bot;
     if (!bot?.entity?.position) return false;
     const radius = resolvePickupRadius(ctx);
@@ -263,8 +285,10 @@ export function hasOnlyMagnetRangeDrops(ctx) {
     const exclude = buildPickupExclude(ctx, { magnetRange: PICKUP_MAGNET_RANGE });
     const candidates = snap.dropItems.filter((entity) => !exclude(entity));
     if (candidates.length === 0) return false;
+    clearPickupSettleWhenTargetMissing(ctx, candidates);
     return candidates.every((entity) => (
-        dropDistanceFrom(bot.entity.position, entity.position) <= PICKUP_MAGNET_RANGE
+        isWithinMagnetPickup(bot.entity.position, entity.position, PICKUP_MAGNET_RANGE)
+        && !pickupNeedsCloseApproach(ctx, entity, now)
     ));
 }
 
@@ -373,7 +397,7 @@ function hasMagnetPickup(candidates, botPos, magnetRange) {
  *   shouldAbort: () => boolean,
  *   bot: import('mineflayer').Bot,
  *   item: { position: { x: number, y: number, z: number }, id?: number },
- *   magnetRange: number,
+ *   pickupRange: number,
  *   radius: number,
  *   targetKey: number | string,
  *   exclude: (entity: any) => boolean,
@@ -381,11 +405,11 @@ function hasMagnetPickup(candidates, botPos, magnetRange) {
  * }} params
  */
 function createPickupApproachAbort(params) {
-    const { shouldAbort, bot, item, magnetRange, radius, targetKey, exclude, ctx } = params;
+    const { shouldAbort, bot, item, pickupRange, radius, targetKey, exclude, ctx } = params;
     return () => {
         if (shouldAbort()) return true;
         if (!bot.entity) return true;
-        if (isWithinMagnetPickup(bot.entity.position, item.position, magnetRange)) {
+        if (isWithinMagnetPickup(bot.entity.position, item.position, pickupRange)) {
             return true;
         }
         ctx.invalidateCompanionAwareness?.();
@@ -485,4 +509,3 @@ export function isExcludedNearOwner(ctx, itemPos, clearance) {
     }
     return false;
 }
-

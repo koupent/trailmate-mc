@@ -14,13 +14,18 @@ import {
     seedPlayerWorkPhase
 } from '../src/companion/ownerWorkTracker.js';
 import {
+    DEFAULT_APPROACH_RANGE,
     pickupNearbyItems,
+    PICKUP_CLOSE_APPROACH_RANGE,
     PICKUP_MAGNET_RANGE,
+    PICKUP_SETTLE_MS,
     resolvePickupRadius,
     resolveOwnerWorkLootClearance,
     hasNearbyDrops,
+    hasOnlyMagnetRangeDrops,
     buildPickupExclude
 } from '../src/companion/utils/pickupItems.js';
+import { tryOpportunisticCollect } from '../src/companion/utils/opportunisticCollector.js';
 
 function mockMovement() {
     const calls = [];
@@ -175,6 +180,93 @@ describe('pickup regression', () => {
         });
 
         assert.ok(movement.calls.length >= 1, 'expected pathfinder movement before magnet range');
+    });
+
+    it('uses a sub-block path range so an adjacent block is not treated as pickup arrival', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(1.1, 64, 0),
+            movement
+        });
+        const originalGoToward = movement.goToward.bind(movement);
+        movement.goToward = (pos, range) => {
+            const result = originalGoToward(pos, range);
+            delete ctx.bot.entities[1];
+            return result;
+        };
+
+        await pickupNearbyItems(ctx, {
+            durationMs: 200,
+            pollMs: 10,
+            settleMs: 10,
+            untilClear: false
+        });
+
+        assert.ok(movement.calls.length >= 1, 'expected movement for a drop 1.1 blocks away');
+        assert.equal(movement.calls[0].range, DEFAULT_APPROACH_RANGE);
+        assert.ok(movement.calls[0].range < 1);
+    });
+
+    it('moves closer when a drop remains after the initial pickup settle', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(0.9, 64, 0),
+            movement
+        });
+        const originalGoToward = movement.goToward.bind(movement);
+        movement.goToward = (pos, range) => {
+            const result = originalGoToward(pos, range);
+            if (range === PICKUP_CLOSE_APPROACH_RANGE) {
+                delete ctx.bot.entities[1];
+            }
+            return result;
+        };
+
+        await pickupNearbyItems(ctx, {
+            durationMs: 200,
+            pollMs: 10,
+            settleMs: 10,
+            untilClear: false
+        });
+
+        assert.ok(
+            movement.calls.some((call) => call.range === PICKUP_CLOSE_APPROACH_RANGE),
+            'expected a tighter approach after the item remained visible'
+        );
+    });
+
+    it('hands a persistent magnet-range drop from passive settle to active pickup', () => {
+        const movement = mockMovement();
+        let stops = 0;
+        movement.stop = () => { stops += 1; };
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(0.9, 64, 0),
+            movement
+        });
+
+        assert.equal(tryOpportunisticCollect(ctx, 1000), true);
+        assert.equal(tryOpportunisticCollect(ctx, 1000 + PICKUP_SETTLE_MS - 1), true);
+        assert.equal(hasOnlyMagnetRangeDrops(ctx, 1000 + PICKUP_SETTLE_MS - 1), true);
+        assert.equal(hasOnlyMagnetRangeDrops(ctx, 1000 + PICKUP_SETTLE_MS), false);
+        assert.equal(tryOpportunisticCollect(ctx, 1000 + PICKUP_SETTLE_MS), false);
+        assert.equal(stops, 1, 'settle should stop movement only once in this sequence');
+
+        delete ctx.bot.entities[1];
+        assert.equal(tryOpportunisticCollect(ctx, 1000 + PICKUP_SETTLE_MS + 1), false);
+        assert.equal(ctx.nearbyLoot.pickupSettle, null, 'pickup state should clear after collection');
+    });
+
+    it('treats a drop 1.1 blocks away as requiring active pickup', () => {
+        const interrupt = new NearbyLootInterrupt();
+        const ctx = makePickupCtx({
+            botPos: new Vec3(0, 64, 0),
+            itemPos: new Vec3(1.1, 64, 0)
+        });
+        assert.equal(PICKUP_MAGNET_RANGE, 0.95);
+        assert.equal(interrupt.shouldRun(ctx), true);
     });
 
     it('approaches a nearby drop when owner work is idle', async () => {
