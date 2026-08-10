@@ -300,7 +300,145 @@ export function configureDamageBlockAvoidance(movements) {
         );
         return findContactHazards(movements.bot, standPosition).length > 0 ? 100 : 0;
     });
+
+    // Stock diagonal movement may use one open side even when the other side
+    // contains a hazard. Reject that corner cut so the bot's hitbox cannot
+    // graze the hazardous side while turning between path nodes.
+    const originalGetMoveDiagonal = movements.getMoveDiagonal?.bind(movements);
+    if (originalGetMoveDiagonal) {
+        movements.getMoveDiagonal = (node, dir, neighbors) => {
+            if (diagonalMoveBordersDamageBlock(movements, node, dir)) return;
+            return generateAndFilterMoves(
+                movements,
+                node,
+                neighbors,
+                moveDestinationTouchesDamageBlock,
+                () => originalGetMoveDiagonal(node, dir, neighbors)
+            );
+        };
+    }
+
+    // Parkour treats a non-physical liquid as an open pit floor and only
+    // requires a physical landing support. Filter the generated jump moves so
+    // flowing lava in the crossed gap and damaging landing blocks are unsafe.
+    filterGeneratedMoves(
+        movements,
+        'getMoveParkourForward',
+        parkourMoveCrossesDamageBlock
+    );
+
+    // Ordinary forward movement also generates its own one-block descent.
+    // Check every generated destination so that branch cannot bypass the
+    // dedicated drop-down guards below.
+    filterGeneratedMoves(
+        movements,
+        'getMoveForward',
+        moveDestinationTouchesDamageBlock
+    );
+
+    // Drop-down moves accept any physical block as landing support. Remove
+    // both forward and vertical drops whose generated destination touches a
+    // damaging support, feet, or head block.
+    filterGeneratedMoves(
+        movements,
+        'getMoveDropDown',
+        moveDestinationTouchesDamageBlock
+    );
+    filterGeneratedMoves(
+        movements,
+        'getMoveDown',
+        moveDestinationTouchesDamageBlock
+    );
     return movements;
+}
+
+function filterGeneratedMoves(movements, methodName, isUnsafe) {
+    const original = movements[methodName]?.bind(movements);
+    if (!original) return;
+    movements[methodName] = (...args) => {
+        const node = args[0];
+        const neighbors = args[args.length - 1];
+        return generateAndFilterMoves(
+            movements,
+            node,
+            neighbors,
+            isUnsafe,
+            () => original(...args)
+        );
+    };
+}
+
+function generateAndFilterMoves(
+    movements,
+    node,
+    neighbors,
+    isUnsafe,
+    generateMoves
+) {
+    const firstGeneratedNeighbor = neighbors.length;
+    const result = generateMoves();
+    for (let index = neighbors.length - 1; index >= firstGeneratedNeighbor; index--) {
+        if (isUnsafe(movements, node, neighbors[index])) neighbors.splice(index, 1);
+    }
+    return result;
+}
+
+function diagonalMoveBordersDamageBlock(movements, node, dir) {
+    return movementColumnContainsDamageBlock(movements, node, dir.x, 0)
+        || movementColumnContainsDamageBlock(movements, node, 0, dir.z);
+}
+
+function movementColumnContainsDamageBlock(
+    movements,
+    node,
+    dx,
+    dz,
+    minDy = -1,
+    maxDy = 2
+) {
+    // Cover the support block through headroom for both level and step-up
+    // diagonal moves. Cardinal movement remains intentionally unchanged.
+    for (let dy = minDy; dy <= maxDy; dy++) {
+        if (isDamageBlock(movements.getBlock(node, dx, dy, dz))) return true;
+    }
+    return false;
+}
+
+function moveDestinationTouchesDamageBlock(movements, node, move) {
+    const destinationDy = move.y - node.y;
+    return movementColumnContainsDamageBlock(
+        movements,
+        node,
+        move.x - node.x,
+        move.z - node.z,
+        destinationDy - 1,
+        destinationDy + 1
+    );
+}
+
+function parkourMoveCrossesDamageBlock(movements, node, move) {
+    const deltaX = move.x - node.x;
+    const deltaZ = move.z - node.z;
+    const distance = Math.max(Math.abs(deltaX), Math.abs(deltaZ));
+    if (distance < 1) return false;
+
+    const stepX = Math.sign(deltaX);
+    const stepZ = Math.sign(deltaZ);
+    const minDy = Math.min(0, move.y - node.y) - 1;
+    const maxDy = Math.max(0, move.y - node.y) + 1;
+    for (let step = 1; step <= distance; step++) {
+        const dx = stepX * step;
+        const dz = stepZ * step;
+        if (movementColumnContainsDamageBlock(
+            movements,
+            node,
+            dx,
+            dz,
+            minDy,
+            maxDy
+        )) return true;
+    }
+    return false;
 }
 
 /**
