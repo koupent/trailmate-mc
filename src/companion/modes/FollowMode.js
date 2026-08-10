@@ -3,19 +3,11 @@ import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
 import { applyOwnerWorkRetreat } from '../ownerWorkMovement.js';
 import { currentControlOwner } from '../ControlPriority.js';
 import {
-    DEFAULT_FOLLOW_MIN_DISTANCE,
     FOLLOW_GOAL_RANGE,
     LAST_KNOWN_ARRIVE_RANGE
 } from '../movement/followConstants.js';
-import { horizontalDistanceBetween } from '../movement/followGeometry.js';
-import {
-    computeTrailAnchor,
-    resolveFollowPhase
-} from '../movement/followPhase.js';
-import {
-    PLAYER_PUSH_LANE,
-    wouldPathPassNearPlayer
-} from '../movement/playerPathClearance.js';
+import { resolveFollowPhase } from '../movement/followPhase.js';
+import { wouldPathPassNearPlayer } from '../movement/playerPathClearance.js';
 import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
 
 /**
@@ -57,7 +49,6 @@ export class FollowMode extends Mode {
 
     async tick(ctx) {
         const bot = ctx.bot;
-        const config = ctx.config;
 
         ctx.movement.tickHoldWatchdog();
 
@@ -90,8 +81,6 @@ export class FollowMode extends Mode {
         this._rememberOwner(ctx, owner);
         this._waitingAtLastKnown = false;
 
-        const followMinDistance = config.follow_min_distance ?? DEFAULT_FOLLOW_MIN_DISTANCE;
-
         // Skip Follow only while a climb hold is still making progress.
         if (ctx.movement.isHeld) return;
 
@@ -104,24 +93,9 @@ export class FollowMode extends Mode {
         }
 
         const phase = resolveFollowPhase(ctx, owner);
-        const botPos = bot.entity.position;
-        const horiz = horizontalDistanceBetween(botPos, owner.position);
 
         if (phase === 'near') {
             ctx.movement.stop();
-            return;
-        }
-
-        if (phase === 'trail') {
-            if (horiz <= followMinDistance || horiz <= PLAYER_PUSH_LANE) {
-                ctx.movement.stop();
-                return;
-            }
-
-            const anchor = computeTrailAnchor(owner, followMinDistance);
-            ctx.movement.goToward(anchor, FOLLOW_GOAL_RANGE, {
-                endpointVisibilityTarget: owner
-            });
             return;
         }
 
