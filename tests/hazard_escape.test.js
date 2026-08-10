@@ -46,6 +46,47 @@ function makeWorld({ position = new Vec3(0.5, 64, 0.5), blocks = {} } = {}) {
     return { bot, cells, controls, events, movement };
 }
 
+function pushDirectionalMove(node, dir, neighbors, { distance = 1, dy = 0 } = {}) {
+    neighbors.push({
+        x: node.x + dir.x * distance,
+        y: node.y + dy,
+        z: node.z + dir.z * distance
+    });
+}
+
+function makePathfinderMovements(world) {
+    const diagonalMoves = [];
+    const forwardMoves = [];
+    const movements = {
+        bot: world.bot,
+        blocksToAvoid: new Set(),
+        exclusionAreasStep: [],
+        getBlock(node, dx, dy, dz) {
+            return world.bot.blockAt(new Vec3(
+                node.x + dx,
+                node.y + dy,
+                node.z + dz
+            ));
+        },
+        getMoveDiagonal(node, dir, neighbors) {
+            diagonalMoves.push({ node, dir, neighbors });
+        },
+        getMoveForward(node, dir, neighbors) {
+            forwardMoves.push({ node, dir, neighbors });
+        },
+        getMoveParkourForward(node, dir, neighbors) {
+            pushDirectionalMove(node, dir, neighbors, { distance: 2 });
+        },
+        getMoveDropDown(node, dir, neighbors) {
+            pushDirectionalMove(node, dir, neighbors, { dy: -1 });
+        },
+        getMoveDown(node, neighbors) {
+            neighbors.push({ x: node.x, y: node.y - 1, z: node.z });
+        }
+    };
+    return { movements, diagonalMoves, forwardMoves };
+}
+
 describe('damage block classification and contact', () => {
     it('covers liquid and solid contact hazards but ignores extinguished campfires', () => {
         for (const name of [
@@ -175,12 +216,9 @@ describe('pathfinder hazard avoidance', () => {
                 { id: 3, name: 'sweet_berry_bush' }
             ]
         };
-        const movements = {
-            bot: world.bot,
-            blocksToAvoid: new Set(),
-            exclusionAreasStep: []
-        };
+        const { movements, diagonalMoves } = makePathfinderMovements(world);
 
+        configureDamageBlockAvoidance(movements);
         configureDamageBlockAvoidance(movements);
 
         assert.deepEqual([...movements.blocksToAvoid], [2, 3]);
@@ -191,6 +229,238 @@ describe('pathfinder hazard avoidance', () => {
         assert.equal(movements.exclusionAreasStep[0]({
             position: new Vec3(2, 64, 0)
         }), 0);
+        movements.getMoveDiagonal(
+            new Vec3(2, 64, 0),
+            { x: 1, z: 1 },
+            []
+        );
+        assert.equal(diagonalMoves.length, 1, 'diagonal guard is installed once');
+    });
+
+    it('rejects diagonal corner cuts beside body and support hazards', () => {
+        for (const blocks of [
+            { '1,64,0': makeBlock('cactus', 'block') },
+            { '0,63,1': makeBlock('magma_block', 'block') }
+        ]) {
+            const world = makeWorld({ blocks });
+            const { movements, diagonalMoves } = makePathfinderMovements(world);
+            configureDamageBlockAvoidance(movements);
+
+            movements.getMoveDiagonal(
+                new Vec3(0, 64, 0),
+                { x: 1, z: 1 },
+                []
+            );
+
+            assert.equal(diagonalMoves.length, 0);
+        }
+    });
+
+    it('keeps safe diagonals and cardinal movement beside hazards', () => {
+        const world = makeWorld({
+            blocks: { '1,64,0': makeBlock('cactus', 'block') }
+        });
+        const { movements, diagonalMoves, forwardMoves } = makePathfinderMovements(world);
+        configureDamageBlockAvoidance(movements);
+
+        movements.getMoveDiagonal(
+            new Vec3(0, 64, 2),
+            { x: 1, z: 1 },
+            []
+        );
+        movements.getMoveForward(
+            new Vec3(0, 64, 0),
+            { x: 0, z: 1 },
+            []
+        );
+
+        assert.equal(diagonalMoves.length, 1);
+        assert.equal(forwardMoves.length, 1);
+    });
+
+    it('rejects parkour over a flowing lava block in the gap floor', () => {
+        const world = makeWorld({
+            blocks: {
+                '1,63,0': makeBlock('lava', 'empty', { level: 4 })
+            }
+        });
+        const { movements } = makePathfinderMovements(world);
+        configureDamageBlockAvoidance(movements);
+        const neighbors = [];
+
+        movements.getMoveParkourForward(
+            new Vec3(0, 64, 0),
+            { x: 1, z: 0 },
+            neighbors
+        );
+
+        assert.deepEqual(neighbors, []);
+    });
+
+    it('rejects parkour that lands in or on a damage block', () => {
+        for (const blocks of [
+            { '2,64,0': makeBlock('lava', 'empty', { level: 2 }) },
+            { '2,63,0': makeBlock('magma_block', 'block') }
+        ]) {
+            const world = makeWorld({ blocks });
+            const { movements } = makePathfinderMovements(world);
+            configureDamageBlockAvoidance(movements);
+            const neighbors = [];
+
+            movements.getMoveParkourForward(
+                new Vec3(0, 64, 0),
+                { x: 1, z: 0 },
+                neighbors
+            );
+
+            assert.deepEqual(neighbors, []);
+        }
+    });
+
+    it('keeps parkour when the crossed gap and landing are safe', () => {
+        const world = makeWorld();
+        const { movements } = makePathfinderMovements(world);
+        configureDamageBlockAvoidance(movements);
+        configureDamageBlockAvoidance(movements);
+        const neighbors = [];
+
+        movements.getMoveParkourForward(
+            new Vec3(0, 64, 0),
+            { x: 1, z: 0 },
+            neighbors
+        );
+
+        assert.equal(neighbors.length, 1);
+    });
+
+    it('rejects a horizontal drop onto a damage block', () => {
+        const world = makeWorld({
+            blocks: { '1,62,0': makeBlock('magma_block', 'block') }
+        });
+        const { movements } = makePathfinderMovements(world);
+        configureDamageBlockAvoidance(movements);
+        const neighbors = [];
+
+        movements.getMoveDropDown(
+            new Vec3(0, 64, 0),
+            { x: 1, z: 0 },
+            neighbors
+        );
+
+        assert.deepEqual(neighbors, []);
+    });
+
+    for (const [hazardName, blocks] of [
+        ['magma landing support', { '1,62,1': makeBlock('magma_block', 'block') }],
+        ['lava in the landing cell', { '1,63,1': makeBlock('lava') }]
+    ]) {
+        it(`rejects a diagonal one-block descent onto ${hazardName}`, () => {
+            const world = makeWorld({ blocks });
+            const { movements } = makePathfinderMovements(world);
+            movements.getMoveDiagonal = (node, dir, neighbors) => {
+                pushDirectionalMove(node, dir, neighbors, { dy: -1 });
+            };
+            configureDamageBlockAvoidance(movements);
+            const neighbors = [];
+
+            movements.getMoveDiagonal(
+                new Vec3(0, 64, 0),
+                { x: 1, z: 1 },
+                neighbors
+            );
+
+            assert.deepEqual(neighbors, []);
+        });
+    }
+
+    it('keeps a diagonal one-block descent with a safe landing', () => {
+        const world = makeWorld();
+        const { movements } = makePathfinderMovements(world);
+        movements.getMoveDiagonal = (node, dir, neighbors) => {
+            pushDirectionalMove(node, dir, neighbors, { dy: -1 });
+        };
+        configureDamageBlockAvoidance(movements);
+        configureDamageBlockAvoidance(movements);
+        const neighbors = [];
+
+        movements.getMoveDiagonal(
+            new Vec3(0, 64, 0),
+            { x: 1, z: 1 },
+            neighbors
+        );
+
+        assert.equal(neighbors.length, 1);
+    });
+
+    it('rejects a one-block descent generated by ordinary forward movement', () => {
+        const world = makeWorld({
+            blocks: { '1,62,0': makeBlock('magma_block', 'block') }
+        });
+        const { movements } = makePathfinderMovements(world);
+        movements.getMoveForward = (node, dir, neighbors) => {
+            pushDirectionalMove(node, dir, neighbors, { dy: -1 });
+        };
+        configureDamageBlockAvoidance(movements);
+        const neighbors = [];
+
+        movements.getMoveForward(
+            new Vec3(0, 64, 0),
+            { x: 1, z: 0 },
+            neighbors
+        );
+
+        assert.deepEqual(neighbors, []);
+    });
+
+    it('keeps an ordinary one-block descent with a safe landing', () => {
+        const world = makeWorld();
+        const { movements } = makePathfinderMovements(world);
+        movements.getMoveForward = (node, dir, neighbors) => {
+            pushDirectionalMove(node, dir, neighbors, { dy: -1 });
+        };
+        configureDamageBlockAvoidance(movements);
+        configureDamageBlockAvoidance(movements);
+        const neighbors = [];
+
+        movements.getMoveForward(
+            new Vec3(0, 64, 0),
+            { x: 1, z: 0 },
+            neighbors
+        );
+
+        assert.equal(neighbors.length, 1);
+    });
+
+    it('rejects a vertical drop onto a damage block', () => {
+        const world = makeWorld({
+            blocks: { '0,62,0': makeBlock('campfire', 'block', { lit: true }) }
+        });
+        const { movements } = makePathfinderMovements(world);
+        configureDamageBlockAvoidance(movements);
+        const neighbors = [];
+
+        movements.getMoveDown(new Vec3(0, 64, 0), neighbors);
+
+        assert.deepEqual(neighbors, []);
+    });
+
+    it('keeps horizontal and vertical drops with safe landings', () => {
+        const world = makeWorld();
+        const { movements } = makePathfinderMovements(world);
+        configureDamageBlockAvoidance(movements);
+        configureDamageBlockAvoidance(movements);
+        const horizontalNeighbors = [];
+        const verticalNeighbors = [];
+
+        movements.getMoveDropDown(
+            new Vec3(0, 64, 0),
+            { x: 1, z: 0 },
+            horizontalNeighbors
+        );
+        movements.getMoveDown(new Vec3(0, 64, 0), verticalNeighbors);
+
+        assert.equal(horizontalNeighbors.length, 1);
+        assert.equal(verticalNeighbors.length, 1);
     });
 });
 
