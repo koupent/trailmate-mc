@@ -1,5 +1,11 @@
 import Vec3 from 'vec3';
-import { isDoorPassableName } from '../blockProtection.js';
+import {
+    analyzePassageRoute,
+    isRoutePassage,
+    normalizePassagePosition,
+    passagePositionKey,
+    passageSide
+} from './passageRoute.js';
 
 /** Max reach used when reading what the owner is looking at. */
 const OWNER_LOOK_RANGE = 5;
@@ -8,7 +14,7 @@ const OWNER_LOOK_RANGE = 5;
  * still track when they are this close to the door.
  */
 const OWNER_NEAR_DOOR_FOR_TRACK = 4;
-/** After a swing, accept a matching closed→open update for this long. */
+/** After a swing, accept a matching closed-to-open update for this long. */
 const SWING_MATCH_MS = 1500;
 /** Drop a tracked door if the bot never finishes passing through. */
 const TRACK_TTL_MS = 45000;
@@ -18,8 +24,6 @@ const APPROACH_DISTANCE = 2.25;
 const CLEAR_DISTANCE = 1.35;
 /** Maximum sideways offset for a passage to lie between bot and owner. */
 const PASSAGE_CORRIDOR_HALF_WIDTH = 1.1;
-/** Avoid double-activate toggle (open then immediately close). */
-const OPEN_COOLDOWN_MS = 1200;
 /**
  * Block state can lag behind our own activation, so a door we just toggled may
  * still read as closed. Never touch the same door again inside this window.
@@ -31,7 +35,8 @@ const OPEN_CONFIRM_MS = 2500;
 const CLOSE_CONFIRM_MS = 1200;
 /** Back off briefly before retrying a failed or unconfirmed close. */
 const CLOSE_RETRY_MS = 600;
-
+/** Keep approach checks on the same walkable level as the authorized route. */
+const APPROACH_VERTICAL_TOLERANCE = 2.5;
 /**
  * Wooden doors and fence gates the companion may close after passing through.
  * Iron doors and trapdoors are excluded.
@@ -39,7 +44,7 @@ const CLOSE_RETRY_MS = 600;
  * @returns {boolean}
  */
 export function isCloseablePassage(block) {
-    return isDoorPassableName(block?.name);
+    return isRoutePassage(block);
 }
 
 /**
@@ -48,11 +53,7 @@ export function isCloseablePassage(block) {
  * @returns {{ x: number, y: number, z: number }}
  */
 export function normalizeDoorPos(block) {
-    const pos = block.position;
-    if (block._properties?.half === 'upper') {
-        return { x: pos.x, y: pos.y - 1, z: pos.z };
-    }
-    return { x: pos.x, y: pos.y, z: pos.z };
+    return normalizePassagePosition(block);
 }
 
 /**
@@ -60,17 +61,7 @@ export function normalizeDoorPos(block) {
  * @returns {string}
  */
 export function posKey(pos) {
-    return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
-}
-
-/** @param {{ x: number, y: number, z: number }|null|undefined} pos */
-function compactPosition(pos) {
-    if (!pos) return null;
-    return {
-        x: Number(pos.x.toFixed(2)),
-        y: Number(pos.y.toFixed(2)),
-        z: Number(pos.z.toFixed(2))
-    };
+    return passagePositionKey(pos);
 }
 
 /**
@@ -81,18 +72,13 @@ function compactPosition(pos) {
  * @returns {-1|0|1}
  */
 export function doorSide(pos, doorPos, facing) {
-    const cx = doorPos.x + 0.5;
-    const cz = doorPos.z + 0.5;
-    if (facing === 'east' || facing === 'west') {
-        return /** @type {-1|0|1} */ (Math.sign(pos.x - cx));
-    }
-    return /** @type {-1|0|1} */ (Math.sign(pos.z - cz));
+    return passageSide(pos, doorPos, facing);
 }
 
 /**
  * Whether the door truly separates bot from owner.
- * Owner standing on the threshold (a few cm past the door plane) must not count —
- * that was opening doors while both were still sheltering inside.
+ * Owner standing on the threshold (a few cm past the door plane) must not
+ * count; that was opening doors while both were still sheltering inside.
  * @param {{ x: number, z: number }} botPos
  * @param {{ x: number, z: number }} ownerPos
  * @param {{ x: number, z: number }} doorPos
@@ -133,21 +119,6 @@ export function isDoorBetween(botPos, ownerPos, doorPos, facing, clearDistance =
 }
 
 /**
- * A closed passage may be opened only when it physically separates the bot
- * from its owner. Pathfinder can include a nearby gate as a sideways detour;
- * that does not make the gate a required passage.
- * @param {{ position: {x:number,y:number,z:number}, _properties?: {facing?:string,half?:string} }} block
- * @param {{x:number,y:number,z:number}} botPos
- * @param {{x:number,y:number,z:number}} ownerPos
- */
-export function isPassageRequiredForOwner(block, botPos, ownerPos) {
-    if (!block?.position || !botPos || !ownerPos) return false;
-    const doorPos = normalizeDoorPos(block);
-    if (Math.abs(ownerPos.y - doorPos.y) > 2.5) return false;
-    return isDoorBetween(botPos, ownerPos, doorPos, block._properties?.facing);
-}
-
-/**
  * Whether the bot has approached and fully crossed to the other side.
  * @param {{
  *   approachSide: -1|0|1|null,
@@ -181,7 +152,7 @@ export function evaluatePassage(tracked, botPos, opts = {}) {
 }
 
 /**
- * True when a block update is a closed → open transition of a closeable passage.
+ * True when a block update is a closed-to-open transition of a closeable passage.
  * @param {{ name?: string, _properties?: { open?: boolean } }|null|undefined} oldBlock
  * @param {{ name?: string, _properties?: { open?: boolean } }|null|undefined} newBlock
  */
@@ -192,31 +163,21 @@ export function isClosedToOpen(oldBlock, newBlock) {
 
 /**
  * Closes wooden doors / fence gates after the bot passes through.
- * Owner opens: swing + look + closed→open, or closed→open while owner is near the door.
- * Bot opens: pathfinder / DoorTracker activateBlock on a closed passage.
+ * Owner opens: swing + look + closed-to-open, or closed-to-open while the owner
+ * is near the passage. Bot opens through an authorized pathfinder route.
  */
 export class DoorTracker {
     /**
      * @param {import('mineflayer').Bot} bot
      * @param {{
      *   getOwnerEntity?: () => import('prismarine-entity').Entity|null,
-     *   getMode?: () => string|null,
-     *   now?: () => number,
-     *   log?: (...args: any[]) => void,
-     *   isPassageRequired?: (
-     *     block: import('prismarine-block').Block,
-     *     botPos: {x:number,y:number,z:number},
-     *     ownerPos: {x:number,y:number,z:number}
-     *   ) => boolean
+     *   now?: () => number
      * }} [options]
      */
     constructor(bot, options = {}) {
         this.bot = bot;
         this.getOwnerEntity = options.getOwnerEntity || (() => null);
-        this.getMode = options.getMode || (() => null);
         this.now = options.now || Date.now;
-        this.log = options.log || console.log;
-        this.isPassageRequired = options.isPassageRequired || isPassageRequiredForOwner;
 
         /** @type {{ key: string, doorPos: {x:number,y:number,z:number}, facing?: string, at: number }[]} */
         this._pending = [];
@@ -233,14 +194,11 @@ export class DoorTracker {
         this._tracked = [];
         this._closing = false;
         this._opening = false;
-        this._activationSource = null;
-        this._openCooldownUntil = 0;
         /** @type {Map<string, number>} door key -> last activation time */
         this._recentOpens = new Map();
         this._lastOwnerSwingAt = 0;
-        this._pathStatus = 'idle';
-        this._authorizedPathPassages = new Set();
-        this._pathBlockResult = 'blocked-incomplete-route';
+        /** @type {Map<string, import('./passageRoute.js').RoutePassagePlan>} */
+        this._authorizedPathPassages = new Map();
 
         this._onSwing = (entity) => this._handleSwing(entity);
         this._onBlockUpdate = (oldBlock, newBlock) => this._handleBlockUpdate(oldBlock, newBlock);
@@ -315,16 +273,17 @@ export class DoorTracker {
     }
 
     /**
-     * Expire stale entries, open a closed door blocking the path, and close after passage.
+     * Expire stale entries and close a passage only after the bot crosses it.
      */
     async tick() {
         const now = this.now();
         this._pending = this._pending.filter((p) => now - p.at <= SWING_MATCH_MS);
-        this._tracked = this._tracked.filter((t) => now - t.openedAt <= TRACK_TTL_MS);
+        this._tracked = this._tracked.filter((tracked) => now - tracked.openedAt <= TRACK_TTL_MS);
+        for (const [key, activatedAt] of this._recentOpens) {
+            if (now - activatedAt > REOPEN_GUARD_MS) this._recentOpens.delete(key);
+        }
 
-        if (this._closing) return;
-
-        if (this._tracked.length === 0) return;
+        if (this._closing || this._opening) return;
 
         const botPos = this.bot.entity?.position;
         if (!botPos) return;
@@ -357,155 +316,73 @@ export class DoorTracker {
             await this._closeTracked(tracked, block);
             return;
         }
+
+        await this._openAuthorizedPassageOnApproach(botPos);
     }
 
     /**
-     * Open the exact closed passage detected directly ahead by recovery.
-     * Normal movement leaves door selection to pathfinder's active route.
-     * @param {{ x: number, y: number, z: number }} doorPos
-     * @param {{ source?: string }} [options]
-     * @returns {Promise<boolean>} true if an open was attempted
-     */
-    async openPassageAt(doorPos, options = {}) {
-        if (this._opening || this._closing) return false;
-        const now = this.now();
-        if (now < this._openCooldownUntil) return false;
-
-        for (const [key, at] of this._recentOpens) {
-            if (now - at > REOPEN_GUARD_MS) this._recentOpens.delete(key);
-        }
-
-        const block = this._blockAt(doorPos);
-        if (!block || !isCloseablePassage(block)) return false;
-        const lowerPos = normalizeDoorPos(block);
-        const current = this._blockAt(lowerPos) || block;
-        if (!isCloseablePassage(current) || current._properties?.open === true) return false;
-        if (this._openSkipReason(current)) return false;
-
-        const source = options.source || 'recovery-front';
-        const blockResult = this._passageGeometryBlockResult(current);
-        if (blockResult) {
-            this._logDoorInteraction(current, source, blockResult);
-            return false;
-        }
-
-        this._opening = true;
-        this._activationSource = source;
-        this._openCooldownUntil = now + OPEN_COOLDOWN_MS;
-        this._recentOpens.set(posKey(lowerPos), now);
-        try {
-            await this.bot.activateBlock(current);
-            return true;
-        } catch (err) {
-            console.warn('[companion] door open failed:', err?.message || err);
-            return false;
-        } finally {
-            this._activationSource = null;
-            this._opening = false;
-        }
-    }
-
-    /**
-     * Why this closed door must be left alone, or null when it may be opened.
-     * @param {import('prismarine-block').Block} door lower half
-     * @returns {'recently-toggled'|'other-leaf-open'|null}
-     */
-    _openSkipReason(door) {
-        const lastOpen = this._recentOpens.get(posKey(door.position));
-        if (lastOpen != null && this.now() - lastOpen < REOPEN_GUARD_MS) return 'recently-toggled';
-
-        // Double doors: the leaf the owner already opened is the passage to use.
-        const pos = door.position;
-        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-            const neighbour = this._blockAt({ x: pos.x + dx, y: pos.y, z: pos.z + dz });
-            if (isCloseablePassage(neighbour) && neighbour._properties?.open === true) {
-                return 'other-leaf-open';
-            }
-        }
-        return null;
-    }
-
-    /**
-     * Authorize door actions only when A* produced a complete current route.
-     * Follow-route endpoint validation belongs to MovementController, which
-     * runs first and clears invalid paths before this listener sees them. The
-     * passage may be a legitimate detour outside the direct bot-owner line.
+     * Authorize only actions whose complete route actually crosses the passage.
+     * MovementController runs first and removes an invalid path before this
+     * listener sees it, while this second check protects activateBlock races.
      * @param {{ status?: string, path?: Array<{
      *   x?:number,y?:number,z?:number,
      *   toPlace?: Array<{ x:number,y:number,z:number,useOne?:boolean }>
      * }> }} result
      */
     _handlePathUpdate(result) {
-        this._pathStatus = result?.status || 'unknown';
         this._authorizedPathPassages.clear();
-        this._pathBlockResult = 'blocked-incomplete-route';
-        if (this._pathStatus !== 'success' || !Array.isArray(result?.path)) return;
+        if (result?.status !== 'success' || !Array.isArray(result.path)) {
+            return;
+        }
 
         const endpoint = result.path.at(-1);
         if (!Number.isFinite(endpoint?.x) || !Number.isFinite(endpoint?.y)
             || !Number.isFinite(endpoint?.z)) {
-            this._pathBlockResult = 'blocked-unverified-route';
             return;
         }
 
-        this._pathBlockResult = null;
+        const analysis = analyzePassageRoute(this.bot, result.path);
+        if (!analysis.valid) return;
 
-        for (const node of result.path) {
-            for (const action of node.toPlace || []) {
-                if (action?.useOne !== true) continue;
-                this._authorizedPathPassages.add(posKey(action));
-            }
-        }
+        this._authorizedPathPassages = analysis.passages;
+        this._removePathfinderPassageActions(result.path);
     }
 
     _clearPathAuthorization() {
-        this._pathStatus = 'invalidated';
         this._authorizedPathPassages.clear();
-        this._pathBlockResult = 'blocked-incomplete-route';
-    }
-
-    /** @param {import('prismarine-block').Block} block */
-    _pathPassageBlockResult(block) {
-        if (this._pathBlockResult) return this._pathBlockResult;
-        const passageKey = posKey(normalizeDoorPos(block));
-        if (!this._authorizedPathPassages.has(passageKey)) return 'blocked-unverified-route';
-        return null;
-    }
-
-    /** @param {import('prismarine-block').Block} block */
-    _passageGeometryBlockResult(block) {
-        const owner = this.getOwnerEntity();
-        const botPos = this.bot.entity?.position;
-        if (!owner?.position || !botPos) return 'blocked-unverified-passage';
-        if (!this.isPassageRequired(block, botPos, owner.position)) {
-            return 'blocked-not-between-owner';
-        }
-        return null;
     }
 
     /**
-     * pathfinder opens doors via activateBlock; record closed passages we open.
+     * @param {import('prismarine-block').Block} block
+     * @returns {import('./passageRoute.js').RoutePassagePlan|null}
+     */
+    _authorizedPassageFor(block) {
+        const passageKey = posKey(normalizeDoorPos(block));
+        const passage = this._authorizedPathPassages.get(passageKey);
+        if (!passage) return null;
+        const botPos = this.bot.entity?.position;
+        if (!botPos || doorSide(botPos, passage.passagePos, passage.facing) !== passage.approachSide) {
+            return null;
+        }
+        return passage;
+    }
+
+    /**
+     * Record closed passages opened through an authorized route.
      * @param {import('prismarine-block').Block} block
      * @param {...any} args
      */
     _wrappedActivateBlock(block, ...args) {
         const passage = isCloseablePassage(block);
-        const source = this._closing
-            ? 'close-after-passage'
-            : this._activationSource || 'pathfinder-route';
         const doorKey = passage ? posKey(normalizeDoorPos(block)) : null;
         const opening = passage && block._properties?.open !== true;
 
-        if (source === 'pathfinder-route' && opening) {
-            const blockResult = this._pathPassageBlockResult(block);
-            if (blockResult) {
-                this._logDoorInteraction(block, source, blockResult);
-                return Promise.resolve();
-            }
+        if (opening) {
+            const authorization = this._authorizedPassageFor(block);
+            if (!authorization) return Promise.resolve();
 
             const lastToggle = this._recentOpens.get(doorKey);
             if (lastToggle != null && this.now() - lastToggle < REOPEN_GUARD_MS) {
-                this._logDoorInteraction(block, source, 'blocked-recent-toggle');
                 return Promise.resolve();
             }
         }
@@ -521,50 +398,74 @@ export class DoorTracker {
         try {
             activation = this._originalActivateBlock(block, ...args);
         } catch (err) {
-            if (passage) this._logDoorInteraction(block, source, 'failed', err);
+            if (passage) console.warn('[companion] door activation failed:', err?.message || err);
             throw err;
         }
 
         if (!passage) return activation;
-        return Promise.resolve(activation).then(
-            (result) => {
-                this._logDoorInteraction(block, source, 'success');
-                return result;
-            },
-            (err) => {
-                this._logDoorInteraction(block, source, 'failed', err);
-                throw err;
-            }
-        );
+        return Promise.resolve(activation).catch((err) => {
+            console.warn('[companion] door activation failed:', err?.message || err);
+            throw err;
+        });
     }
 
     /**
-     * Log enough context to reproduce unexpected door choices without polling.
-     * @param {import('prismarine-block').Block} block
-     * @param {string} source
-     * @param {string} result
-     * @param {unknown} [err]
+     * mineflayer-pathfinder treats `useOne` as a block-placement operation and
+     * can reset an otherwise valid route with `no_scaffolding_blocks` directly
+     * after opening a door. DoorTracker owns authorized passage activation, so
+     * remove only those actions before pathfinder adopts the emitted path.
+     * @param {Array<any>} path
      */
-    _logDoorInteraction(block, source, result, err) {
-        const owner = this.getOwnerEntity();
-        const goal = this.bot.pathfinder?.goal;
-        const event = {
-            at: this.now(),
-            source,
-            action: block._properties?.open === true ? 'close' : 'open',
-            result,
-            passage: block.name,
-            door: compactPosition(normalizeDoorPos(block)),
-            doorFacing: block._properties?.facing || null,
-            bot: compactPosition(this.bot.entity?.position),
-            owner: compactPosition(owner?.position),
-            mode: this.getMode(),
-            pathfinderGoal: goal?.constructor?.name || null,
-            pathStatus: this._pathStatus,
-            pathAuthorization: this._pathBlockResult || 'authorized',
-            error: err?.message || (err ? String(err) : null)
-        };
-        this.log(`[companion] door-interaction ${JSON.stringify(event)}`);
+    _removePathfinderPassageActions(path) {
+        if (this._authorizedPathPassages.size === 0) return;
+
+        for (const node of path) {
+            if (!Array.isArray(node?.toPlace)) continue;
+            node.toPlace = node.toPlace.filter((action) => {
+                if (action?.useOne !== true) return true;
+                const block = this._blockAt(action);
+                if (!isCloseablePassage(block)) return true;
+                return !this._authorizedPathPassages.has(posKey(normalizeDoorPos(block)));
+            });
+        }
+    }
+
+    /**
+     * Open the next authorized closed passage only when the bot reaches the
+     * planned entrance side. The same route remains active and carries the bot
+     * through; normal tracking closes the passage after the crossing.
+     * @param {{ x:number,y:number,z:number }} botPos
+     */
+    async _openAuthorizedPassageOnApproach(botPos) {
+        const candidates = [...this._authorizedPathPassages.values()]
+            .map((passage) => ({
+                passage,
+                distance: Math.hypot(
+                    botPos.x - (passage.passagePos.x + 0.5),
+                    botPos.z - (passage.passagePos.z + 0.5)
+                )
+            }))
+            .filter(({ passage, distance }) =>
+                distance <= APPROACH_DISTANCE
+                && Math.abs(botPos.y - passage.passagePos.y) <= APPROACH_VERTICAL_TOLERANCE
+                && doorSide(botPos, passage.passagePos, passage.facing) === passage.approachSide
+            )
+            .sort((a, b) => a.distance - b.distance);
+
+        for (const { passage } of candidates) {
+            const block = this._blockAt(passage.passagePos);
+            if (!isCloseablePassage(block) || block._properties?.open === true) continue;
+
+            this._opening = true;
+            try {
+                await this.bot.activateBlock(block);
+            } catch {
+                // _wrappedActivateBlock logs operational activation failures.
+            } finally {
+                this._opening = false;
+            }
+            return;
+        }
     }
 
     /**
