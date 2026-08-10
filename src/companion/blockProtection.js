@@ -222,10 +222,9 @@ export function configureDoorAwareMovements(movements) {
             movements.openable.add(block.id);
         }
     }
-    // Closed lower doors/gates: normally walkable via activateBlock. A closest-
-    // reachable fallback explicitly disables opening so A* stays in the bot's
-    // current connected area. Open / upper passages remain walkable below.
-    movements.canOpenDoors = movements._trailmateDisableDoorOpening !== true;
+    // Closed lower doors and gates remain available to A*. DoorTracker allows
+    // activation only after the complete route proves a real crossing.
+    movements.canOpenDoors = true;
 
     if (movements._trailmateDoorAware) return movements;
     movements._trailmateDoorAware = true;

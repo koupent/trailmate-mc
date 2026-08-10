@@ -64,31 +64,12 @@ export class RecoveryInterrupt {
         const dy = owner.position.y - botPos.y;
         const around = scanSurroundings(bot, owner.position);
 
-        // Closed door ahead: open via shared DoorTracker API (avoids double-toggle).
-        if (await this._tryOpenFrontDoor(ctx, around)) {
-            ctx.stuck.reset(bot.entity.position);
-            this.cooldownUntil = Date.now() + COOLDOWN_MS;
-            return;
-        }
-
         const plan = choosePlan(around, dy);
 
         await this._perform(ctx, plan);
 
         ctx.stuck.reset(bot.entity.position);
         this.cooldownUntil = Date.now() + COOLDOWN_MS;
-    }
-
-    /**
-     * @param {import('../CompanionContext.js').CompanionContext} ctx
-     * @param {ReturnType<typeof scanSurroundings>} around
-     */
-    async _tryOpenFrontDoor(ctx, around) {
-        const ahead = around.front?.find((f) => f.side === 'ahead');
-        // solid=true means a closed passage is still blocking the forward column.
-        if (!ahead?.solid || !isCloseablePassage({ name: ahead.block })) return false;
-        if (!ahead.position || typeof ctx.doors?.openPassageAt !== 'function') return false;
-        return ctx.doors.openPassageAt(ahead.position, { source: 'recovery-front' });
     }
 
     async _perform(ctx, plan) {

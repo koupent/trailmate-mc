@@ -139,15 +139,6 @@ describe('configureDoorAwareMovements', () => {
         assert.deepEqual(result.shapes, [[0.8125, 0, 0, 1, 1, 1]]);
     });
 
-    it('preserves explicit no-door mode for cutoff best-effort paths', () => {
-        const movements = makeMovementsStub({ name: 'cobblestone' });
-        movements._trailmateDisableDoorOpening = true;
-
-        configureDoorAwareMovements(movements);
-
-        assert.equal(movements.canOpenDoors, false);
-    });
-
     it('marks upper door halves as safe so closed lower doors can be opened', () => {
         const upper = {
             name: 'oak_door',
