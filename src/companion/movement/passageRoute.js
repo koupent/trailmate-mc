@@ -67,6 +67,7 @@ export function analyzePassageRoute(bot, path, start = bot?.entity?.position) {
     if (!Array.isArray(path) || !start) {
         return { valid: false, passages, invalidKey: null };
     }
+    const routePoints = [start, ...path];
 
     for (let nodeIndex = 0; nodeIndex < path.length; nodeIndex++) {
         const node = path[nodeIndex];
@@ -80,21 +81,24 @@ export function analyzePassageRoute(bot, path, start = bot?.entity?.position) {
             const passagePos = normalizePassagePosition(block);
             const key = passagePositionKey(passagePos);
             const crossing = findPassageCrossing(
-                path,
-                start,
+                routePoints,
                 passagePos,
                 block._properties?.facing,
-                nodeIndex
+                nodeIndex + 1
             );
             if (!crossing) return { valid: false, passages, invalidKey: key };
 
-            // A passage is relevant only when the route finishes on the side it
-            // exited. A* can otherwise leave through a nearby gate, climb or
-            // detour elsewhere, and return to the original side near an
-            // unreachable target. Opening that gate does not advance the bot
-            // into the target's region.
-            const endpointSide = clearSide(path.at(-1), passagePos, block._properties?.facing);
-            if (endpointSide !== crossing.exitSide) {
+            // Only a second crossing through this doorway makes the action
+            // pointless. Comparing the route endpoint against the doorway's
+            // infinite plane rejects valid routes around large fenced areas:
+            // the path can cross that plane elsewhere without coming back
+            // through the doorway.
+            if (hasLaterPassageRecrossing(
+                routePoints,
+                crossing,
+                passagePos,
+                block._properties?.facing
+            )) {
                 return { valid: false, passages, invalidKey: key };
             }
 
@@ -112,38 +116,23 @@ export function analyzePassageRoute(bot, path, start = bot?.entity?.position) {
 }
 
 /**
- * Determine whether a route actually crosses a specific passage. When an action
- * index is supplied, the crossing must surround that action node.
- * @param {Array<any>} path
- * @param {{ x:number,y:number,z:number }} start
+ * Determine whether a route actually crosses a specific passage around its
+ * action node.
+ * @param {Array<any>} points Bot start followed by all path nodes
  * @param {{ x:number,y:number,z:number }} passagePos
  * @param {string|undefined} facing
- * @param {number|null} [actionNodeIndex]
- * @returns {{ approachSide:-1|1, exitSide:-1|1 }|null}
+ * @param {number} actionPointIndex Index within `points`
+ * @returns {{ approachSide:-1|1, exitSide:-1|1, afterIndex:number }|null}
  */
 function findPassageCrossing(
-    path,
-    start,
+    points,
     passagePos,
     facing,
-    actionNodeIndex = null
+    actionPointIndex
 ) {
-    if (!Array.isArray(path) || !start) return null;
-    const points = [start, ...path];
-    if (actionNodeIndex != null) {
-        const actionPointIndex = actionNodeIndex + 1;
-        const before = findSidePoint(points, passagePos, facing, actionPointIndex - 1, -1);
-        const after = findSidePoint(points, passagePos, facing, actionPointIndex + 1, 1);
-        return crossingFromPoints(before, after, passagePos, facing);
-    }
-
-    for (let split = 0; split < points.length - 1; split++) {
-        const before = findSidePoint(points, passagePos, facing, split, -1);
-        const after = findSidePoint(points, passagePos, facing, split + 1, 1);
-        const crossing = crossingFromPoints(before, after, passagePos, facing);
-        if (crossing) return crossing;
-    }
-    return null;
+    const before = findSidePoint(points, passagePos, facing, actionPointIndex - 1, -1);
+    const after = findSidePoint(points, passagePos, facing, actionPointIndex + 1, 1);
+    return crossingFromPoints(before, after, passagePos, facing);
 }
 
 /**
@@ -167,7 +156,11 @@ function findSidePoint(points, passagePos, facing, startIndex, step) {
         if (!isFinitePoint(point)) continue;
         const planeDistance = passagePlaneDistance(point, passagePos, facing);
         if (Math.abs(planeDistance) < SIDE_CLEARANCE) continue;
-        return { point, side: /** @type {-1|1} */ (Math.sign(planeDistance)) };
+        return {
+            point,
+            side: /** @type {-1|1} */ (Math.sign(planeDistance)),
+            index: i
+        };
     }
     return null;
 }
@@ -178,7 +171,38 @@ function crossingFromPoints(before, after, passagePos, facing) {
         || !isNearPassage(after.point, passagePos, facing)) {
         return null;
     }
-    return { approachSide: before.side, exitSide: after.side };
+    return {
+        approachSide: before.side,
+        exitSide: after.side,
+        afterIndex: after.index
+    };
+}
+
+/**
+ * Reject only a later return through the same physical doorway corridor. A
+ * route crossing the doorway's mathematical plane somewhere else is a normal
+ * part of a wide detour and must remain valid.
+ */
+function hasLaterPassageRecrossing(points, crossing, passagePos, facing) {
+    let previous = {
+        point: points[crossing.afterIndex],
+        side: crossing.exitSide
+    };
+
+    for (let i = crossing.afterIndex + 1; i < points.length; i++) {
+        const point = points[i];
+        if (!isFinitePoint(point)) continue;
+        const side = clearSide(point, passagePos, facing);
+        if (side === 0) continue;
+
+        if (side !== previous.side
+            && isNearPassage(previous.point, passagePos, facing)
+            && isNearPassage(point, passagePos, facing)) {
+            return true;
+        }
+        previous = { point, side };
+    }
+    return false;
 }
 
 function isNearPassage(point, passagePos, facing) {

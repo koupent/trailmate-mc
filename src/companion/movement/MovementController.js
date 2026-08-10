@@ -16,40 +16,14 @@ const STALL_DISTANCE = 0.4;
 const STALL_MS = 1500;
 /** Recheck a waiting companion's live owner route at this interval. */
 export const UNREACHABLE_REPROBE_MS = 1000;
-/** Owner movement that invalidates an in-flight live-route probe. */
-const LIVE_ROUTE_PROBE_DRIFT = 0.75;
-/** Keep each background probe slice below one companion tick budget. */
-const LIVE_ROUTE_PROBE_TICK_MS = 20;
-/** Allow an incremental live-route probe to span several companion ticks. */
-const LIVE_ROUTE_PROBE_TIMEOUT_MS = 5000;
-/** Follow only X/Z while a creative-style airborne owner is well above/below. */
-export const AIRBORNE_HORIZONTAL_FOLLOW_DY = 3;
-/** Limit vertical column scans while resolving the surface below an owner. */
-const SURFACE_SCAN_DEPTH = 96;
-const CUTOFF_PHASE = Object.freeze({
-    SEARCHING: 'searching',
-    FOLLOWING: 'following',
-    WAITING: 'waiting'
-});
-
-/**
- * @typedef {Object} CutoffState
- * @property {'searching'|'following'|'waiting'} phase
- * @property {import('vec3').Vec3} position
- * @property {any} goal
- * @property {{position:import('vec3').Vec3,height:number}} visibilityTarget
- * @property {number} lastProbeAt
- * @property {import('vec3').Vec3|null} lastProbePosition
- */
-
 function isFailedPathStatus(status) {
     return status === 'noPath' || status === 'timeout';
 }
 
 /**
  * Find the closest standable surface below the owner's X/Z position. This is
- * used when the owner is far above or below the bot, where targeting the
- * entity's exact Y can turn an otherwise simple horizontal route unreachable.
+ * the sole owner-follow target on both the ground and in flight, so the
+ * entity's unreachable airborne Y never becomes part of A*.
  * @param {import('mineflayer').Bot} bot
  * @param {{x:number,y:number,z:number}} position
  * @returns {Vec3|null}
@@ -61,9 +35,8 @@ export function findSurfaceFollowTarget(bot, position) {
     const z = Math.floor(position.z);
     const startY = Math.floor(position.y);
     const worldMinY = Number.isFinite(bot.game?.minY) ? bot.game.minY : -64;
-    const minY = Math.max(worldMinY, startY - SURFACE_SCAN_DEPTH);
 
-    for (let feetY = startY; feetY >= minY; feetY--) {
+    for (let feetY = startY; feetY >= worldMinY; feetY--) {
         const floor = bot.blockAt(new Vec3(x, feetY - 1, z));
         const feet = bot.blockAt(new Vec3(x, feetY, z));
         const head = bot.blockAt(new Vec3(x, feetY + 1, z));
@@ -93,53 +66,12 @@ function isUnsafeSurface(name = '') {
 }
 
 /**
- * Keep only a partial route prefix that makes measurable progress and does not
- * yet interact with a door. A* continues searching while the bot walks this
- * prefix; door use remains blocked until a complete route is validated.
- * @param {{status?:string,path?:Array<any>}} result
- * @param {{x:number,y:number,z:number}|null|undefined} start
- * @param {{x:number,y:number,z:number}|null|undefined} target
- * @returns {boolean}
- */
-export function retainProgressingCutoffPath(result, start, target) {
-    if (!['partial', 'timeout', 'noPath'].includes(result?.status)
-        || !Array.isArray(result.path) || !start || !target) {
-        return false;
-    }
-
-    const interactionIndex = result.path.findIndex((node) =>
-        Array.isArray(node?.toPlace) && node.toPlace.length > 0
-    );
-    if (interactionIndex >= 0) result.path.length = interactionIndex;
-    if (result.path.length === 0) return false;
-
-    const endpoint = result.path.at(-1);
-    const startDistance = Math.hypot(
-        start.x - target.x,
-        start.y - target.y,
-        start.z - target.z
-    );
-    const endDistance = Math.hypot(
-        endpoint.x - target.x,
-        endpoint.y - target.y,
-        endpoint.z - target.z
-    );
-    if (!Number.isFinite(endDistance) || endDistance >= startDistance - 0.25) {
-        result.path.length = 0;
-        return false;
-    }
-    return true;
-}
-
-/**
  * Prevent an incomplete follow route from moving the bot toward an arbitrary
- * A* frontier while the controller is still looking for a complete detour,
- * and reject a completed route that only reaches the far side of a wall around
- * the followed player.
+ * A* frontier, and reject a completed route that ends across an obstruction
+ * from its projected ground target.
  *
  * The path array is shared with mineflayer-pathfinder, so clearing it here
- * prevents that route from being executed. The controller then freezes the
- * owner's movement target and runs one guarded search to that position.
+ * prevents unsafe movement and door actions from being executed.
  *
  * @param {import('mineflayer').Bot} bot
  * @param {{status?:string,path?:Array<{
@@ -207,21 +139,21 @@ export class MovementController {
         this._holdOrigin = null;
         this._holdStartedAt = 0;
         this._endpointVisibilityTarget = null;
-        /** @type {{x:number,y:number,z:number}|null} */
-        this._fallbackTargetPosition = null;
-        /** @type {CutoffState|null} */
-        this._cutoff = null;
-        /** @type {{iterator:Iterator<any>,position:Vec3,goalKind:string}|null} */
-        this._liveRouteProbe = null;
+        this._goalRole = null;
+        /** @type {Vec3|null} */
+        this._activeFollowTarget = null;
+        this._activeFollowKey = null;
+        /** @type {Vec3|null} */
+        this._lastReachableFollowTarget = null;
+        this._blockedFollowKey = null;
+        this._blockedFollowAt = 0;
+        this._followOwnerId = null;
+        this._followDimension = null;
 
         bot.on('path_update', (result) => this._handlePathUpdate(result));
 
-        bot.on('goal_reached', (goal) => {
-            if (this._cutoff && (!goal || goal === this._cutoff.goal)) {
-                this._markUnreachableWaiting();
-                return;
-            }
-            this.status = 'arrived';
+        bot.on('goal_reached', () => {
+            this.status = this._goalRole === 'follow-fallback' ? 'unreachable' : 'arrived';
             this._clearHold();
             if (this._goalKey && (this._goalKey.startsWith('climb:') || this._goalKey.startsWith('seek:'))) {
                 this._goalKey = null;
@@ -237,7 +169,7 @@ export class MovementController {
     get hasGoal() {
         const active = this.bot.pathfinder.goal;
         if (!active) return false;
-        return active === this._goal || active === this._cutoff?.goal;
+        return active === this._goal;
     }
 
     get isMoving() {
@@ -261,7 +193,7 @@ export class MovementController {
     }
 
     get isUnreachableFallback() {
-        return this._cutoff !== null;
+        return this._blockedFollowKey !== null;
     }
 
     get isTryingToMove() {
@@ -273,91 +205,71 @@ export class MovementController {
     }
 
     _handlePathUpdate(result) {
-        const isCutoffPath = this._cutoff
-            && this._goal === this._cutoff.goal
-            && this.bot.pathfinder.goal === this._cutoff.goal;
-
         if (result?.status === 'success' && Array.isArray(result.path)) {
             const passageRoute = analyzePassageRoute(this.bot, result.path);
             if (!passageRoute.valid) {
                 result.path.length = 0;
-                if (isCutoffPath) {
-                    this._markUnreachableWaiting();
-                } else if (this._endpointVisibilityTarget?.position) {
-                    this.status = 'searching';
-                    this._beginCutoffSearch(this._fallbackTargetPosition);
-                } else {
-                    this.status = 'noPath';
-                }
+                this._markActiveRouteFailed();
                 return;
             }
         }
 
-        if (isCutoffPath) {
-            if (result.status === 'success') {
-                const rejected = suppressUnsafeFollowPath(
-                    this.bot,
-                    result,
-                    this._cutoff.visibilityTarget
-                );
-                if (rejected) {
-                    this._markUnreachableWaiting();
-                    return;
-                }
-                this._cutoff.phase = CUTOFF_PHASE.FOLLOWING;
-                this.status = 'success';
-                alignPathToDoorGaps(this.bot, result.path);
-                return;
-            }
-
-            const retained = retainProgressingCutoffPath(
-                result,
-                this.bot.entity?.position,
-                this._cutoff.position
-            );
-            alignPathToDoorGaps(this.bot, result.path);
+        if (this._goalRole === 'follow' || this._goalRole === 'follow-fallback') {
             if (result.status === 'partial') {
-                this.status = 'searching';
+                if (Array.isArray(result.path)) result.path.length = 0;
+                this.status = this._goalRole === 'follow' ? 'searching' : 'unreachable';
                 return;
             }
-            if (isFailedPathStatus(result.status) && retained) {
-                this._cutoff.phase = CUTOFF_PHASE.FOLLOWING;
-                this.status = 'searching';
+
+            if (isFailedPathStatus(result.status)) {
+                if (Array.isArray(result.path)) result.path.length = 0;
+                this._markActiveRouteFailed();
                 return;
             }
-            this._markUnreachableWaiting();
+
+            const suppressed = suppressUnsafeFollowPath(
+                this.bot,
+                result,
+                this._endpointVisibilityTarget
+            );
+            if (suppressed) {
+                this._markActiveRouteFailed();
+                return;
+            }
+
+            if (result.status === 'success') {
+                if (this._goalRole === 'follow' && this._activeFollowTarget) {
+                    this._lastReachableFollowTarget = this._activeFollowTarget.clone();
+                    this._blockedFollowKey = null;
+                    this._blockedFollowAt = 0;
+                    this.status = 'success';
+                } else {
+                    this.status = 'unreachable';
+                }
+                alignPathToDoorGaps(this.bot, result.path);
+            }
             return;
         }
 
-        const suppressed = suppressUnsafeFollowPath(
-            this.bot,
-            result,
-            this._endpointVisibilityTarget
-        );
+        const suppressed = suppressUnsafeFollowPath(this.bot, result, this._endpointVisibilityTarget);
         if (suppressed) {
-            this.status = 'searching';
-            this._beginCutoffSearch(this._fallbackTargetPosition);
+            this.status = result.status === 'partial' ? 'searching' : 'noPath';
             return;
         }
-
         if (this._endpointVisibilityTarget?.position
             && isFailedPathStatus(result.status)) {
             if (Array.isArray(result.path)) result.path.length = 0;
             this.status = 'unreachable';
-            const cutoffPosition = this._fallbackTargetPosition;
-            this._clearCutoffState();
-            this._beginCutoffSearch(cutoffPosition);
             return;
         }
 
-        this._clearCutoffState();
         this.status = result.status;
         alignPathToDoorGaps(this.bot, result.path);
     }
 
     /**
-     * Follow a moving entity. Always clears climb holds so chasing never sticks.
-     * Used while climbing where a tight GoalFollow is safer than a behind-anchor.
+     * Follow the standable surface directly below an entity. The entity's Y is
+     * never used as a path goal, which keeps ground and airborne follow identical.
      * @param {import('prismarine-entity').Entity} entity
      * @param {number} range
      * @param {{
@@ -371,37 +283,43 @@ export class MovementController {
             return false;
         }
         this._releaseClimbHold();
-        const visibilityTarget = options.endpointVisibilityTarget || null;
-        const botY = this.bot.entity?.position?.y;
-        const hasLargeHeightGap = Number.isFinite(botY)
-            && Math.abs(entity.position.y - botY) >= AIRBORNE_HORIZONTAL_FOLLOW_DY;
-        const surfaceTarget = hasLargeHeightGap
-            ? findSurfaceFollowTarget(this.bot, entity.position)
-            : null;
-        const goal = surfaceTarget
-            ? new pf.goals.GoalNear(surfaceTarget.x, surfaceTarget.y, surfaceTarget.z, range)
-            : hasLargeHeightGap
-                ? new pf.goals.GoalNearXZ(entity.position.x, entity.position.z, range)
-                : new pf.goals.GoalFollow(entity, range);
-        const fallbackPosition = surfaceTarget || entity.position;
-        if (this.isUnreachableFallback
-            && !this._resumeFromUnreachableIfReachable(
-                goal,
-                visibilityTarget,
-                fallbackPosition
-            )) {
+        this._prepareFollowOwner(entity);
+
+        const surfaceTarget = findSurfaceFollowTarget(this.bot, entity.position);
+        if (!surfaceTarget) {
+            this.status = 'unreachable';
+            this._ensureLastReachableGoal(range);
             return false;
         }
-        const targetCell = hasLargeHeightGap
-            ? `:${Math.floor(entity.position.x)}:${Math.floor(surfaceTarget?.y ?? entity.position.y)}:${Math.floor(entity.position.z)}`
-            : '';
-        const followKind = surfaceTarget ? '-surface' : hasLargeHeightGap ? '-xz' : '';
-        const key = `follow${followKind}:${entity.id}:${range}${targetCell}:${visibilityTarget ? 'guarded' : 'plain'}`;
-        if (this._goalKey === key && this.hasGoal && !this.isBlocked) return false;
+
+        const key = followTargetKey(entity.id, surfaceTarget, range);
+        const retryPending = this._blockedFollowKey === key
+            && this.now() - this._blockedFollowAt < UNREACHABLE_REPROBE_MS;
+        if (retryPending) {
+            this._ensureLastReachableGoal(range);
+            return false;
+        }
+
+        if (this._goalRole === 'follow'
+            && this._activeFollowKey === key
+            && this.hasGoal
+            && !this.isBlocked) {
+            return false;
+        }
+
+        const goal = new pf.goals.GoalNear(
+            surfaceTarget.x,
+            surfaceTarget.y,
+            surfaceTarget.z,
+            range
+        );
         this._goalKey = key;
+        this._activeFollowKey = key;
+        this._activeFollowTarget = surfaceTarget.clone();
         this._setGoal(goal, {
-            visibilityTarget,
-            fallbackPosition
+            role: 'follow',
+            visibilityTarget: surfaceVisibilityTarget(surfaceTarget),
+            dynamic: true
         });
         return true;
     }
@@ -422,10 +340,6 @@ export class MovementController {
         this._releaseClimbHold();
         const visibilityTarget = options.endpointVisibilityTarget || null;
         const goal = new pf.goals.GoalNear(pos.x, pos.y, pos.z, range);
-        if (this.isUnreachableFallback
-            && !this._resumeFromUnreachableIfReachable(goal, visibilityTarget, pos)) {
-            return false;
-        }
         const key = `seek:${Math.floor(pos.x)}:${Math.floor(pos.y)}:${Math.floor(pos.z)}:${range}:${visibilityTarget ? 'guarded' : 'plain'}`;
         const last = this._lastSeekPos;
         const drifted = !last
@@ -434,7 +348,7 @@ export class MovementController {
         if (this._goalKey === key && this.hasGoal && !drifted) return false;
         this._goalKey = key;
         this._lastSeekPos = { x: pos.x, y: pos.y, z: pos.z };
-        this._setGoal(goal, { visibilityTarget, fallbackPosition: pos });
+        this._setGoal(goal, { visibilityTarget });
         return true;
     }
 
@@ -450,9 +364,7 @@ export class MovementController {
         this._holdStartedAt = this.now();
         if (this._goalKey === key && this.hasGoal) return false;
         this._goalKey = key;
-        this._setGoal(new pf.goals.GoalNear(pos.x, pos.y, pos.z, 1), {
-            fallbackPosition: pos
-        });
+        this._setGoal(new pf.goals.GoalNear(pos.x, pos.y, pos.z, 1));
         return true;
     }
 
@@ -460,7 +372,6 @@ export class MovementController {
      * Call every companion tick. Releases climb locks that are not progressing.
      */
     tickHoldWatchdog() {
-        this._tickCutoffLifecycle();
         if (!this.isHeld || !this._holdOrigin || !this._holdStartedAt) return;
 
         const pos = this.bot.entity.position;
@@ -479,12 +390,15 @@ export class MovementController {
     }
 
     stop() {
-        this._clearCutoffState();
         this._goalKey = null;
         this._goal = null;
+        this._goalRole = null;
+        this._activeFollowKey = null;
+        this._activeFollowTarget = null;
+        this._blockedFollowKey = null;
+        this._blockedFollowAt = 0;
         this._lastSeekPos = null;
         this._endpointVisibilityTarget = null;
-        this._fallbackTargetPosition = null;
         this.status = 'idle';
         this._clearHold();
         try {
@@ -523,191 +437,95 @@ export class MovementController {
         }
     }
 
-    _setGoal(goal, options = {}) {
-        // Re-apply after combat/legacy modes may have overwritten pathfinder movements.
-        this._clearCutoffState();
-        this._endpointVisibilityTarget = options.visibilityTarget || null;
-        this._fallbackTargetPosition = options.fallbackPosition || null;
-        this.bot.pathfinder.setMovements(this.movements);
-        this.status = 'searching';
-        this._goal = goal;
-        this.bot.pathfinder.setGoal(goal, true);
+    _prepareFollowOwner(entity) {
+        const dimension = this.bot.game?.dimension ?? null;
+        if (this._followOwnerId === entity.id && this._followDimension === dimension) return;
+
+        this._followOwnerId = entity.id;
+        this._followDimension = dimension;
+        this._activeFollowKey = null;
+        this._activeFollowTarget = null;
+        this._lastReachableFollowTarget = null;
+        this._blockedFollowKey = null;
+        this._blockedFollowAt = 0;
     }
 
-    /**
-     * Freeze the owner's movement target at the first incomplete route. The
-     * normal door-capable A* search remains active, but incomplete routes are
-     * trimmed before every interaction. A passage can therefore open only
-     * after a complete crossing route has been validated.
-     * @param {{x:number,y:number,z:number}|null|undefined} position
-     */
-    _beginCutoffSearch(position) {
-        if (this._cutoff || !this._goal || !position) return;
-
-        const cutoffPosition = new Vec3(position.x, position.y, position.z);
-        const liveVisibilityTarget = this._endpointVisibilityTarget;
-        const visibilityPosition = liveVisibilityTarget?.position || cutoffPosition;
-        const visibilityTarget = {
-            position: new Vec3(
-                visibilityPosition.x,
-                visibilityPosition.y,
-                visibilityPosition.z
-            ),
-            height: liveVisibilityTarget?.height ?? 1.8
-        };
-        const cutoffGoal = new pf.goals.GoalNear(
-            cutoffPosition.x,
-            cutoffPosition.y,
-            cutoffPosition.z,
-            1
-        );
-        const cutoff = {
-            phase: CUTOFF_PHASE.SEARCHING,
-            position: cutoffPosition,
-            goal: cutoffGoal,
-            visibilityTarget,
-            lastProbeAt: 0,
-            lastProbePosition: null
-        };
-        this._cutoff = cutoff;
-        queueMicrotask(() => {
-            if (this._cutoff !== cutoff || cutoff.phase !== CUTOFF_PHASE.SEARCHING) return;
-            this._goalKey = `cutoff:${cutoffPosition.x}:${cutoffPosition.y}:${cutoffPosition.z}`;
-            this._goal = cutoffGoal;
-            this._endpointVisibilityTarget = visibilityTarget;
-            this._fallbackTargetPosition = cutoffPosition;
-            this.bot.pathfinder.setMovements(this.movements);
-            this.bot.pathfinder.setGoal(cutoffGoal, false);
-        });
+    _markActiveRouteFailed() {
+        if (this._goalRole === 'follow') {
+            this._blockedFollowKey = this._activeFollowKey;
+            this._blockedFollowAt = this.now();
+            this.status = 'unreachable';
+            return;
+        }
+        this.status = this._goalRole === 'follow-fallback' ? 'unreachable' : 'noPath';
     }
 
-    _tickCutoffLifecycle() {
-        const cutoff = this._cutoff;
-        if (!cutoff || cutoff.phase !== CUTOFF_PHASE.FOLLOWING) return;
-        if (this.bot.pathfinder.goal !== cutoff.goal || this.isMoving) return;
-        this._markUnreachableWaiting();
-    }
-
-    _clearCutoffState() {
-        this._cutoff = null;
-        this._liveRouteProbe = null;
-    }
-
-    _markUnreachableWaiting() {
-        if (!this._cutoff) return;
-        this._cutoff.phase = CUTOFF_PHASE.WAITING;
-        this.status = 'unreachable';
-        this._cutoff.lastProbeAt = this.now() - UNREACHABLE_REPROBE_MS;
-    }
-
-    _resumeFromUnreachableIfReachable(goal, visibilityTarget, targetPosition) {
-        const cutoff = this._cutoff;
-        if (!cutoff) return false;
-
-        // Keep the main cutoff A* intact. A separate incremental probe checks
-        // the live owner position, so leaving an enclosure resumes follow
-        // without making fast owner movement starve the main route search.
-        const fallbackWasInterrupted = this.bot.pathfinder.goal !== cutoff.goal;
-        if (fallbackWasInterrupted) {
-            this._clearCutoffState();
-            this._goalKey = null;
-            return true;
+    _ensureLastReachableGoal(range) {
+        const target = this._lastReachableFollowTarget;
+        if (!target) {
+            this._holdUnreachable();
+            return false;
         }
 
-        if (!targetPosition) return false;
-        const probePosition = new Vec3(
-            targetPosition.x,
-            targetPosition.y,
-            targetPosition.z
-        );
-        const goalKind = goal?.constructor?.name === 'GoalNearXZ' ? 'xz' : 'xyz';
-        this._discardProbeForChangedTarget(probePosition, goalKind);
-
-        if (!this._liveRouteProbe
-            && this._shouldStartLiveRouteProbe(visibilityTarget, probePosition)) {
-            this._startLiveRouteProbe(goal, probePosition, goalKind);
+        const botPosition = this.bot.entity?.position;
+        if (botPosition && botPosition.distanceTo(target) <= range) {
+            this._holdUnreachable();
+            return false;
         }
-        if (!this._liveRouteProbe) return false;
 
-        const result = this._advanceLiveRouteProbe();
-        if (result?.status !== 'success') return false;
-        if (!analyzePassageRoute(this.bot, result.path).valid) return false;
-        if (suppressUnsafeFollowPath(this.bot, result, visibilityTarget)) return false;
+        const key = `follow-fallback:${target.x}:${target.y}:${target.z}:${range}`;
+        if (this._goalRole === 'follow-fallback'
+            && this._activeFollowKey === key
+            && this.hasGoal) {
+            return false;
+        }
 
-        this._clearCutoffState();
-        this._goalKey = null;
+        this._goalKey = key;
+        this._activeFollowKey = key;
+        this._activeFollowTarget = target.clone();
+        this._setGoal(
+            new pf.goals.GoalNear(target.x, target.y, target.z, range),
+            {
+                role: 'follow-fallback',
+                visibilityTarget: surfaceVisibilityTarget(target),
+                dynamic: true
+            }
+        );
         return true;
     }
 
-    _discardProbeForChangedTarget(position, goalKind) {
-        const probe = this._liveRouteProbe;
-        if (!probe) return;
-        if (probe.goalKind !== goalKind
-            || probe.position.distanceTo(position) >= LIVE_ROUTE_PROBE_DRIFT) {
-            this._liveRouteProbe = null;
-        }
-    }
-
-    _shouldStartLiveRouteProbe(visibilityTarget, position) {
-        const cutoff = this._cutoff;
-        if (!cutoff) return false;
-
-        const liveTargetMoved = visibilityTarget?.position
-            ? cutoff.visibilityTarget.position.distanceTo(visibilityTarget.position)
-                >= LIVE_ROUTE_PROBE_DRIFT
-            : cutoff.position.distanceTo(position) >= LIVE_ROUTE_PROBE_DRIFT;
-        const targetChangedSinceLastProbe = !cutoff.lastProbePosition
-            || cutoff.lastProbePosition.distanceTo(position) >= LIVE_ROUTE_PROBE_DRIFT;
-        const waitingRetryDue = cutoff.phase === CUTOFF_PHASE.WAITING
-            && this.now() - cutoff.lastProbeAt >= UNREACHABLE_REPROBE_MS;
-
-        return (liveTargetMoved && targetChangedSinceLastProbe) || waitingRetryDue;
-    }
-
-    _startLiveRouteProbe(goal, position, goalKind) {
-        const cutoff = this._cutoff;
-        if (!cutoff) return;
-        const range = Math.sqrt(Number.isFinite(goal?.rangeSq) ? goal.rangeSq : 1);
-        const probeGoal = goalKind === 'xz'
-            ? new pf.goals.GoalNearXZ(position.x, position.z, range)
-            : new pf.goals.GoalNear(position.x, position.y, position.z, range);
+    _holdUnreachable() {
+        this._goalKey = null;
+        this._goal = null;
+        this._goalRole = 'follow-fallback';
+        this._activeFollowKey = null;
+        this._activeFollowTarget = null;
+        this._endpointVisibilityTarget = null;
+        this.status = 'unreachable';
         try {
-            this._liveRouteProbe = {
-                iterator: this.bot.pathfinder.getPathFromTo(
-                    this.movements,
-                    this.bot.entity.position,
-                    probeGoal,
-                    {
-                        timeout: LIVE_ROUTE_PROBE_TIMEOUT_MS,
-                        tickTimeout: LIVE_ROUTE_PROBE_TICK_MS,
-                        resetEntityIntersects: false
-                    }
-                ),
-                position,
-                goalKind
-            };
-            cutoff.lastProbeAt = this.now();
-            cutoff.lastProbePosition = position.clone();
+            this.bot.pathfinder.setGoal(null);
         } catch {
-            this._liveRouteProbe = null;
+            // Pathfinder may not be ready yet.
         }
     }
 
-    _advanceLiveRouteProbe() {
-        const probe = this._liveRouteProbe;
-        if (!probe) return null;
-        try {
-            const step = probe.iterator.next();
-            const result = step.value?.result || null;
-            if (step.done || result?.status !== 'partial') {
-                this._liveRouteProbe = null;
-            }
-            return result;
-        } catch {
-            this._liveRouteProbe = null;
-            return null;
-        }
+    _setGoal(goal, options = {}) {
+        // Re-apply after combat/legacy modes may have overwritten pathfinder movements.
+        this._endpointVisibilityTarget = options.visibilityTarget || null;
+        this._goalRole = options.role || 'other';
+        this.bot.pathfinder.setMovements(this.movements);
+        this.status = 'searching';
+        this._goal = goal;
+        this.bot.pathfinder.setGoal(goal, options.dynamic === true);
     }
+}
+
+function followTargetKey(ownerId, target, range) {
+    return `follow:${ownerId}:${Math.floor(target.x)}:${Math.floor(target.y)}:${Math.floor(target.z)}:${range}`;
+}
+
+function surfaceVisibilityTarget(target) {
+    return { position: target.clone(), height: 1.8 };
 }
 
 /**

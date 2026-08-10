@@ -742,7 +742,7 @@ describe('DoorTracker integration', () => {
         assert.equal(tracker.trackedCount, 0);
     });
 
-    it('rejects the reproduced flying-owner route that returns to the gate approach side', async () => {
+    it('allows a wide detour that crosses the gate plane away from the gate', async () => {
         setBlock('pale_oak_fence_gate', { x: -359, y: 75, z: 226 }, {
             open: false,
             facing: 'west'
@@ -773,14 +773,75 @@ describe('DoorTracker integration', () => {
 
         bot.emit('path_update', result);
 
-        assert.equal(result.path[5].toPlace.length, 1);
+        assert.equal(result.path[5].toPlace.length, 0);
         assert.equal(activations.length, 0);
 
         bot.entity.position = { x: -357.5, y: 75, z: 226.5 };
         await tracker.tick();
 
+        assert.equal(activations.length, 1);
+        assert.equal(tracker.trackedCount, 1);
+    });
+
+    it('rejects a route that crosses and then returns through the same gate', async () => {
+        setBlock('pale_oak_fence_gate', { x: -359, y: 75, z: 226 }, {
+            open: false,
+            facing: 'west'
+        });
+        bot.entity.position = { x: -356.3, y: 75, z: 226.5 };
+        const result = {
+            status: 'success',
+            path: [
+                { x: -357.5, y: 75, z: 226.5, toPlace: [] },
+                {
+                    x: -359,
+                    y: 75,
+                    z: 226.5,
+                    toPlace: [{ x: -359, y: 75, z: 226, useOne: true }]
+                },
+                { x: -360, y: 75, z: 226.5, toPlace: [] },
+                { x: -357.5, y: 75, z: 226.5, toPlace: [] }
+            ]
+        };
+
+        bot.emit('path_update', result);
+
+        assert.equal(result.path[1].toPlace.length, 1);
+        bot.entity.position = { x: -357.5, y: 75, z: 226.5 };
+        await tracker.tick();
         assert.equal(activations.length, 0);
         assert.equal(tracker.trackedCount, 0);
+    });
+
+    it('accepts the logged wide gate detour before the owner moves farther away', async () => {
+        setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
+            open: false,
+            facing: 'west'
+        });
+        bot.entity.position = { x: -335.94, y: 75, z: 243.5 };
+        const result = {
+            status: 'success',
+            path: [
+                { x: -330, y: 75, z: 227.5, toPlace: [] },
+                {
+                    x: -329,
+                    y: 75,
+                    z: 226.5,
+                    toPlace: [{ x: -329, y: 75, z: 226, useOne: true }]
+                },
+                { x: -327.5, y: 75, z: 226.5, toPlace: [] },
+                { x: -327.5, y: 75, z: 240.5, toPlace: [] },
+                { x: -329, y: 75, z: 246, toPlace: [] }
+            ]
+        };
+
+        bot.emit('path_update', result);
+
+        assert.equal(result.path.length, 5);
+        bot.entity.position = { x: -330, y: 75, z: 227.5 };
+        await tracker.tick();
+        assert.equal(activations.length, 1);
+        assert.equal(tracker.trackedCount, 1);
     });
 
     it('closes a bot-opened passage only after crossing, even if the goal changes', async () => {

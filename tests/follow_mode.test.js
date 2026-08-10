@@ -170,8 +170,8 @@ describe('FollowMode merge follow', () => {
     });
 });
 
-describe('FollowMode trail follow', () => {
-    it('goes toward trail anchor in a narrow corridor instead of stopping on push guard', async () => {
+describe('FollowMode unified owner follow', () => {
+    it('uses the owner follow goal in a narrow corridor instead of a yaw-based anchor', async () => {
         const ownerPos = new Vec3(0, 64, 0);
         const botPos = new Vec3(0, 64, 3);
         const ctx = makeFollowCtx(botPos, ownerPos, {
@@ -183,14 +183,14 @@ describe('FollowMode trail follow', () => {
         const mode = new FollowMode();
         await mode.tick(ctx);
 
-        const go = ctx.movement.calls.find((call) => call.type === 'goToward');
-        assert.ok(go, 'expected goToward in trail phase');
-        assert.equal(go.rejected, false);
-        assert.equal(go.endpointVisibilityTargetId, ctx.ownerEntity.id);
+        const follow = ctx.movement.calls.find((call) => call.type === 'followEntity');
+        assert.ok(follow, 'expected the same owner follow used outside corridors');
+        assert.equal(follow.rejected, false);
+        assert.equal(follow.endpointVisibilityTargetId, ctx.ownerEntity.id);
         assert.equal(ctx.movement.calls.some((call) => call.type === 'stop'), false);
     });
 
-    it('keeps trailing across ticks while the owner moves ahead in a corridor', async () => {
+    it('keeps targeting the owner while they move through a corridor', async () => {
         const mode = new FollowMode();
         const blockAt = ({ x }) => (x === -1 || x === 1 ? solidBlock() : airBlock());
 
@@ -201,7 +201,7 @@ describe('FollowMode trail follow', () => {
             assert.equal(resolveFollowPhase(ctx, ctx.ownerEntity), 'trail');
             await mode.tick(ctx);
             const last = ctx.movement.calls.at(-1);
-            assert.equal(last?.type, 'goToward', `tick at owner z=${ownerPos.z} should goToward`);
+            assert.equal(last?.type, 'followEntity', `tick at owner z=${ownerPos.z} should followEntity`);
             assert.equal(last?.rejected, false);
         }
     });
