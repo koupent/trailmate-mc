@@ -94,6 +94,23 @@ function makeFollowCtx(botPos, ownerPos, overrides = {}) {
 }
 
 describe('FollowMode merge follow', () => {
+    it('lets boat boarding own the tick before normal follow movement', async () => {
+        const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(2, 64, 0));
+        let boardCalls = 0;
+        ctx.boatPassenger = {
+            tryBoard(owner) {
+                boardCalls += 1;
+                assert.equal(owner, ctx.ownerEntity);
+                return true;
+            }
+        };
+
+        await new FollowMode().tick(ctx);
+
+        assert.equal(boardCalls, 1);
+        assert.equal(ctx.movement.calls.length, 0);
+    });
+
     it('pauses once for passive pickup, then resumes follow when the item remains', async () => {
         const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(12, 64, 0));
         ctx.config.nearby_loot.collector_enabled = true;

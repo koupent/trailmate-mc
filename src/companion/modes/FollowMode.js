@@ -81,6 +81,8 @@ export class FollowMode extends Mode {
         this._rememberOwner(ctx, owner);
         this._waitingAtLastKnown = false;
 
+        if (ctx.boatPassenger?.tryBoard?.(owner)) return;
+
         // Skip Follow only while a climb hold is still making progress.
         if (ctx.movement.isHeld) return;
 
