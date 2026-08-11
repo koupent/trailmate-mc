@@ -1,7 +1,11 @@
-/** Maximum survival interaction reach used for boarding a nearby boat. */
+/** Maximum survival interaction reach measured to the boat hitbox. */
 export const BOAT_MOUNT_RANGE = 3;
 /** Avoid sending the same mount/dismount interaction every companion tick. */
 export const BOAT_ACTION_RETRY_MS = 1000;
+
+const DEFAULT_PLAYER_EYE_HEIGHT = 1.62;
+const DEFAULT_BOAT_WIDTH = 1.375;
+const DEFAULT_BOAT_HEIGHT = 0.5625;
 
 /**
  * Minecraft 1.21.6 regular boats and bamboo rafts have two passenger seats.
@@ -44,7 +48,7 @@ export class BoatPassengerController {
 
         const boat = owner?.vehicle;
         if (!isBoardableOwnerBoat(boat, owner)
-            || distanceBetween(this.bot.entity?.position, boat.position) > this.mountRange) {
+            || distanceToEntityBounds(this.bot.entity, boat) > this.mountRange) {
             this._clearStaleMountRequest(boat);
             return false;
         }
@@ -139,8 +143,27 @@ function isSameEntityId(leftId, rightId) {
         && leftId === rightId;
 }
 
-function distanceBetween(left, right) {
-    if (!left || !right) return Infinity;
-    if (typeof left.distanceTo === 'function') return left.distanceTo(right);
-    return Math.hypot(left.x - right.x, left.y - right.y, left.z - right.z);
+/**
+ * Vanilla interaction reach is checked from the player's eyes to the target
+ * hitbox, not between entity origins. A boat can therefore be interactable
+ * when its centre is slightly farther than the configured reach.
+ */
+function distanceToEntityBounds(viewer, target) {
+    const viewerPos = viewer?.position;
+    const targetPos = target?.position;
+    if (!viewerPos || !targetPos) return Infinity;
+
+    const eyeY = viewerPos.y + (viewer.eyeHeight ?? DEFAULT_PLAYER_EYE_HEIGHT);
+    const radius = (target.width ?? DEFAULT_BOAT_WIDTH) / 2;
+    const height = target.height ?? DEFAULT_BOAT_HEIGHT;
+    const dx = distanceToInterval(viewerPos.x, targetPos.x - radius, targetPos.x + radius);
+    const dy = distanceToInterval(eyeY, targetPos.y, targetPos.y + height);
+    const dz = distanceToInterval(viewerPos.z, targetPos.z - radius, targetPos.z + radius);
+    return Math.hypot(dx, dy, dz);
+}
+
+function distanceToInterval(value, min, max) {
+    if (value < min) return min - value;
+    if (value > max) return value - max;
+    return 0;
 }

@@ -83,13 +83,26 @@ describe('BoatPassengerController', () => {
         assert.equal(harness.mountCalls.length, 2, 'a missing mount confirmation should be retried');
     });
 
+    it('boards at the observed 3.1m center distance when the boat hitbox is in reach', () => {
+        const harness = makeHarness();
+        const owner = entity(7, 'player');
+        const boat = entity(20, 'oak_boat', 3.1, 64, 0);
+        boat.width = 1.375;
+        boat.height = 0.5625;
+        owner.vehicle = boat;
+        boat.passengers = [owner];
+
+        assert.equal(harness.controller.tryBoard(owner), true);
+        assert.deepEqual(harness.mountCalls, [boat]);
+    });
+
     it('does not board when the owner is not driving, the boat is full, or it is out of reach', () => {
         for (const setup of ['not-driver', 'full', 'far', 'chest']) {
             const harness = makeHarness();
             const owner = entity(7, 'player');
             const other = entity(8, 'player');
             const name = setup === 'chest' ? 'oak_chest_boat' : 'oak_boat';
-            const x = setup === 'far' ? BOAT_MOUNT_RANGE + 0.01 : BOAT_MOUNT_RANGE;
+            const x = setup === 'far' ? BOAT_MOUNT_RANGE + 1 : BOAT_MOUNT_RANGE;
             const boat = entity(20, name, x, 64, 0);
             owner.vehicle = boat;
             boat.passengers = setup === 'not-driver' ? [other, owner]
