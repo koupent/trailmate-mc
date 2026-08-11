@@ -33,7 +33,10 @@ export function findSurfaceFollowTarget(bot, position) {
 
     const x = Math.floor(position.x);
     const z = Math.floor(position.z);
-    const startY = Math.floor(position.y);
+    // Grounded entities may have a fractional feet Y on slabs and other
+    // partial-height blocks. Start above their feet so the support block is
+    // inspected as the floor instead of being mistaken for occupied body space.
+    const startY = Math.ceil(position.y);
     const worldMinY = Number.isFinite(bot.game?.minY) ? bot.game.minY : -64;
 
     for (let feetY = startY; feetY >= worldMinY; feetY--) {
@@ -240,8 +243,7 @@ export class MovementController {
             if (result.status === 'success') {
                 if (this._goalRole === 'follow' && this._activeFollowTarget) {
                     this._lastReachableFollowTarget = this._activeFollowTarget.clone();
-                    this._blockedFollowKey = null;
-                    this._blockedFollowAt = 0;
+                    this._clearBlockedFollow();
                     this.status = 'success';
                 } else {
                     this.status = 'unreachable';
@@ -293,6 +295,9 @@ export class MovementController {
         }
 
         const key = followTargetKey(entity.id, surfaceTarget, range);
+        if (this._blockedFollowKey !== null && this._blockedFollowKey !== key) {
+            this._clearBlockedFollow();
+        }
         const retryPending = this._blockedFollowKey === key
             && this.now() - this._blockedFollowAt < UNREACHABLE_REPROBE_MS;
         if (retryPending) {
@@ -395,8 +400,7 @@ export class MovementController {
         this._goalRole = null;
         this._activeFollowKey = null;
         this._activeFollowTarget = null;
-        this._blockedFollowKey = null;
-        this._blockedFollowAt = 0;
+        this._clearBlockedFollow();
         this._lastSeekPos = null;
         this._endpointVisibilityTarget = null;
         this.status = 'idle';
@@ -446,6 +450,10 @@ export class MovementController {
         this._activeFollowKey = null;
         this._activeFollowTarget = null;
         this._lastReachableFollowTarget = null;
+        this._clearBlockedFollow();
+    }
+
+    _clearBlockedFollow() {
         this._blockedFollowKey = null;
         this._blockedFollowAt = 0;
     }
