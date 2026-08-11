@@ -49,9 +49,9 @@ function makeHarness() {
         setMoving(value) {
             moving = value;
         },
-        setColumn(x, groundY, z) {
+        setColumn(x, groundY, z, floorName = 'stone') {
             for (const [y, name] of [
-                [groundY, 'stone'],
+                [groundY, floorName],
                 [groundY + 1, 'air'],
                 [groundY + 2, 'air']
             ]) {
@@ -232,6 +232,39 @@ describe('surface-projected owner follow', () => {
 
         assert.equal(owner.onGround, false);
         assert.equal(owner.position.y, 84);
+        assert.deepEqual(
+            [bot.pathfinder.goal.x, bot.pathfinder.goal.y, bot.pathfinder.goal.z],
+            [8, 64, 0]
+        );
+        assert.equal(movement.isUnreachableFallback, false);
+    });
+
+    it('resumes immediately after a grounded owner walks out through the opposite exit', () => {
+        const { bot, movement, setColumn } = makeHarness();
+        for (const x of [2, 3, 4, 5, 6, 7]) setColumn(x, 63, 0);
+        setColumn(8, 63, 0, 'oak_slab');
+        const owner = ownerAt(2, 64, 0);
+        owner.onGround = true;
+
+        for (const x of [2, 3]) {
+            owner.position = new Vec3(x, 64, 0);
+            movement.followEntity(owner, 1);
+            bot.emit('path_update', successfulPath(x));
+        }
+
+        for (const x of [4, 5, 6, 7]) {
+            owner.position = new Vec3(x, 64, 0);
+            movement.followEntity(owner, 1);
+            bot.emit('path_update', { status: 'noPath', path: [] });
+        }
+
+        // A grounded player can stand at a fractional Y on slabs. They stop as
+        // soon as they leave the enclosure, without taking an extra full-block step.
+        owner.position = new Vec3(8, 63.5, 0);
+        const resumed = movement.followEntity(owner, 1);
+
+        assert.equal(resumed, true);
+        assert.equal(owner.onGround, true);
         assert.deepEqual(
             [bot.pathfinder.goal.x, bot.pathfinder.goal.y, bot.pathfinder.goal.z],
             [8, 64, 0]
