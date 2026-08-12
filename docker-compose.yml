@@ -1,8 +1,21 @@
+name: trailmate-mc_devcontainer
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   viaproxy:
     image: ghcr.io/viaversion/viaproxy:latest
     volumes:
       - ./services/viaproxy:/app/run
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 256m
+          mode: 0o1777
     ports:
       - "25568:25568"
     stdin_open: true
@@ -14,6 +27,7 @@ services:
       retries: 18
       start_period: 15s
     restart: "no"
+    logging: *default-logging
 
   trailmate:
     build: .
@@ -35,11 +49,19 @@ services:
       - ./src:/app/src:ro
       - ./data:/app/data
       - trailmate_auth:/root/.minecraft
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 256m
+          mode: 0o1777
     extra_hosts:
       - "host.docker.internal:host-gateway"
     stdin_open: true
     tty: true
     restart: "no"
+    logging: *default-logging
 
 volumes:
   trailmate_auth:
+    external: true
+    name: trailmate-mc_trailmate_auth

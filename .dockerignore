@@ -1,0 +1,14 @@
+.git
+.codex
+node_modules
+coverage
+*.log
+npm-debug.log*
+
+.env
+.env.*
+config.json
+
+data
+services
+tests
