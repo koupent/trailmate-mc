@@ -10,6 +10,8 @@ const DEFAULT_BOAT_WIDTH = 1.375;
 const DEFAULT_BOAT_HEIGHT = 0.5625;
 const BOAT_LOOK_RESEND_MS = 250;
 const BOAT_TRACE_PREFIX = '[boat-trace]';
+const HELD_SNEAK_INPUT_METHOD = 'heldSneakInput';
+const MINEFLAYER_DISMOUNT_METHOD = 'mineflayerDismount';
 
 /**
  * Minecraft 1.21.6 regular boats and bamboo rafts have two passenger seats.
@@ -48,6 +50,8 @@ export class BoatPassengerController {
         this.logger = options.logger || console;
         /** @type {{ kind:'mount'|'dismount', vehicleId:number, at:number, startedAt:number }|null} */
         this._pendingAction = null;
+        /** Modern protocols treat player_input as held state until explicitly released. */
+        this._dismountInputHeld = false;
         /** @type {number|null} */
         this._blockedMountVehicleId = null;
         /** @type {Map<string, string>} */
@@ -139,6 +143,7 @@ export class BoatPassengerController {
         this._rememberOwner(owner);
         const vehicle = this.bot.vehicle;
         if (!vehicle) {
+            this._releaseDismountInput();
             this._lastLookSync = null;
             if (owner?.vehicle) {
                 this._traceBoardingState(
@@ -155,33 +160,67 @@ export class BoatPassengerController {
         if (isTwoSeatBoat(vehicle)
             && isSameEntity(vehicle, owner?.vehicle)
             && ownerHasDriverSeat(vehicle, owner)) {
+            this._releaseDismountInput();
             this._pendingAction = null;
             this._matchOwnerLook(owner);
             this._traceState('mounted', vehicleTrace(this.bot, vehicle, owner));
             return true;
         }
 
-        if (this._canSendAction('dismount', vehicle.id)) {
-            const requestedAt = this.now();
-            this._pendingAction = {
-                kind: 'dismount',
-                vehicleId: vehicle.id,
-                at: requestedAt,
-                startedAt: requestedAt
-            };
-            const trace = vehicleTrace(this.bot, vehicle, owner);
-            this._traceAction('dismount_requested', trace);
-            try {
-                this.bot.dismount();
-            } catch (error) {
-                this._traceAction('dismount_request_failed', {
-                    ...trace,
-                    error: error instanceof Error ? error.message : String(error)
-                }, true);
-                this._pendingAction = null;
-            }
-        }
+        this._requestDismount(vehicle, owner, 'invalid_shared_ride');
         return true;
+    }
+
+    _requestDismount(vehicle, owner, reason) {
+        if (!vehicle || !this._canSendAction('dismount', vehicle.id)) return false;
+
+        const requestedAt = this.now();
+        this._pendingAction = {
+            kind: 'dismount',
+            vehicleId: vehicle.id,
+            at: requestedAt,
+            startedAt: requestedAt
+        };
+        const trace = {
+            ...vehicleTrace(this.bot, vehicle, owner),
+            reason,
+            method: boatDismountMethod(this.bot)
+        };
+        this._traceAction('dismount_requested', trace);
+        try {
+            if (trace.method === HELD_SNEAK_INPUT_METHOD) {
+                this._sendDismountInput(true);
+            } else {
+                this.bot.dismount();
+            }
+            return true;
+        } catch (error) {
+            this._traceAction('dismount_request_failed', {
+                ...trace,
+                error: error instanceof Error ? error.message : String(error)
+            }, true);
+            this._releaseDismountInput();
+            this._pendingAction = null;
+            return false;
+        }
+    }
+
+    _releaseDismountInput() {
+        if (!this._dismountInputHeld) return;
+        try {
+            this._sendDismountInput(false);
+        } catch (error) {
+            this._traceAction('dismount_input_release_failed', {
+                error: error instanceof Error ? error.message : String(error)
+            }, true);
+        }
+    }
+
+    _sendDismountInput(held) {
+        this.bot._client.write('player_input', {
+            inputs: { shift: held }
+        });
+        this._dismountInputHeld = held;
     }
 
     _holdMovement() {
@@ -269,13 +308,15 @@ export class BoatPassengerController {
         this.bot?._client?.on?.('set_passengers', (packet) => {
             const passengerIds = Array.isArray(packet?.passengers) ? packet.passengers : [];
             const botId = this.bot.entity?.id;
-            const trackedVehicle = packet?.entityId === this._ownerVehicleId
+            const wasOwnerVehicle = packet?.entityId === this._ownerVehicleId;
+            const trackedVehicle = wasOwnerVehicle
                 || packet?.entityId === this._pendingAction?.vehicleId
                 || packet?.entityId === this._blockedMountVehicleId;
             if (!trackedVehicle
                 && !passengerIds.includes(this._ownerId)
                 && !passengerIds.includes(botId)) return;
-            const vehicle = this.bot.entities?.[packet.entityId];
+            const vehicle = this.bot.entities?.[packet.entityId]
+                || (isSameEntityId(this.bot.vehicle?.id, packet.entityId) ? this.bot.vehicle : null);
             if (vehicle) reconcilePassengerState(this.bot, vehicle, passengerIds);
 
             const previousPassengerIds = this._passengerIdsByVehicle.get(packet.entityId) || [];
@@ -287,6 +328,9 @@ export class BoatPassengerController {
             const ownerWasPassenger = previousPassengerIds.includes(this._ownerId);
             const ownerIsPassenger = passengerIds.includes(this._ownerId);
             const botIsPassenger = passengerIds.includes(botId);
+            const ownerDepartedWhileBotRemained = botIsPassenger
+                && !ownerIsPassenger
+                && (ownerWasPassenger || wasOwnerVehicle);
             if (!ownerIsPassenger || (!ownerWasPassenger && ownerIsPassenger)) {
                 if (this._blockedMountVehicleId === packet.entityId) {
                     this._blockedMountVehicleId = null;
@@ -301,8 +345,16 @@ export class BoatPassengerController {
                 this._ownerVehicleId = null;
             }
             if (botIsPassenger) {
-                this._pendingAction = null;
+                if (this._pendingAction?.kind === 'mount') this._pendingAction = null;
                 this._blockedMountVehicleId = null;
+            } else if (this._pendingAction?.kind === 'dismount'
+                && this._pendingAction.vehicleId === packet.entityId) {
+                this._releaseDismountInput();
+                this._pendingAction = null;
+            }
+            if (ownerDepartedWhileBotRemained && vehicle) {
+                const owner = this.bot.entities?.[this._ownerId] || null;
+                this._requestDismount(vehicle, owner, 'owner_left_vehicle');
             }
             this._traceState('passenger_packet', {
                 botVersion: this.bot.version ?? null,
@@ -343,6 +395,13 @@ export class BoatPassengerController {
         if (warning) this.logger.warn?.(message);
         else this.logger.log?.(message);
     }
+}
+
+function boatDismountMethod(bot) {
+    return bot.supportFeature?.('newPlayerInputPacket')
+        && typeof bot?._client?.write === 'function'
+        ? HELD_SNEAK_INPUT_METHOD
+        : MINEFLAYER_DISMOUNT_METHOD;
 }
 
 function sendBoatInteraction(bot, boat) {
