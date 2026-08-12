@@ -14,6 +14,10 @@ function entity(id, name, x = 0, y = 64, z = 0) {
 }
 
 function makeHarness(options = {}) {
+    const {
+        newPlayerInputPacket = false,
+        ...controllerOptions
+    } = options;
     let now = 10_000;
     const botEntity = entity(1, 'player');
     const mountCalls = [];
@@ -31,6 +35,9 @@ function makeHarness(options = {}) {
         vehicle: null,
         version: '1.21.6',
         protocolVersion: 771,
+        supportFeature(name) {
+            return name === 'newPlayerInputPacket' && newPlayerInputPacket;
+        },
         _client: Object.assign(new EventEmitter(), {
             write(name, payload) {
                 interactionPackets.push({ name, payload });
@@ -50,6 +57,11 @@ function makeHarness(options = {}) {
         },
         dismount() {
             dismountCalls += 1;
+            if (newPlayerInputPacket) {
+                this._client.write('player_input', {
+                    inputs: { jump: true }
+                });
+            }
         },
         clearControlStates() {
             clearControlCalls += 1;
@@ -71,7 +83,7 @@ function makeHarness(options = {}) {
     const controller = new BoatPassengerController(bot, movement, {
         now: () => now,
         logger,
-        ...options
+        ...controllerOptions
     });
     return {
         bot,
@@ -338,7 +350,7 @@ describe('BoatPassengerController', () => {
     });
 
     it('dismounts immediately when a passenger packet leaves only the bot aboard', () => {
-        const harness = makeHarness();
+        const harness = makeHarness({ newPlayerInputPacket: true });
         const owner = entity(7, 'player');
         const boat = entity(20, 'oak_boat');
         owner.vehicle = boat;
@@ -359,20 +371,28 @@ describe('BoatPassengerController', () => {
 
         assert.equal(owner.vehicle, null);
         assert.equal(harness.bot.vehicle, boat);
-        assert.equal(harness.dismountCalls, 1, 'owner departure should request dismount in the packet handler');
+        assert.deepEqual(
+            harness.interactionPackets.filter(({ name }) => name === 'player_input'),
+            [
+                { name: 'player_input', payload: { inputs: { shift: true } } },
+                { name: 'player_input', payload: { inputs: { shift: false } } }
+            ],
+            '1.21.6+ must pulse the sneak input used by vanilla to leave a vehicle'
+        );
         const dismountTrace = harness.traceLogs
             .map((line) => JSON.parse(line.slice(line.indexOf('{'))))
             .find(({ event }) => event === 'dismount_requested');
         assert.equal(dismountTrace?.reason, 'owner_left_vehicle');
+        assert.equal(dismountTrace?.method, 'sneakInputPulse');
 
         assert.equal(harness.controller.maintain(owner), true);
-        assert.equal(harness.dismountCalls, 1, 'the next controller tick must not repeat the request');
+        assert.equal(harness.interactionPackets.length, 2, 'the next controller tick must not repeat the request');
 
         harness.bot._client.emit('set_passengers', {
             entityId: boat.id,
             passengers: [harness.bot.entity.id]
         });
-        assert.equal(harness.dismountCalls, 1, 'duplicate packets must not repeat the request');
+        assert.equal(harness.interactionPackets.length, 2, 'duplicate packets must not repeat the request');
 
         harness.bot._client.emit('set_passengers', {
             entityId: boat.id,

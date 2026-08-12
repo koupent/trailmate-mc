@@ -177,11 +177,12 @@ export class BoatPassengerController {
         };
         const trace = {
             ...vehicleTrace(this.bot, vehicle, owner),
-            reason
+            reason,
+            method: boatDismountMethod(this.bot)
         };
         this._traceAction('dismount_requested', trace);
         try {
-            this.bot.dismount();
+            sendBoatDismount(this.bot, trace.method);
             return true;
         } catch (error) {
             this._traceAction('dismount_request_failed', {
@@ -364,6 +365,26 @@ export class BoatPassengerController {
         if (warning) this.logger.warn?.(message);
         else this.logger.log?.(message);
     }
+}
+
+function boatDismountMethod(bot) {
+    return bot.supportFeature?.('newPlayerInputPacket')
+        && typeof bot?._client?.write === 'function'
+        ? 'sneakInputPulse'
+        : 'mineflayerDismount';
+}
+
+function sendBoatDismount(bot, method) {
+    if (method === 'sneakInputPulse') {
+        bot._client.write('player_input', {
+            inputs: { shift: true }
+        });
+        bot._client.write('player_input', {
+            inputs: { shift: false }
+        });
+        return;
+    }
+    bot.dismount();
 }
 
 function sendBoatInteraction(bot, boat) {
