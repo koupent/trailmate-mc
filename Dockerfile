@@ -3,7 +3,8 @@ FROM node:22-bookworm-slim
 WORKDIR /app
 
 COPY package.json package-lock.json* ./
-RUN npm install
+RUN npm ci \
+    && npm cache clean --force
 
 COPY tsconfig.json ./
 COPY locales ./locales
