@@ -10,6 +10,8 @@ const DEFAULT_BOAT_WIDTH = 1.375;
 const DEFAULT_BOAT_HEIGHT = 0.5625;
 const BOAT_LOOK_RESEND_MS = 250;
 const BOAT_TRACE_PREFIX = '[boat-trace]';
+const HELD_SNEAK_INPUT_METHOD = 'heldSneakInput';
+const MINEFLAYER_DISMOUNT_METHOD = 'mineflayerDismount';
 
 /**
  * Minecraft 1.21.6 regular boats and bamboo rafts have two passenger seats.
@@ -186,8 +188,11 @@ export class BoatPassengerController {
         };
         this._traceAction('dismount_requested', trace);
         try {
-            sendBoatDismount(this.bot, trace.method);
-            if (trace.method === 'heldSneakInput') this._dismountInputHeld = true;
+            if (trace.method === HELD_SNEAK_INPUT_METHOD) {
+                this._sendDismountInput(true);
+            } else {
+                this.bot.dismount();
+            }
             return true;
         } catch (error) {
             this._traceAction('dismount_request_failed', {
@@ -202,16 +207,20 @@ export class BoatPassengerController {
 
     _releaseDismountInput() {
         if (!this._dismountInputHeld) return;
-        this._dismountInputHeld = false;
         try {
-            this.bot._client?.write?.('player_input', {
-                inputs: { shift: false }
-            });
+            this._sendDismountInput(false);
         } catch (error) {
             this._traceAction('dismount_input_release_failed', {
                 error: error instanceof Error ? error.message : String(error)
             }, true);
         }
+    }
+
+    _sendDismountInput(held) {
+        this.bot._client.write('player_input', {
+            inputs: { shift: held }
+        });
+        this._dismountInputHeld = held;
     }
 
     _holdMovement() {
@@ -391,18 +400,8 @@ export class BoatPassengerController {
 function boatDismountMethod(bot) {
     return bot.supportFeature?.('newPlayerInputPacket')
         && typeof bot?._client?.write === 'function'
-        ? 'heldSneakInput'
-        : 'mineflayerDismount';
-}
-
-function sendBoatDismount(bot, method) {
-    if (method === 'heldSneakInput') {
-        bot._client.write('player_input', {
-            inputs: { shift: true }
-        });
-        return;
-    }
-    bot.dismount();
+        ? HELD_SNEAK_INPUT_METHOD
+        : MINEFLAYER_DISMOUNT_METHOD;
 }
 
 function sendBoatInteraction(bot, boat) {
