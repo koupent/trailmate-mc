@@ -107,6 +107,9 @@ export class CompanionOrchestrator {
             // wait and paused item-transfer work. Safety owns this tick until
             // the bot reaches a clear standable position.
             if (this.ctx.hazardEscape?.tick?.()) return;
+            // A second-seat passenger must not issue pathfinder, combat, or
+            // vehicle inputs. Invalid seat ownership requests a clean dismount.
+            if (this.ctx.boatPassenger?.maintain?.(this.ctx.ownerEntity)) return;
             if (this.targets.paused) return;
             await prepareCompanionWorldTick(this.ctx);
             await refreshDutyFlags(this.targets);

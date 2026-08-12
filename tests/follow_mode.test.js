@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import { FollowMode } from '../src/companion/modes/FollowMode.js';
+import { BoatPassengerController } from '../src/companion/movement/BoatPassengerController.js';
 import { resolveFollowPhase } from '../src/companion/movement/followPhase.js';
 import { wouldPathPassNearPlayer } from '../src/companion/movement/playerPathClearance.js';
 import { PICKUP_SETTLE_MS } from '../src/companion/utils/pickupItems.js';
@@ -94,6 +95,59 @@ function makeFollowCtx(botPos, ownerPos, overrides = {}) {
 }
 
 describe('FollowMode merge follow', () => {
+    it('lets boat boarding own the tick before normal follow movement', async () => {
+        const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(2, 64, 0));
+        let boardCalls = 0;
+        ctx.boatPassenger = {
+            tryBoard(owner) {
+                boardCalls += 1;
+                assert.equal(owner, ctx.ownerEntity);
+                return true;
+            }
+        };
+
+        await new FollowMode().tick(ctx);
+
+        assert.equal(boardCalls, 1);
+        assert.equal(ctx.movement.calls.length, 0);
+    });
+
+    it('resumes normal follow after an unconfirmed boat mount times out', async () => {
+        let now = 10_000;
+        const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(2, 64, 0));
+        const boat = {
+            id: 20,
+            name: 'oak_boat',
+            position: new Vec3(2, 64, 0),
+            width: 1.375,
+            height: 0.5625,
+            passengers: [ctx.ownerEntity]
+        };
+        ctx.ownerEntity.vehicle = boat;
+        ctx.bot.vehicle = null;
+        ctx.bot.mount = () => {};
+        ctx.bot.clearControlStates = () => {};
+        ctx.boatPassenger = new BoatPassengerController(ctx.bot, ctx.movement, {
+            now: () => now,
+            mountTimeoutMs: 2000,
+            logger: { log() {}, warn() {} }
+        });
+        const mode = new FollowMode();
+
+        await mode.tick(ctx);
+        assert.equal(ctx.movement.calls.at(-1)?.type, 'stop');
+
+        now = 12_001;
+        ctx.ownerEntity.position = new Vec3(12, 64, 0);
+        await mode.tick(ctx);
+
+        assert.equal(
+            ctx.movement.calls.at(-1)?.type,
+            'followEntity',
+            'FollowMode must regain movement ownership after mount confirmation times out'
+        );
+    });
+
     it('pauses once for passive pickup, then resumes follow when the item remains', async () => {
         const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(12, 64, 0));
         ctx.config.nearby_loot.collector_enabled = true;
