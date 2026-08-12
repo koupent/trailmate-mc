@@ -161,27 +161,36 @@ export class BoatPassengerController {
             return true;
         }
 
-        if (this._canSendAction('dismount', vehicle.id)) {
-            const requestedAt = this.now();
-            this._pendingAction = {
-                kind: 'dismount',
-                vehicleId: vehicle.id,
-                at: requestedAt,
-                startedAt: requestedAt
-            };
-            const trace = vehicleTrace(this.bot, vehicle, owner);
-            this._traceAction('dismount_requested', trace);
-            try {
-                this.bot.dismount();
-            } catch (error) {
-                this._traceAction('dismount_request_failed', {
-                    ...trace,
-                    error: error instanceof Error ? error.message : String(error)
-                }, true);
-                this._pendingAction = null;
-            }
-        }
+        this._requestDismount(vehicle, owner, 'invalid_shared_ride');
         return true;
+    }
+
+    _requestDismount(vehicle, owner, reason) {
+        if (!vehicle || !this._canSendAction('dismount', vehicle.id)) return false;
+
+        const requestedAt = this.now();
+        this._pendingAction = {
+            kind: 'dismount',
+            vehicleId: vehicle.id,
+            at: requestedAt,
+            startedAt: requestedAt
+        };
+        const trace = {
+            ...vehicleTrace(this.bot, vehicle, owner),
+            reason
+        };
+        this._traceAction('dismount_requested', trace);
+        try {
+            this.bot.dismount();
+            return true;
+        } catch (error) {
+            this._traceAction('dismount_request_failed', {
+                ...trace,
+                error: error instanceof Error ? error.message : String(error)
+            }, true);
+            this._pendingAction = null;
+            return false;
+        }
     }
 
     _holdMovement() {
@@ -269,13 +278,15 @@ export class BoatPassengerController {
         this.bot?._client?.on?.('set_passengers', (packet) => {
             const passengerIds = Array.isArray(packet?.passengers) ? packet.passengers : [];
             const botId = this.bot.entity?.id;
-            const trackedVehicle = packet?.entityId === this._ownerVehicleId
+            const wasOwnerVehicle = packet?.entityId === this._ownerVehicleId;
+            const trackedVehicle = wasOwnerVehicle
                 || packet?.entityId === this._pendingAction?.vehicleId
                 || packet?.entityId === this._blockedMountVehicleId;
             if (!trackedVehicle
                 && !passengerIds.includes(this._ownerId)
                 && !passengerIds.includes(botId)) return;
-            const vehicle = this.bot.entities?.[packet.entityId];
+            const vehicle = this.bot.entities?.[packet.entityId]
+                || (isSameEntityId(this.bot.vehicle?.id, packet.entityId) ? this.bot.vehicle : null);
             if (vehicle) reconcilePassengerState(this.bot, vehicle, passengerIds);
 
             const previousPassengerIds = this._passengerIdsByVehicle.get(packet.entityId) || [];
@@ -287,6 +298,9 @@ export class BoatPassengerController {
             const ownerWasPassenger = previousPassengerIds.includes(this._ownerId);
             const ownerIsPassenger = passengerIds.includes(this._ownerId);
             const botIsPassenger = passengerIds.includes(botId);
+            const ownerDepartedWhileBotRemained = botIsPassenger
+                && !ownerIsPassenger
+                && (ownerWasPassenger || wasOwnerVehicle);
             if (!ownerIsPassenger || (!ownerWasPassenger && ownerIsPassenger)) {
                 if (this._blockedMountVehicleId === packet.entityId) {
                     this._blockedMountVehicleId = null;
@@ -301,8 +315,15 @@ export class BoatPassengerController {
                 this._ownerVehicleId = null;
             }
             if (botIsPassenger) {
-                this._pendingAction = null;
+                if (this._pendingAction?.kind === 'mount') this._pendingAction = null;
                 this._blockedMountVehicleId = null;
+            } else if (this._pendingAction?.kind === 'dismount'
+                && this._pendingAction.vehicleId === packet.entityId) {
+                this._pendingAction = null;
+            }
+            if (ownerDepartedWhileBotRemained && vehicle) {
+                const owner = this.bot.entities?.[this._ownerId] || null;
+                this._requestDismount(vehicle, owner, 'owner_left_vehicle');
             }
             this._traceState('passenger_packet', {
                 botVersion: this.bot.version ?? null,

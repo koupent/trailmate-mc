@@ -337,6 +337,76 @@ describe('BoatPassengerController', () => {
         assert.equal(wrongVehicle.dismountCalls, 1);
     });
 
+    it('dismounts immediately when a passenger packet leaves only the bot aboard', () => {
+        const harness = makeHarness();
+        const owner = entity(7, 'player');
+        const boat = entity(20, 'oak_boat');
+        owner.vehicle = boat;
+        harness.bot.vehicle = boat;
+        boat.passengers = [owner, harness.bot.entity];
+        harness.bot.entities[owner.id] = owner;
+        harness.bot.entities[boat.id] = boat;
+
+        assert.equal(harness.controller.maintain(owner), true);
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: [owner.id, harness.bot.entity.id]
+        });
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: [harness.bot.entity.id]
+        });
+
+        assert.equal(owner.vehicle, null);
+        assert.equal(harness.bot.vehicle, boat);
+        assert.equal(harness.dismountCalls, 1, 'owner departure should request dismount in the packet handler');
+        const dismountTrace = harness.traceLogs
+            .map((line) => JSON.parse(line.slice(line.indexOf('{'))))
+            .find(({ event }) => event === 'dismount_requested');
+        assert.equal(dismountTrace?.reason, 'owner_left_vehicle');
+
+        assert.equal(harness.controller.maintain(owner), true);
+        assert.equal(harness.dismountCalls, 1, 'the next controller tick must not repeat the request');
+
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: [harness.bot.entity.id]
+        });
+        assert.equal(harness.dismountCalls, 1, 'duplicate packets must not repeat the request');
+
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: []
+        });
+        assert.equal(harness.bot.vehicle, null);
+        assert.equal(harness.controller.maintain(owner), false);
+    });
+
+    it('does not request dismount when owner and bot leave in the same passenger packet', () => {
+        const harness = makeHarness();
+        const owner = entity(7, 'player');
+        const boat = entity(20, 'oak_boat');
+        owner.vehicle = boat;
+        harness.bot.vehicle = boat;
+        boat.passengers = [owner, harness.bot.entity];
+        harness.bot.entities[owner.id] = owner;
+        harness.bot.entities[boat.id] = boat;
+
+        assert.equal(harness.controller.maintain(owner), true);
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: [owner.id, harness.bot.entity.id]
+        });
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: []
+        });
+
+        assert.equal(harness.dismountCalls, 0);
+        assert.equal(harness.bot.vehicle, null);
+        assert.equal(harness.controller.maintain(owner), false);
+    });
+
     it('suppresses ordinary FSM behavior even while the orchestrator is paused', async () => {
         const calls = [];
         const owner = entity(7, 'player');
