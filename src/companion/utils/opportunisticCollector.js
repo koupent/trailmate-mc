@@ -4,6 +4,7 @@ import {
 } from '../../world/companionAwareness.js';
 import { isPositionInOwnerWorkFov } from '../ownerWorkMovement.js';
 import {
+    isProtectedPlayerDrop,
     isWithinMagnetPickup,
     PICKUP_MAGNET_RANGE
 } from './pickupItems.js';
@@ -44,6 +45,7 @@ export function tryOpportunisticCollect(ctx, now = Date.now()) {
     const snap = scanCompanionAwareness(bot, radius, bot.entity.position);
     const candidates = snap.dropItems.filter((entity) => {
         if (!entity?.position) return false;
+        if (isProtectedPlayerDrop(ctx, entity, now)) return false;
         if (isPositionInOwnerWorkFov(ctx, entity.position)) return false;
         return isWithinMagnetPickup(bot.entity.position, entity.position, PICKUP_MAGNET_RANGE);
     });

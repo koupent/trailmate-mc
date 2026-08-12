@@ -6,6 +6,7 @@ import { BoatPassengerController } from './movement/BoatPassengerController.js';
 import { createDeathRecoveryState } from './deathRecovery.js';
 import { scanCompanionAwareness } from '../world/companionAwareness.js';
 import { resolvePickupRadius } from './utils/pickupItems.js';
+import { PlayerDropGuard } from './PlayerDropGuard.js';
 
 /**
  * Shared context passed to modes and interrupts.
@@ -58,6 +59,8 @@ export class CompanionContext {
         this.itemTransfer = { active: false };
         /** @type {Map<number, import('./ownerWorkTracker.js').OwnerWorkState>} */
         this.playerWorkById = new Map();
+        this.playerDropGuard = new PlayerDropGuard(agent.bot);
+        this.playerDropGuard.attach();
         /** When true, companion loop skips combat reflexes. */
         this.holdReflexes = false;
         /** @type {import('../world/companionAwareness.js').CompanionAwarenessSnapshot|null} */
