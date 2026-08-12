@@ -48,6 +48,8 @@ export class BoatPassengerController {
         this.logger = options.logger || console;
         /** @type {{ kind:'mount'|'dismount', vehicleId:number, at:number, startedAt:number }|null} */
         this._pendingAction = null;
+        /** Modern protocols treat player_input as held state until explicitly released. */
+        this._dismountInputHeld = false;
         /** @type {number|null} */
         this._blockedMountVehicleId = null;
         /** @type {Map<string, string>} */
@@ -139,6 +141,7 @@ export class BoatPassengerController {
         this._rememberOwner(owner);
         const vehicle = this.bot.vehicle;
         if (!vehicle) {
+            this._releaseDismountInput();
             this._lastLookSync = null;
             if (owner?.vehicle) {
                 this._traceBoardingState(
@@ -155,6 +158,7 @@ export class BoatPassengerController {
         if (isTwoSeatBoat(vehicle)
             && isSameEntity(vehicle, owner?.vehicle)
             && ownerHasDriverSeat(vehicle, owner)) {
+            this._releaseDismountInput();
             this._pendingAction = null;
             this._matchOwnerLook(owner);
             this._traceState('mounted', vehicleTrace(this.bot, vehicle, owner));
@@ -183,14 +187,30 @@ export class BoatPassengerController {
         this._traceAction('dismount_requested', trace);
         try {
             sendBoatDismount(this.bot, trace.method);
+            if (trace.method === 'heldSneakInput') this._dismountInputHeld = true;
             return true;
         } catch (error) {
             this._traceAction('dismount_request_failed', {
                 ...trace,
                 error: error instanceof Error ? error.message : String(error)
             }, true);
+            this._releaseDismountInput();
             this._pendingAction = null;
             return false;
+        }
+    }
+
+    _releaseDismountInput() {
+        if (!this._dismountInputHeld) return;
+        this._dismountInputHeld = false;
+        try {
+            this.bot._client?.write?.('player_input', {
+                inputs: { shift: false }
+            });
+        } catch (error) {
+            this._traceAction('dismount_input_release_failed', {
+                error: error instanceof Error ? error.message : String(error)
+            }, true);
         }
     }
 
@@ -320,6 +340,7 @@ export class BoatPassengerController {
                 this._blockedMountVehicleId = null;
             } else if (this._pendingAction?.kind === 'dismount'
                 && this._pendingAction.vehicleId === packet.entityId) {
+                this._releaseDismountInput();
                 this._pendingAction = null;
             }
             if (ownerDepartedWhileBotRemained && vehicle) {
@@ -370,17 +391,14 @@ export class BoatPassengerController {
 function boatDismountMethod(bot) {
     return bot.supportFeature?.('newPlayerInputPacket')
         && typeof bot?._client?.write === 'function'
-        ? 'sneakInputPulse'
+        ? 'heldSneakInput'
         : 'mineflayerDismount';
 }
 
 function sendBoatDismount(bot, method) {
-    if (method === 'sneakInputPulse') {
+    if (method === 'heldSneakInput') {
         bot._client.write('player_input', {
             inputs: { shift: true }
-        });
-        bot._client.write('player_input', {
-            inputs: { shift: false }
         });
         return;
     }

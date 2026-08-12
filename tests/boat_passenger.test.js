@@ -373,33 +373,81 @@ describe('BoatPassengerController', () => {
         assert.equal(harness.bot.vehicle, boat);
         assert.deepEqual(
             harness.interactionPackets.filter(({ name }) => name === 'player_input'),
-            [
-                { name: 'player_input', payload: { inputs: { shift: true } } },
-                { name: 'player_input', payload: { inputs: { shift: false } } }
-            ],
-            '1.21.6+ must pulse the sneak input used by vanilla to leave a vehicle'
+            [{ name: 'player_input', payload: { inputs: { shift: true } } }],
+            '1.21.6+ must hold the sneak input until the server confirms dismount'
         );
         const dismountTrace = harness.traceLogs
             .map((line) => JSON.parse(line.slice(line.indexOf('{'))))
             .find(({ event }) => event === 'dismount_requested');
         assert.equal(dismountTrace?.reason, 'owner_left_vehicle');
-        assert.equal(dismountTrace?.method, 'sneakInputPulse');
+        assert.equal(dismountTrace?.method, 'heldSneakInput');
 
         assert.equal(harness.controller.maintain(owner), true);
-        assert.equal(harness.interactionPackets.length, 2, 'the next controller tick must not repeat the request');
+        assert.equal(harness.interactionPackets.length, 1, 'the next controller tick must not repeat the request');
 
         harness.bot._client.emit('set_passengers', {
             entityId: boat.id,
             passengers: [harness.bot.entity.id]
         });
-        assert.equal(harness.interactionPackets.length, 2, 'duplicate packets must not repeat the request');
+        assert.equal(harness.interactionPackets.length, 1, 'duplicate packets must not repeat the request');
+
+        harness.setNow(11_000);
+        assert.equal(harness.controller.maintain(owner), true);
+        assert.deepEqual(
+            harness.interactionPackets,
+            [
+                { name: 'player_input', payload: { inputs: { shift: true } } },
+                { name: 'player_input', payload: { inputs: { shift: true } } }
+            ],
+            'a timed retry must keep sneak held instead of releasing it'
+        );
 
         harness.bot._client.emit('set_passengers', {
             entityId: boat.id,
             passengers: []
         });
         assert.equal(harness.bot.vehicle, null);
+        assert.deepEqual(
+            harness.interactionPackets.at(-1),
+            { name: 'player_input', payload: { inputs: { shift: false } } },
+            'dismount confirmation should release the held sneak input'
+        );
         assert.equal(harness.controller.maintain(owner), false);
+    });
+
+    it('releases a held dismount input if the owner returns to the driver seat', () => {
+        const harness = makeHarness({ newPlayerInputPacket: true });
+        const owner = entity(7, 'player');
+        const boat = entity(20, 'oak_boat');
+        owner.vehicle = boat;
+        harness.bot.vehicle = boat;
+        boat.passengers = [owner, harness.bot.entity];
+        harness.bot.entities[owner.id] = owner;
+        harness.bot.entities[boat.id] = boat;
+
+        harness.controller.maintain(owner);
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: [owner.id, harness.bot.entity.id]
+        });
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: [harness.bot.entity.id]
+        });
+        assert.deepEqual(
+            harness.interactionPackets.at(-1),
+            { name: 'player_input', payload: { inputs: { shift: true } } }
+        );
+
+        harness.bot._client.emit('set_passengers', {
+            entityId: boat.id,
+            passengers: [owner.id, harness.bot.entity.id]
+        });
+        assert.equal(harness.controller.maintain(owner), true);
+        assert.deepEqual(
+            harness.interactionPackets.at(-1),
+            { name: 'player_input', payload: { inputs: { shift: false } } }
+        );
     });
 
     it('does not request dismount when owner and bot leave in the same passenger packet', () => {
