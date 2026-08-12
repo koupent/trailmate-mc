@@ -442,6 +442,37 @@ describe('pickup regression', () => {
         assert.equal(exclude(ctx.bot.entities[1]), true);
     });
 
+    it('excludes a protected player-mined drop from active pickup until protection expires', () => {
+        const ctx = makePickupCtx({ itemPos: new Vec3(0.5, 64, 0) });
+        let protectedDrop = true;
+        ctx.playerDropGuard = {
+            isProtected(entity) {
+                return protectedDrop && entity.id === 1;
+            }
+        };
+
+        const exclude = buildPickupExclude(ctx, { magnetRange: PICKUP_MAGNET_RANGE });
+        assert.equal(exclude(ctx.bot.entities[1]), true);
+
+        protectedDrop = false;
+        assert.equal(exclude(ctx.bot.entities[1]), false);
+    });
+
+    it('excludes a protected player-mined drop from opportunistic pickup', () => {
+        const ctx = makePickupCtx({ itemPos: new Vec3(0.5, 64, 0) });
+        let protectedDrop = true;
+        ctx.playerDropGuard = {
+            isProtected(entity) {
+                return protectedDrop && entity.id === 1;
+            }
+        };
+
+        assert.equal(tryOpportunisticCollect(ctx, 1000), false);
+
+        protectedDrop = false;
+        assert.equal(tryOpportunisticCollect(ctx, 1001), true);
+    });
+
     it('keeps approaching a drop outside worker FOV even when path crosses FOV', async () => {
         const movement = mockMovement();
         const ctx = makePickupCtx({

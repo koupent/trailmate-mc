@@ -331,11 +331,22 @@ export function buildPickupExclude(ctx, options = {}) {
     const candidateFilter = options.candidateFilter ?? null;
     return (entity) => {
         if (!entity?.position) return true;
+        if (isProtectedPlayerDrop(ctx, entity)) return true;
         if (isExcludedNearOwner(ctx, entity.position, ownerClearance)) return true;
         if (candidateFilter && !candidateFilter(entity)) return true;
         if (shouldExcludePickupDuringOwnerWork(ctx, entity.position)) return true;
         return wouldEnterOwnerWorkFov(ctx, entity.position, { withinPickupRange: magnetRange });
     };
+}
+
+/**
+ * Keep every pickup path on the same player-drop protection policy.
+ * @param {import('../CompanionContext.js').CompanionContext} ctx
+ * @param {{ id?: number }|null|undefined} entity
+ * @param {number} [now]
+ */
+export function isProtectedPlayerDrop(ctx, entity, now = Date.now()) {
+    return Boolean(ctx.playerDropGuard?.isProtected(entity, now));
 }
 
 /**
