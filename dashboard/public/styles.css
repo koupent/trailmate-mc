@@ -100,6 +100,11 @@ code {
 .zone-title { margin: 0; font-size: 1.15rem; }
 .zone-lead { margin: 6px 0 0; font-size: 0.92rem; }
 
+.zone-follow {
+  margin-top: 14px;
+}
+
+
 .step {
   border-top: 1px solid var(--border);
   padding-top: 14px;
@@ -301,22 +306,76 @@ body.mode-app .setup { display: none; }
   font-size: 0.85rem;
 }
 
-.logs-block {
-  margin-top: 18px;
+.fold {
+  margin-top: 12px;
   border-top: 1px solid var(--border);
-  padding-top: 12px;
+  padding-top: 10px;
 }
 
-.update-note {
-  margin: 0 0 10px;
-  font-size: 0.9rem;
+.fold > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.95rem;
+  user-select: none;
+  color: var(--muted);
+}
+
+/* 普段は細い帯、更新あり／更新中だけ目立たせる */
+.update-zone {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #121925;
+  padding: 10px 14px;
+}
+
+.update-zone.is-quiet .update-expand {
+  display: none !important;
+}
+
+.update-zone.is-alert {
+  border-color: var(--warn);
+  background: linear-gradient(180deg, var(--zone-block) 0%, #1a2332 72px);
+  padding: 14px 16px;
+}
+
+.update-zone.is-busy {
+  border-color: var(--accent);
+  background: #152033;
+  padding: 14px 16px;
+}
+
+.update-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  align-items: center;
+  justify-content: space-between;
 }
 
 .update-panel {
-  display: grid;
-  gap: 4px;
-  margin-bottom: 8px;
-  font-size: 0.95rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  align-items: baseline;
+  font-size: 0.92rem;
+}
+
+.update-zone.is-quiet .update-panel {
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.update-panel .pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #243044;
+  font-size: 0.85rem;
+}
+
+.update-panel .pill.on {
+  background: #1e4d3a;
+  color: var(--ok);
 }
 
 .update-panel .pill.available {
@@ -324,16 +383,25 @@ body.mode-app .setup { display: none; }
   color: var(--warn);
 }
 
-.update-logs {
-  margin-top: 10px;
-  max-height: 220px;
+.update-panel .pill.busy {
+  background: #1a3358;
+  color: #9ec1ff;
 }
 
-.logs-block > summary {
-  cursor: pointer;
-  font-weight: 600;
-  font-size: 1rem;
-  user-select: none;
+.update-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.update-expand {
+  margin-top: 12px;
+}
+
+.update-expand-note {
+  margin: 0;
+  font-size: 0.9rem;
 }
 
 .logs {

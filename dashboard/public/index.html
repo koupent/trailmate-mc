@@ -33,7 +33,28 @@
       </nav>
 
       <section id="tab-operate" class="tab-panel is-active" role="tabpanel">
-        <article class="zone is-ready">
+        <article id="update-zone" class="update-zone is-quiet" aria-live="polite">
+          <div class="update-bar">
+            <div id="update-panel" class="update-panel">確認中…</div>
+            <div class="update-actions">
+              <button type="button" id="update-check-btn">確認</button>
+              <button type="button" id="update-apply-btn" class="primary" hidden disabled>更新する</button>
+              <span id="update-msg" class="msg"></span>
+            </div>
+          </div>
+          <div id="update-expand" class="update-expand" hidden>
+            <p class="muted update-expand-note">
+              GitHub Release の最新版を取り込みます。更新中はボットが再起動します。
+              ホスト側ファイル（<code>docker-compose.yml</code> など）の変更がある場合は ZIP の再展開が必要です。
+            </p>
+            <details id="update-logs-details" class="fold">
+              <summary>更新の進行ログ</summary>
+              <pre id="update-logs" class="mono logs">(ログなし)</pre>
+            </details>
+          </div>
+        </article>
+
+        <article class="zone is-ready zone-follow">
           <div class="zone-head">
             <h2 class="zone-title">相棒の操作</h2>
             <p class="zone-lead muted">コンテナが動いていても、スポーンするまでワールドの時間は進みません。</p>
@@ -47,30 +68,20 @@
 
           <h3 class="step-title status-heading">ステータス</h3>
           <div id="status-panel" class="status">読み込み中…</div>
+        </article>
 
-          <h3 class="step-title status-heading">アプリ更新</h3>
-          <p class="muted update-note">
-            GitHub Release（タグ）の最新版を取り込みます。更新中はボットが再起動します。
-            <code>docker-compose.yml</code> などホスト側ファイルの変更がある場合は ZIP の再展開が必要です。
-          </p>
-          <div id="update-panel" class="update-panel">確認中…</div>
-          <div class="row">
-            <button type="button" id="update-check-btn">更新を確認</button>
-            <button type="button" id="update-apply-btn" class="primary" disabled>更新する</button>
-            <span id="update-msg" class="msg"></span>
+        <article class="zone zone-follow">
+          <div class="zone-head">
+            <h2 class="zone-title">コンテナログ</h2>
+            <p class="zone-lead muted">trailmate / ViaProxy の直近ログを確認します。</p>
           </div>
-          <pre id="update-logs" class="mono logs update-logs hidden">(ログなし)</pre>
-
-          <details id="logs-details" class="logs-block">
-            <summary>ログ</summary>
-            <div class="row">
-              <button type="button" data-log="trailmate">trailmate</button>
-              <button type="button" data-log="viaproxy">viaproxy</button>
-              <button type="button" id="refresh-logs">更新</button>
-              <span id="logs-service-label" class="msg"></span>
-            </div>
-            <pre id="logs" class="mono logs">(ログなし)</pre>
-          </details>
+          <div class="row">
+            <button type="button" data-log="trailmate">trailmate</button>
+            <button type="button" data-log="viaproxy">viaproxy</button>
+            <button type="button" id="refresh-logs">再読込</button>
+            <span id="logs-service-label" class="msg"></span>
+          </div>
+          <pre id="logs" class="mono logs">(ログなし)</pre>
         </article>
       </section>
 
