@@ -472,7 +472,7 @@ async function waitForViaProxyHealthy(timeoutMs) {
 
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
-  if (!['index.html', 'app.js', 'styles.css'].includes(file)) {
+  if (!['index.html', 'app.js', 'logFollow.js', 'styles.css'].includes(file)) {
     return json(response, 404, { error: 'not found' });
   }
   const full = path.join(publicDir, file);

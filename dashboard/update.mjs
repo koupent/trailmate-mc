@@ -7,12 +7,18 @@ const updateServices = ['trailmate', 'dashboard'];
 
 /**
  * @param {string} projectRoot
+ * @param {{
+ *   recreateServiceContainer?: typeof recreateServiceContainer,
+ *   fetch?: typeof fetch
+ * }} [deps]
  */
-export function createUpdateManager(projectRoot) {
+export function createUpdateManager(projectRoot, deps = {}) {
   const versionFile = path.join(projectRoot, 'VERSION');
   const logFile = path.join(projectRoot, 'data', 'update.log');
   const stateFile = path.join(projectRoot, 'data', 'update-state.json');
   const lockFile = path.join(projectRoot, 'data', 'update.lock');
+  const recreate = deps.recreateServiceContainer || recreateServiceContainer;
+  const fetchFn = deps.fetch || globalThis.fetch;
 
   /** @type {{ active: boolean, startedAt: number | null, finishedAt: number | null, ok: boolean | null, error: string | null, targetVersion: string | null, log: string }} */
   let job = emptyJob();
@@ -133,7 +139,7 @@ export function createUpdateManager(projectRoot) {
 
   async function fetchLatestRelease() {
     const url = 'https://api.github.com/repos/' + githubRepo + '/releases/latest';
-    const response = await fetch(url, {
+    const response = await fetchFn(url, {
       headers: {
         Accept: 'application/vnd.github+json',
         'User-Agent': 'trailmate-dashboard'
@@ -169,6 +175,9 @@ export function createUpdateManager(projectRoot) {
   }
 
   async function hydrateJobFromDisk() {
+    // 実行中・またはこのプロセスで開始済みのジョブは、ポーリングでディスクに潰さない。
+    // （未 flush 行の消失や、完了直前の STALE 読み込みを防ぐ）
+    if (job.active || job.startedAt) return;
     try {
       const raw = JSON.parse(await fs.readFile(stateFile, 'utf8'));
       if (!raw || typeof raw !== 'object') return;
@@ -206,7 +215,7 @@ export function createUpdateManager(projectRoot) {
       if (service === 'dashboard') continue;
       appendLog('[updater] recreate ' + service);
       await persistJob();
-      await recreateServiceContainer(service, onProgress);
+      await recreate(service, onProgress);
     }
 
     await fs.writeFile(versionFile, targetVersion + '\n', 'utf8');
@@ -221,7 +230,7 @@ export function createUpdateManager(projectRoot) {
     await clearLock();
 
     try {
-      await recreateServiceContainer('dashboard', onProgress, { selfReplace: true });
+      await recreate('dashboard', onProgress, { selfReplace: true });
       appendLog('[updater] DONE（dashboard 差し替えを起動済み）');
       await persistJob();
     } catch (error) {
