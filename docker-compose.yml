@@ -1,4 +1,4 @@
-name: trailmate-mc_devcontainer
+name: trailmate-mc
 
 x-logging: &default-logging
   driver: json-file
@@ -26,10 +26,11 @@ services:
       timeout: 3s
       retries: 18
       start_period: 15s
-    restart: "no"
+    restart: unless-stopped
     logging: *default-logging
 
   trailmate:
+    image: ghcr.io/koupent/trailmate-mc:latest
     build: .
     depends_on:
       viaproxy:
@@ -42,11 +43,12 @@ services:
       MC_AUTH: ${MC_AUTH:-offline}
       BOT_NAME: ${BOT_NAME:-Trailmate}
       COMBAT_TRACE: ${COMBAT_TRACE:-0}
+      CONTROL_PORT: ${CONTROL_PORT:-8790}
+      CONTROL_BIND: 0.0.0.0
     volumes:
-      # Optional local override: uncomment after copying config.example.json -> config.json
-      # - ./config.json:/app/config.json:ro
+      - ./.env:/app/.env:ro
+      - ./config.json:/app/config.json:ro
       - ./locales:/app/locales:ro
-      - ./src:/app/src:ro
       - ./data:/app/data
       - trailmate_auth:/root/.minecraft
       - type: tmpfs
@@ -54,14 +56,60 @@ services:
         tmpfs:
           size: 256m
           mode: 0o1777
+    expose:
+      - "8790"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8790/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 20s
     extra_hosts:
       - "host.docker.internal:host-gateway"
     stdin_open: true
     tty: true
-    restart: "no"
+    restart: unless-stopped
+    logging: *default-logging
+
+  dashboard:
+    image: ghcr.io/koupent/trailmate-dashboard:latest
+    build:
+      context: ./dashboard
+    depends_on:
+      trailmate:
+        condition: service_healthy
+    environment:
+      DASHBOARD_PORT: 8787
+      TRAILMATE_CONTROL_URL: http://trailmate:8790
+      PROJECT_ROOT: /project
+      COMPOSE_PROJECT_NAME: trailmate-mc
+      VIAPROXY_SERVICE: viaproxy
+    volumes:
+      - ./:/project
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "8787:8787"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8787/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
     logging: *default-logging
 
 volumes:
   trailmate_auth:
-    external: true
     name: trailmate-mc_trailmate_auth

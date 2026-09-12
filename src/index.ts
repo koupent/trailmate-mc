@@ -1,24 +1,24 @@
-import { loadConfig } from './config.js';
-import { bootHost } from './host/BotHost.js';
+import { createControlState, despawnCompanion, startControlServer } from './runtime/controlServer.js';
 
 async function main() {
-  const config = loadConfig();
-  console.log(`[trailmate] connecting to ${config.host}:${config.port} as ${config.botName}`);
-  const host = await bootHost(config);
+  const state = createControlState();
+  startControlServer(state);
 
-  const shutdown = (signal: string) => {
+  const shutdown = async (signal: string) => {
     console.log(`[trailmate] shutting down (${signal})`);
     try {
-      host.reflexes?.flushLearning?.();
-      if (host.companion?._interval) clearInterval(host.companion._interval);
-      host.bot.quit('trailmate shutdown');
+      await despawnCompanion(state);
     } catch {
       /* ignore */
     }
     process.exit(0);
   };
-  process.on('SIGINT', () => shutdown('SIGINT'));
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => {
+    void shutdown('SIGINT');
+  });
+  process.on('SIGTERM', () => {
+    void shutdown('SIGTERM');
+  });
 }
 
 main().catch((err) => {

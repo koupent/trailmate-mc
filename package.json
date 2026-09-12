@@ -10,7 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "tsx src/index.ts",
-    "test": "tsx --test tests/**/*.test.ts tests/**/*.test.js",
+    "test": "tsx --test tests/",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

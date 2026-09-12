@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trailmate MC ダッシュボード</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <h1>Trailmate MC</h1>
+      <p class="muted">設定・スポーン／デスポーン・ステータス。Docker の上げ下げは start.bat / stop.bat です。</p>
+      <div id="setup-checklist" class="setup"></div>
+    </header>
+
+    <section class="card" id="settings-card">
+      <h2>設定</h2>
+      <form id="settings-form">
+        <label>
+          Minecraft サーバー住所
+          <input id="targetAddress" name="targetAddress" placeholder="play.example.com:25565" required />
+        </label>
+        <label>
+          ボット名
+          <input id="botName" name="botName" placeholder="Trailmate" required />
+        </label>
+        <label>
+          認証
+          <select id="authMethod" name="authMethod">
+            <option value="ACCOUNT">オンライン（Microsoft アカウント）</option>
+            <option value="NONE">オフライン</option>
+          </select>
+        </label>
+        <label>
+          Minecraft バージョン（config）
+          <input id="minecraftVersion" name="minecraftVersion" placeholder="1.21.6" />
+        </label>
+        <div class="row">
+          <button type="submit">設定を保存</button>
+          <span id="settings-msg" class="msg"></span>
+        </div>
+      </form>
+      <p id="placeholder-warn" class="warn hidden">サーバー住所がプレースホルダのままです。保存してからスポーンしてください。</p>
+    </section>
+
+    <section class="card">
+      <h2>ワールドへ出す</h2>
+      <p class="muted">コンテナが動いていても、ここを押すまで相棒はワールドに入りません（時間進行を避けるため）。</p>
+      <div class="row">
+        <button type="button" id="spawn-btn" class="primary">スポーン</button>
+        <button type="button" id="despawn-btn" class="danger">デスポーン</button>
+        <span id="spawn-msg" class="msg"></span>
+      </div>
+    </section>
+
+    <section class="card">
+      <h2>ステータス</h2>
+      <div id="status-panel" class="status">読み込み中…</div>
+    </section>
+
+    <section class="card">
+      <h2>Microsoft ログイン（ViaProxy）</h2>
+      <p class="muted">オンラインサーバー用。ボットとして使う Microsoft アカウントでログインします。新しいPCではここが必須です。</p>
+      <p id="ms-account-status" class="msg">登録状態を確認中…</p>
+      <div class="row">
+        <button type="button" id="ms-login-btn" class="primary">ログイン開始</button>
+        <button type="button" id="ms-cancel-btn">キャンセル</button>
+        <span id="ms-login-msg" class="msg"></span>
+      </div>
+      <div id="ms-login-panel" class="mono"></div>
+    </section>
+
+    <section class="card">
+      <h2>ログ</h2>
+      <div class="row">
+        <button type="button" data-log="trailmate">trailmate</button>
+        <button type="button" data-log="viaproxy">viaproxy</button>
+        <button type="button" id="refresh-logs">更新</button>
+      </div>
+      <pre id="logs" class="mono logs">(ログなし)</pre>
+    </section>
+  </main>
+  <script src="/app.js"></script>
+</body>
+</html>
