@@ -8,6 +8,7 @@ keys.json
 .idea/
 .vscode/
 .cursor/
+.codex/
 data/*
 !data/.gitkeep
 

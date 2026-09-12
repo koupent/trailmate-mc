@@ -1,0 +1,14 @@
+services:
+  trailmate:
+    volumes:
+      - ./.env:/app/.env:ro
+      - ./config.json:/app/config.json:ro
+      - ./locales:/app/locales:ro
+      - ./src:/app/src:ro
+      - ./data:/app/data
+      - trailmate_auth:/root/.minecraft
+      - type: tmpfs
+        target: /tmp
+        tmpfs:
+          size: 256m
+          mode: 0o1777

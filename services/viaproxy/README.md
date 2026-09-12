@@ -31,7 +31,8 @@ target-address: your-server.example.com:25565
 docker compose up -d viaproxy
 ```
 
-Windows なら `start.bat` が ViaProxy と Trailmate をまとめて起動します。
+Windows なら `start.bat` が ViaProxy・Trailmate・ダッシュボードを起動します。
+相棒のワールド参加はダッシュボードの「スポーン」からです。
 
 ## サーバーの認証方式
 

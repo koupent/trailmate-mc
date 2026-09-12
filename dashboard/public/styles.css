@@ -1,0 +1,330 @@
+:root {
+  color-scheme: light dark;
+  --bg: #0f1419;
+  --card: #1a2332;
+  --text: #e7ecf3;
+  --muted: #9aa7b8;
+  --accent: #3d8bfd;
+  --danger: #e35d6a;
+  --ok: #3dd68c;
+  --warn: #f0b429;
+  --border: #2b3648;
+  --zone-block: #3a2a14;
+  --zone-ready: #143528;
+  font-family: "Segoe UI", system-ui, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.page {
+  max-width: 880px;
+  margin: 0 auto;
+  padding: 24px 16px 48px;
+}
+
+.header h1 {
+  margin: 0 0 8px;
+  font-size: 1.6rem;
+}
+
+.muted { color: var(--muted); }
+
+code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.9em;
+  background: #0d121a;
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+
+.shell-hidden { display: none !important; }
+
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin: 16px 0 0;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #121925;
+}
+
+.tab {
+  flex: 1;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.tab:hover { color: var(--text); background: #1a2332; }
+
+.tab.is-active {
+  background: var(--accent);
+  color: #fff;
+}
+
+.tab-panel { display: none; margin-top: 14px; }
+.tab-panel.is-active { display: block; }
+
+.zone {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px 18px;
+}
+
+.zone.is-blocking {
+  border-color: var(--warn);
+  box-shadow: inset 0 0 0 1px rgba(240, 180, 41, 0.25);
+  background: linear-gradient(180deg, var(--zone-block) 0%, var(--card) 56px);
+}
+
+.zone.is-ready {
+  border-color: #2f6b4f;
+  box-shadow: inset 0 0 0 1px rgba(61, 214, 140, 0.2);
+  background: linear-gradient(180deg, var(--zone-ready) 0%, var(--card) 56px);
+}
+
+.zone-head { margin-bottom: 14px; }
+.zone-title { margin: 0; font-size: 1.15rem; }
+.zone-lead { margin: 6px 0 0; font-size: 0.92rem; }
+
+.step {
+  border-top: 1px solid var(--border);
+  padding-top: 14px;
+  margin-top: 14px;
+}
+
+.step:first-of-type {
+  border-top: none;
+  padding-top: 0;
+  margin-top: 0;
+}
+
+.step-title {
+  margin: 0 0 10px;
+  font-size: 1rem;
+}
+
+.status-heading {
+  margin-top: 18px;
+}
+
+.step.is-done .step-title::after {
+  content: " · 完了";
+  color: var(--ok);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+.step.is-skipped .step-title::after {
+  content: " · 不要";
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.85rem;
+}
+
+#panel-setup {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 18px;
+}
+
+#shell-wizard #panel-setup {
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+label {
+  display: block;
+  margin-bottom: 12px;
+  font-size: 0.92rem;
+}
+
+input, select, button {
+  font: inherit;
+}
+
+input, select {
+  display: block;
+  width: 100%;
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: #0d121a;
+  color: var(--text);
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+button {
+  border: 1px solid var(--border);
+  background: #243044;
+  color: var(--text);
+  border-radius: 8px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+button:hover { filter: brightness(1.08); }
+button.primary { background: var(--accent); border-color: transparent; color: #fff; }
+button.danger { background: var(--danger); border-color: transparent; color: #fff; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
+button.is-active {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.msg { color: var(--muted); font-size: 0.9rem; }
+.msg.ok { color: var(--ok); }
+.msg.err { color: var(--danger); }
+
+.warn {
+  margin-top: 10px;
+  color: var(--warn);
+  font-size: 0.9rem;
+}
+
+.hidden { display: none !important; }
+
+.setup {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: #121925;
+  font-size: 0.92rem;
+}
+
+body.mode-app .setup { display: none; }
+
+.setup ul {
+  margin: 8px 0 0;
+  padding-left: 1.2em;
+}
+
+.setup .ok { color: var(--ok); }
+.setup .ng { color: var(--warn); }
+
+.status {
+  display: grid;
+  gap: 6px;
+  font-size: 0.95rem;
+}
+
+.status .pill {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: #243044;
+  font-size: 0.85rem;
+}
+
+.status .pill.on { background: #1e4d3a; color: var(--ok); }
+.status .pill.off { background: #4a2a30; color: #ffb4bc; }
+
+.mono {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.panel {
+  margin-top: 10px;
+  min-height: 1.2em;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #0d121a;
+}
+
+.ms-login-panel {
+  display: grid;
+  gap: 12px;
+  font-size: 0.92rem;
+}
+
+.ms-login-step {
+  display: grid;
+  gap: 6px;
+}
+
+.ms-login-step-label {
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+.ms-login-link {
+  color: var(--accent);
+  word-break: break-all;
+  line-height: 1.4;
+}
+
+.ms-login-code {
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 1.05rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--text);
+  background: #121925;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 8px;
+}
+
+.ms-login-note {
+  color: var(--muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 0.85rem;
+}
+
+.logs-block {
+  margin-top: 18px;
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.logs-block > summary {
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 1rem;
+  user-select: none;
+}
+
+.logs {
+  margin: 12px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  background: #0d121a;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+}
+
+ul.inv {
+  margin: 6px 0 0;
+  padding-left: 1.2em;
+}
