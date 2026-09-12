@@ -226,7 +226,21 @@ npx tsx src/simulator/server.ts
 - GHCR イメージ（`trailmate-mc` / `trailmate-dashboard`）
 - Windows 用 ZIP（展開して `start.bat`）
 
-手元では `docker compose pull` のあと `restart.bat`、または新しい ZIP に置き換えてください。
+### ダッシュボードから更新（推奨）
+
+1. http://127.0.0.1:8787 の **運用** タブを開く
+2. 「更新を確認」で現在バージョンと最新 Release を比較する
+3. 「更新する」を押す（スポーン中の相棒は再起動されます）
+4. 画面が切れたら再読み込みする
+
+イメージ（`trailmate` / `dashboard`）とローカルの `VERSION` が更新されます。設定・認証データはそのまま残ります。
+
+### 注意
+
+- 更新源は **GitHub Release のみ** です（`main` へのマージだけでは他 PC には届きません）
+- GHCR パッケージが private だと pull に失敗します。配布するなら public にしてください
+- `docker-compose.yml` / `start.bat` などホスト側ファイルの変更がある Release は、ZIP を再展開してください（Release ノートに記載）
+- 手動で更新する場合: `docker compose pull` のあと `restart.bat`
 
 ## 開発
 

@@ -307,6 +307,28 @@ body.mode-app .setup { display: none; }
   padding-top: 12px;
 }
 
+.update-note {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+}
+
+.update-panel {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 0.95rem;
+}
+
+.update-panel .pill.available {
+  background: #3a2a14;
+  color: var(--warn);
+}
+
+.update-logs {
+  margin-top: 10px;
+  max-height: 220px;
+}
+
 .logs-block > summary {
   cursor: pointer;
   font-weight: 600;
