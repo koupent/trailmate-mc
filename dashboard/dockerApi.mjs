@@ -124,3 +124,135 @@ export function demuxDockerLogs(buffer) {
 export function stripAnsi(text) {
   return text.replace(/\x1b\[[0-9;]*m/g, '');
 }
+
+/**
+ * @param {string} imageRef e.g. ghcr.io/koupent/trailmate-mc:latest
+ * @param {(line: string) => void} [onProgress]
+ */
+export async function pullImage(imageRef, onProgress) {
+  const lastColon = imageRef.lastIndexOf(':');
+  const slash = imageRef.lastIndexOf('/');
+  const tag =
+    lastColon > slash && lastColon !== -1 ? imageRef.slice(lastColon + 1) : 'latest';
+  const repo =
+    lastColon > slash && lastColon !== -1 ? imageRef.slice(0, lastColon) : imageRef;
+  const requestPath =
+    '/images/create?fromImage=' +
+    encodeURIComponent(repo) +
+    '&tag=' +
+    encodeURIComponent(tag);
+
+  await new Promise((resolve, reject) => {
+    const req = http.request(
+      {
+        socketPath: dockerSock,
+        path: requestPath,
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' }
+      },
+      (res) => {
+        let buffer = '';
+        res.on('data', (chunk) => {
+          buffer += chunk.toString('utf8');
+          const lines = buffer.split('\n');
+          buffer = lines.pop() || '';
+          for (const line of lines) {
+            if (!line.trim()) continue;
+            try {
+              const msg = JSON.parse(line);
+              if (msg.error) {
+                reject(new Error(msg.error));
+                return;
+              }
+              const text = [msg.status, msg.progress].filter(Boolean).join(' ');
+              if (text && onProgress) onProgress(text);
+            } catch {
+              if (onProgress) onProgress(line);
+            }
+          }
+        });
+        res.on('end', () => {
+          if ((res.statusCode || 500) >= 400) {
+            reject(new Error('image pull failed: HTTP ' + res.statusCode));
+          } else {
+            resolve(undefined);
+          }
+        });
+      }
+    );
+    req.on('error', reject);
+    req.end();
+  });
+}
+
+/**
+ * Pull the container's current image tag, then recreate with the same mounts/env.
+ * @param {string} service
+ * @param {(line: string) => void} [onProgress]
+ */
+export async function recreateServiceContainer(service, onProgress) {
+  const id = await findServiceContainerId(service);
+  if (!id) throw new Error(service + ' コンテナが見つかりません');
+
+  const inspected = await dockerRequest('GET', '/containers/' + id + '/json');
+  if (inspected.status >= 400) {
+    throw new Error(service + ' の inspect に失敗しました');
+  }
+  const info = JSON.parse(inspected.body.toString('utf8'));
+  const name = String(info.Name || '').replace(/^\//, '');
+  const image = info.Config?.Image;
+  if (!image) throw new Error(service + ' のイメージ名が空です');
+
+  if (onProgress) onProgress('[pull] ' + image);
+  await pullImage(image, onProgress);
+
+  if (onProgress) onProgress('[recreate] stop ' + name);
+  await dockerRequest('POST', '/containers/' + id + '/stop?t=20');
+  await dockerRequest('DELETE', '/containers/' + id + '?v=0');
+
+  const networks = info.NetworkSettings?.Networks || {};
+  const createBody = {
+    Hostname: info.Config.Hostname,
+    Domainname: info.Config.Domainname,
+    User: info.Config.User,
+    AttachStdin: info.Config.AttachStdin,
+    AttachStdout: info.Config.AttachStdout,
+    AttachStderr: info.Config.AttachStderr,
+    Tty: info.Config.Tty,
+    OpenStdin: info.Config.OpenStdin,
+    StdinOnce: info.Config.StdinOnce,
+    Env: info.Config.Env,
+    Cmd: info.Config.Cmd,
+    Healthcheck: info.Config.Healthcheck,
+    ArgsEscaped: info.Config.ArgsEscaped,
+    Image: image,
+    Volumes: info.Config.Volumes,
+    WorkingDir: info.Config.WorkingDir,
+    Entrypoint: info.Config.Entrypoint,
+    Labels: info.Config.Labels,
+    ExposedPorts: info.Config.ExposedPorts,
+    HostConfig: info.HostConfig,
+    NetworkingConfig: { EndpointsConfig: networks }
+  };
+
+  const created = await dockerRequest(
+    'POST',
+    '/containers/create?name=' + encodeURIComponent(name),
+    createBody
+  );
+  if (created.status >= 400) {
+    throw new Error(
+      service + ' の create に失敗: ' + created.body.toString('utf8').slice(0, 300)
+    );
+  }
+  const newId = JSON.parse(created.body.toString('utf8')).Id;
+  if (onProgress) onProgress('[recreate] start ' + name);
+  const started = await dockerRequest('POST', '/containers/' + newId + '/start');
+  if (started.status >= 400) {
+    throw new Error(
+      service + ' の start に失敗: ' + started.body.toString('utf8').slice(0, 300)
+    );
+  }
+  return newId;
+}
+
