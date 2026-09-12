@@ -1,5 +1,8 @@
+import { createLogFollowState } from './logFollow.js';
+
 /* ===== helpers ===== */
 const POLL_INTERVAL_MS = 2000;
+const updateLogFollow = createLogFollowState();
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -554,24 +557,31 @@ async function refreshUpdateStatus() {
   }
 }
 
-function isScrolledToBottom(el, thresholdPx = 24) {
-  return el.scrollHeight - el.scrollTop - el.clientHeight <= thresholdPx;
+/** 最下部追従。details を先に開き、レイアウト後に pin する。 */
+function setLogTextFollowBottom(el, text, { forceBottom = false, openDetails = false } = {}) {
+  if (openDetails && updateLogsDetails) updateLogsDetails.open = true;
+  if (forceBottom) updateLogFollow.forceStick();
+  return updateLogFollow.setText(el, text, {
+    forceBottom,
+    afterLayout: (fn) => requestAnimationFrame(fn)
+  });
 }
 
-/** 最下部にいるときだけ最新行へ追従。上を見ているときは位置を維持する。 */
-function setLogTextFollowBottom(el, text, { forceBottom = false } = {}) {
-  const stick = forceBottom || isScrolledToBottom(el);
-  el.textContent = text;
-  if (stick) {
-    el.scrollTop = el.scrollHeight;
-  }
+if (updateLogsEl) {
+  updateLogsEl.addEventListener('scroll', () => updateLogFollow.onScroll(updateLogsEl), {
+    passive: true
+  });
 }
 
 async function refreshUpdateLogs() {
   try {
     const data = await api('/api/update/logs');
-    setLogTextFollowBottom(updateLogsEl, data.log || '(ログなし)');
-    if (data.updating && updateLogsDetails) updateLogsDetails.open = true;
+    const openDetails = Boolean(data.updating);
+    setLogTextFollowBottom(updateLogsEl, data.log || '(ログなし)', {
+      // 更新中の初回展開では必ず末尾へ。以降は sticky 状態に従う。
+      forceBottom: openDetails && !(updateLogsDetails && updateLogsDetails.open),
+      openDetails
+    });
     if (data.updating) {
       setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
     } else if (data.ok) {
@@ -584,7 +594,7 @@ async function refreshUpdateLogs() {
       await refreshUpdateStatus();
     }
   } catch (error) {
-    setLogTextFollowBottom(updateLogsEl, error.message, { forceBottom: true });
+    setLogTextFollowBottom(updateLogsEl, error.message, { forceBottom: true, openDetails: true });
   }
 }
 
@@ -644,7 +654,6 @@ updateApplyBtn.addEventListener('click', async () => {
     return;
   }
   updateApplyBtn.disabled = true;
-  if (updateLogsDetails) updateLogsDetails.open = true;
   setMsg(updateMsg, '更新を開始します…');
   try {
     const result = await api('/api/update/apply', {
@@ -653,7 +662,10 @@ updateApplyBtn.addEventListener('click', async () => {
     });
     if (!result.ok) throw new Error(result.error || '更新を開始できませんでした');
     setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）', 'ok');
-    setLogTextFollowBottom(updateLogsEl, result.log || '(ログなし)', { forceBottom: true });
+    setLogTextFollowBottom(updateLogsEl, result.log || '(ログなし)', {
+      forceBottom: true,
+      openDetails: true
+    });
     startUpdateLogPolling();
   } catch (error) {
     setMsg(updateMsg, error.message, 'err');
