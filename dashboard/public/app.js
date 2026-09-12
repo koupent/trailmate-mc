@@ -67,6 +67,9 @@ let currentLogService = 'trailmate';
 let lastKnownAccountName = null;
 let currentTab = 'operate';
 let readyToSpawn = false;
+let lastMsLoginRenderKey = '';
+let lastMsLoginUrl = '';
+let lastMsLoginCode = '';
 
 /* ===== mode / tabs ===== */
 function applyMode(isReady, settings = {}) {
@@ -304,6 +307,8 @@ async function refreshStatus() {
 }
 
 /* ===== microsoft login ===== */
+const COPY_FEEDBACK_MS = 1200;
+
 msLoginBtn.addEventListener('click', async () => {
   msLoginBtn.disabled = true;
   setMsg(msLoginMsg, '開始中…');
@@ -328,29 +333,115 @@ msCancelBtn.addEventListener('click', async () => {
   }
 });
 
-function buildMsLoginLines(state) {
-  const lines = [];
-  if (state.url) lines.push(`1. この URL を開く: ${state.url}`);
-  if (state.code) lines.push(`2. コード（自動入力されないとき）: ${state.code}`);
-  if (state.active && state.url) {
-    lines.push('3. ボット用 Microsoft アカウントでログインし、完了を待つ');
+function msLoginRenderKey(state) {
+  return [
+    state.url || '',
+    state.code || '',
+    state.active ? '1' : '0',
+    state.done ? '1' : '0',
+    state.success ? '1' : '0',
+    state.accountName || '',
+    state.error || '',
+    state.output ? state.output.slice(-80) : ''
+  ].join('|');
+}
+
+async function copyText(text, button) {
+  try {
+    await navigator.clipboard.writeText(text);
+    const previous = button.textContent;
+    button.textContent = 'コピー済み';
+    setTimeout(() => {
+      button.textContent = previous;
+    }, COPY_FEEDBACK_MS);
+  } catch {
+    setMsg(msLoginMsg, 'コピーに失敗しました。リンクを手動で選択してください', 'err');
   }
+}
+
+function msLoginStepHtml(label, bodyHtml) {
+  return `
+    <div class="ms-login-step">
+      <div class="ms-login-step-label">${label}</div>
+      ${bodyHtml}
+    </div>
+  `;
+}
+
+function renderMsLoginPanel(state) {
+  const key = msLoginRenderKey(state);
+  if (key === lastMsLoginRenderKey) return;
+  lastMsLoginRenderKey = key;
+  lastMsLoginUrl = state.url || '';
+  lastMsLoginCode = state.code || '';
+
+  const parts = [];
+
+  if (state.url) {
+    const safeUrl = escapeHtml(state.url);
+    parts.push(
+      msLoginStepHtml(
+        '1. この URL を開く',
+        `<div class="row">
+          <a class="ms-login-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>
+          <button type="button" data-copy="url">URL をコピー</button>
+        </div>`
+      )
+    );
+  }
+
+  if (state.code) {
+    const safeCode = escapeHtml(state.code);
+    parts.push(
+      msLoginStepHtml(
+        '2. コード（自動入力されないとき）',
+        `<div class="row">
+          <code class="ms-login-code">${safeCode}</code>
+          <button type="button" data-copy="code">コードをコピー</button>
+        </div>`
+      )
+    );
+  }
+
+  if (state.active && state.url) {
+    parts.push(
+      '<div class="ms-login-note">3. ボット用 Microsoft アカウントでログインし、完了を待つ</div>'
+    );
+  }
+
   if (state.success && state.accountName) {
-    lines.push(`完了: ${state.accountName} を登録しました`);
+    parts.push(
+      `<div class="msg ok">完了: ${escapeHtml(state.accountName)} を登録しました</div>`
+    );
     setMsg(msLoginMsg, `登録完了: ${state.accountName}`, 'ok');
   } else if (state.error && state.error !== 'cancelled by user') {
-    lines.push(`エラー: ${state.error}`);
+    parts.push(`<div class="msg err">エラー: ${escapeHtml(state.error)}</div>`);
     setMsg(msLoginMsg, state.error, 'err');
   } else if (state.active) {
-    lines.push(state.url ? 'ログイン待ち…' : 'ViaProxy に接続中…');
+    parts.push(
+      `<div class="ms-login-note">${state.url ? 'ログイン待ち…' : 'ViaProxy に接続中…'}</div>`
+    );
   } else if (!state.url && !state.done) {
-    lines.push('「ログイン開始」を押すと、ここに URL とコードが表示されます。');
+    parts.push(
+      '<div class="ms-login-note">「ログイン開始」を押すと、ここに URL とコードが表示されます。</div>'
+    );
   }
-  if (!lines.length && state.output) {
-    lines.push(state.output.slice(-500));
+
+  if (!parts.length && state.output) {
+    parts.push(`<div class="ms-login-note">${escapeHtml(state.output.slice(-500))}</div>`);
   }
-  return lines;
+
+  msLoginPanel.innerHTML = parts.join('') || '<div class="ms-login-note"></div>';
 }
+
+msLoginPanel.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-copy]');
+  if (!button || !msLoginPanel.contains(button)) return;
+  const kind = button.getAttribute('data-copy');
+  const text = kind === 'code' ? lastMsLoginCode : lastMsLoginUrl;
+  if (!text) return;
+  void copyText(text, button);
+});
 
 async function refreshMsLogin() {
   try {
@@ -365,8 +456,9 @@ async function refreshMsLogin() {
       lastKnownAccountName = accountName;
     }
 
-    msLoginPanel.textContent = buildMsLoginLines(state).join('\n');
+    renderMsLoginPanel(state);
   } catch (error) {
+    lastMsLoginRenderKey = '';
     msLoginPanel.textContent = error.message;
   }
 }
