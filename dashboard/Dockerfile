@@ -21,6 +21,7 @@ COPY package.json ./
 COPY server.mjs ./
 COPY dockerApi.mjs ./
 COPY update.mjs ./
+COPY backendReady.mjs ./
 COPY public ./public
 
 EXPOSE 8787

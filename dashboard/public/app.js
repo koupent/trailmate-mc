@@ -78,6 +78,8 @@ let currentLogService = 'trailmate';
 let lastKnownAccountName = null;
 let currentTab = 'operate';
 let readyToSpawn = false;
+/** trailmate control API に届くか。起動直後は false のままにする。 */
+let backendReady = false;
 let lastMsLoginRenderKey = '';
 let lastMsLoginUrl = '';
 let lastMsLoginCode = '';
@@ -157,14 +159,35 @@ function renderSetup(setup, settings = {}) {
   );
   stepAccount.classList.toggle('is-skipped', settings.authMethod === 'NONE');
 
-  spawnBtn.disabled = !isReady;
-  if (isReady) {
-    spawnBlockReason.classList.add('hidden');
-    spawnBlockReason.textContent = '';
-  } else {
+  syncSpawnControls(setup);
+}
+
+/** セットアップ完了かつボット側準備完了のときだけスポーン可能にする。 */
+function syncSpawnControls(setup = null) {
+  const setupReady = readyToSpawn;
+  const canSpawn = setupReady && backendReady;
+  spawnBtn.disabled = !canSpawn;
+  despawnBtn.disabled = !backendReady;
+
+  if (!setupReady) {
+    const blockers = setup?.blockers || [];
     spawnBlockReason.classList.remove('hidden');
-    spawnBlockReason.textContent = `スポーンできません: ${(setup?.blockers || []).join(' / ')}`;
+    spawnBlockReason.textContent =
+      blockers.length > 0
+        ? `スポーンできません: ${blockers.join(' / ')}`
+        : 'スポーンできません: セットアップが未完了です';
+    return;
   }
+
+  if (!backendReady) {
+    spawnBlockReason.classList.remove('hidden');
+    spawnBlockReason.textContent =
+      'ボット側の準備中です。コンテナ起動が終わるまでスポーンできません。';
+    return;
+  }
+
+  spawnBlockReason.classList.add('hidden');
+  spawnBlockReason.textContent = '';
 }
 
 function updateAccountStepVisibility(offline) {
@@ -241,6 +264,11 @@ authMethodSelect.addEventListener('change', () => {
 
 /* ===== spawn / status ===== */
 spawnBtn.addEventListener('click', async () => {
+  if (!backendReady) {
+    syncSpawnControls();
+    setMsg(spawnMsg, 'ボット側の準備中です。少し待ってから再度お試しください。', 'err');
+    return;
+  }
   spawnBtn.disabled = true;
   setMsg(spawnMsg, 'スポーン中…');
   try {
@@ -250,12 +278,18 @@ spawnBtn.addEventListener('click', async () => {
     await refreshStatus();
   } catch (error) {
     setMsg(spawnMsg, error.message, 'err');
+    await refreshStatus();
   } finally {
-    spawnBtn.disabled = !readyToSpawn;
+    syncSpawnControls();
   }
 });
 
 despawnBtn.addEventListener('click', async () => {
+  if (!backendReady) {
+    syncSpawnControls();
+    setMsg(spawnMsg, 'ボット側の準備中です。少し待ってから再度お試しください。', 'err');
+    return;
+  }
   despawnBtn.disabled = true;
   setMsg(spawnMsg, 'デスポーン中…');
   try {
@@ -265,14 +299,27 @@ despawnBtn.addEventListener('click', async () => {
     await refreshStatus();
   } catch (error) {
     setMsg(spawnMsg, error.message, 'err');
+    await refreshStatus();
   } finally {
-    despawnBtn.disabled = false;
+    syncSpawnControls();
   }
 });
 
 function renderStatus(status) {
-  if (!status || status.error) {
-    statusPanel.innerHTML = `<div class="msg err">${status?.error || 'ステータス取得失敗'}</div>`;
+  if (!status || status.backendReady === false) {
+    const message =
+      status?.backendMessage ||
+      status?.error ||
+      'ボット側の準備中です。コンテナ起動が終わるまでお待ちください。';
+    statusPanel.innerHTML = `
+      <div><span class="pill off">準備中</span></div>
+      <div class="muted">${escapeHtml(message)}</div>
+    `;
+    return;
+  }
+
+  if (status.error) {
+    statusPanel.innerHTML = `<div class="msg err">${escapeHtml(status.error)}</div>`;
     return;
   }
 
@@ -312,9 +359,16 @@ function renderStatus(status) {
 async function refreshStatus() {
   try {
     const status = await api('/api/status');
+    backendReady = status.backendReady !== false;
+    syncSpawnControls();
     renderStatus(status);
   } catch (error) {
-    renderStatus({ error: error.message });
+    backendReady = false;
+    syncSpawnControls();
+    renderStatus({
+      backendReady: false,
+      backendMessage: error.message || 'ボット側の準備中です。'
+    });
   }
 }
 
