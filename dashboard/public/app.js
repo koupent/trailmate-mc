@@ -1,4 +1,6 @@
 /* ===== helpers ===== */
+const POLL_INTERVAL_MS = 2000;
+
 async function api(path, options = {}) {
   const response = await fetch(path, {
     headers: { 'content-type': 'application/json' },
@@ -32,6 +34,10 @@ function escapeHtml(value) {
 const settingsForm = document.getElementById('settings-form');
 const settingsMsg = document.getElementById('settings-msg');
 const placeholderWarn = document.getElementById('placeholder-warn');
+const targetAddressInput = document.getElementById('targetAddress');
+const botNameInput = document.getElementById('botName');
+const minecraftVersionInput = document.getElementById('minecraftVersion');
+const authMethodSelect = document.getElementById('authMethod');
 const spawnBtn = document.getElementById('spawn-btn');
 const despawnBtn = document.getElementById('despawn-btn');
 const spawnMsg = document.getElementById('spawn-msg');
@@ -53,9 +59,9 @@ const shellApp = document.getElementById('shell-app');
 const stepServer = document.getElementById('step-server');
 const stepAccount = document.getElementById('step-account');
 const logsEl = document.getElementById('logs');
+const logsDetails = document.getElementById('logs-details');
 const refreshLogsBtn = document.getElementById('refresh-logs');
 const logsServiceLabel = document.getElementById('logs-service-label');
-const authMethodSelect = document.getElementById('authMethod');
 
 let currentLogService = 'trailmate';
 let lastKnownAccountName = null;
@@ -74,10 +80,8 @@ function applyMode(isReady, settings = {}) {
   panelSetup.hidden = false;
   if (readyToSpawn) {
     settingsSlot.appendChild(panelSetup);
-    // ウィザード完了直後だけ運用タブへ。設定タブ閲覧中に戻さない。
-    if (!wasReady) {
-      showTab('operate');
-    }
+    // ウィザード完了直後だけ運用タブへ戻す（設定タブ閲覧中は維持）
+    if (!wasReady) showTab('operate');
   } else {
     wizardSlot.appendChild(panelSetup);
   }
@@ -171,16 +175,26 @@ function renderRegisteredAccount(account) {
 }
 
 /* ===== settings ===== */
-async function loadSettings() {
-  const settings = await api('/api/settings');
-  document.getElementById('targetAddress').value = settings.targetAddress || '';
-  document.getElementById('botName').value = settings.botName || 'Trailmate';
+function fillSettingsForm(settings) {
+  targetAddressInput.value = settings.targetAddress || '';
+  botNameInput.value = settings.botName || 'Trailmate';
   authMethodSelect.value = settings.authMethod || 'ACCOUNT';
-  document.getElementById('minecraftVersion').value = settings.minecraftVersion || '1.21.6';
+  minecraftVersionInput.value = settings.minecraftVersion || '1.21.6';
+  updateAccountStepVisibility(authMethodSelect.value === 'NONE');
+}
+
+/** チェックリスト等を更新。fillForm は初回表示・明示的な再読込時のみ。 */
+function applySettingsState(settings, { fillForm = false } = {}) {
+  if (fillForm) fillSettingsForm(settings);
   placeholderWarn.classList.toggle('hidden', !settings.placeholder);
   renderRegisteredAccount(settings.registeredAccount);
   lastKnownAccountName = settings.registeredAccount?.name || null;
   renderSetup(settings.setup, settings);
+}
+
+async function loadSettings({ fillForm = true } = {}) {
+  const settings = await api('/api/settings');
+  applySettingsState(settings, { fillForm });
   return settings;
 }
 
@@ -188,20 +202,19 @@ settingsForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   setMsg(settingsMsg, '保存中…');
   try {
-    const body = {
-      targetAddress: document.getElementById('targetAddress').value.trim(),
-      botName: document.getElementById('botName').value.trim(),
-      authMethod: authMethodSelect.value,
-      minecraftVersion: document.getElementById('minecraftVersion').value.trim()
-    };
     const result = await api('/api/settings', {
       method: 'POST',
-      body: JSON.stringify(body)
+      body: JSON.stringify({
+        targetAddress: targetAddressInput.value.trim(),
+        botName: botNameInput.value.trim(),
+        authMethod: authMethodSelect.value,
+        minecraftVersion: minecraftVersionInput.value.trim()
+      })
     });
     setMsg(settingsMsg, '保存しました（ViaProxy を再起動しました）', 'ok');
-    placeholderWarn.classList.toggle('hidden', !result.settings?.placeholder);
-    renderRegisteredAccount(result.settings?.registeredAccount);
-    renderSetup(result.settings?.setup, result.settings);
+    if (result.settings) {
+      applySettingsState(result.settings, { fillForm: false });
+    }
   } catch (error) {
     setMsg(settingsMsg, error.message, 'err');
   }
@@ -315,42 +328,44 @@ msCancelBtn.addEventListener('click', async () => {
   }
 });
 
+function buildMsLoginLines(state) {
+  const lines = [];
+  if (state.url) lines.push(`1. この URL を開く: ${state.url}`);
+  if (state.code) lines.push(`2. コード（自動入力されないとき）: ${state.code}`);
+  if (state.active && state.url) {
+    lines.push('3. ボット用 Microsoft アカウントでログインし、完了を待つ');
+  }
+  if (state.success && state.accountName) {
+    lines.push(`完了: ${state.accountName} を登録しました`);
+    setMsg(msLoginMsg, `登録完了: ${state.accountName}`, 'ok');
+  } else if (state.error && state.error !== 'cancelled by user') {
+    lines.push(`エラー: ${state.error}`);
+    setMsg(msLoginMsg, state.error, 'err');
+  } else if (state.active) {
+    lines.push(state.url ? 'ログイン待ち…' : 'ViaProxy に接続中…');
+  } else if (!state.url && !state.done) {
+    lines.push('「ログイン開始」を押すと、ここに URL とコードが表示されます。');
+  }
+  if (!lines.length && state.output) {
+    lines.push(state.output.slice(-500));
+  }
+  return lines;
+}
+
 async function refreshMsLogin() {
   try {
     const state = await api('/api/ms-login');
     renderRegisteredAccount(state.registeredAccount);
 
-    const accountName = state.registeredAccount?.name || null;
-    if (
-      (state.success && state.accountName) ||
-      (accountName && accountName !== lastKnownAccountName)
-    ) {
+    // アカウント変化時のみセットアップを更新（フォームは上書きしない）
+    const accountName =
+      state.registeredAccount?.name || state.accountName || null;
+    if (accountName && accountName !== lastKnownAccountName) {
+      await loadSettings({ fillForm: false });
       lastKnownAccountName = accountName;
-      await loadSettings();
     }
 
-    const lines = [];
-    if (state.url) lines.push(`1. この URL を開く: ${state.url}`);
-    if (state.code) lines.push(`2. コード（自動入力されないとき）: ${state.code}`);
-    if (state.active && state.url) {
-      lines.push('3. ボット用 Microsoft アカウントでログインし、完了を待つ');
-    }
-    if (state.success && state.accountName) {
-      lines.push(`完了: ${state.accountName} を登録しました`);
-      setMsg(msLoginMsg, `登録完了: ${state.accountName}`, 'ok');
-    } else if (state.error && state.error !== 'cancelled by user') {
-      lines.push(`エラー: ${state.error}`);
-      setMsg(msLoginMsg, state.error, 'err');
-    } else if (state.active) {
-      lines.push(state.url ? 'ログイン待ち…' : 'ViaProxy に接続中…');
-    } else if (!state.url && !state.done) {
-      lines.push('「ログイン開始」を押すと、ここに URL とコードが表示されます。');
-    }
-
-    if (!lines.length && state.output) {
-      lines.push(state.output.slice(-500));
-    }
-    msLoginPanel.textContent = lines.join('\n');
+    msLoginPanel.textContent = buildMsLoginLines(state).join('\n');
   } catch (error) {
     msLoginPanel.textContent = error.message;
   }
@@ -382,15 +397,13 @@ document.querySelectorAll('[data-log]').forEach((button) => {
 });
 refreshLogsBtn.addEventListener('click', () => void refreshLogs());
 
-document.getElementById('logs-details')?.addEventListener('toggle', (event) => {
-  if (event.currentTarget.open) {
-    void refreshLogs();
-  }
+logsDetails?.addEventListener('toggle', (event) => {
+  if (event.currentTarget.open) void refreshLogs();
 });
 
 /* ===== boot / polling ===== */
 async function boot() {
-  await loadSettings();
+  await loadSettings({ fillForm: true });
   if (readyToSpawn) {
     await refreshStatus();
     await refreshLogs();
@@ -411,4 +424,4 @@ setInterval(() => {
   } else if (currentTab === 'settings') {
     void refreshMsLogin();
   }
-}, 2000);
+}, POLL_INTERVAL_MS);
