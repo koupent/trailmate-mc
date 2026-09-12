@@ -62,6 +62,11 @@ const logsEl = document.getElementById('logs');
 const logsDetails = document.getElementById('logs-details');
 const refreshLogsBtn = document.getElementById('refresh-logs');
 const logsServiceLabel = document.getElementById('logs-service-label');
+const updatePanel = document.getElementById('update-panel');
+const updateCheckBtn = document.getElementById('update-check-btn');
+const updateApplyBtn = document.getElementById('update-apply-btn');
+const updateMsg = document.getElementById('update-msg');
+const updateLogsEl = document.getElementById('update-logs');
 
 let currentLogService = 'trailmate';
 let lastKnownAccountName = null;
@@ -107,6 +112,7 @@ function showTab(tabId) {
   if (tabId === 'operate') {
     void refreshStatus();
     void refreshLogs();
+    void refreshUpdateStatus();
   } else if (tabId === 'settings') {
     void refreshMsLogin();
   }
@@ -463,6 +469,130 @@ async function refreshMsLogin() {
   }
 }
 
+/* ===== update ===== */
+let updatePollTimer = null;
+
+function renderUpdateStatus(status) {
+  if (!status) {
+    updatePanel.textContent = '更新情報を取得できません';
+    updateApplyBtn.disabled = true;
+    return;
+  }
+
+  const current = escapeHtml(status.currentVersion || 'unknown');
+  const latest = status.latestVersion
+    ? escapeHtml(status.latestVersion)
+    : '未取得';
+  const badge = status.updating
+    ? '<span class="pill">更新中</span>'
+    : status.updateAvailable
+      ? '<span class="pill available">更新あり</span>'
+      : '<span class="pill on">最新</span>';
+
+  const link = status.latestUrl
+    ? ` <a class="ms-login-link" href="${escapeHtml(status.latestUrl)}" target="_blank" rel="noopener noreferrer">Release</a>`
+    : '';
+
+  const err = status.latestError
+    ? `<div class="msg err">${escapeHtml(status.latestError)}</div>`
+    : '';
+
+  updatePanel.innerHTML = `
+    <div>${badge}</div>
+    <div>現在: <strong>${current}</strong></div>
+    <div>最新: <strong>${latest}</strong>${link}</div>
+    ${err}
+  `;
+
+  updateApplyBtn.disabled = Boolean(status.updating) || !status.updateAvailable;
+  if (status.updating) {
+    setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
+    updateLogsEl.classList.remove('hidden');
+  }
+}
+
+async function refreshUpdateStatus() {
+  try {
+    const status = await api('/api/update/status');
+    renderUpdateStatus(status);
+    if (status.updating) {
+      await refreshUpdateLogs();
+      startUpdateLogPolling();
+    } else {
+      stopUpdateLogPolling();
+    }
+  } catch (error) {
+    updatePanel.innerHTML = `<div class="msg err">${escapeHtml(error.message)}</div>`;
+    updateApplyBtn.disabled = true;
+  }
+}
+
+async function refreshUpdateLogs() {
+  try {
+    const data = await api('/api/update/logs');
+    updateLogsEl.textContent = data.log || '(ログなし)';
+    updateLogsEl.classList.remove('hidden');
+    if (data.updating) {
+      setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
+    } else if (data.ok) {
+      setMsg(updateMsg, '更新が完了しました。ページを再読み込みしてください', 'ok');
+      stopUpdateLogPolling();
+      await refreshUpdateStatus();
+    } else if (data.error) {
+      setMsg(updateMsg, data.error, 'err');
+      stopUpdateLogPolling();
+      await refreshUpdateStatus();
+    }
+  } catch (error) {
+    updateLogsEl.textContent = error.message;
+  }
+}
+
+function startUpdateLogPolling() {
+  if (updatePollTimer) return;
+  updatePollTimer = setInterval(() => {
+    void refreshUpdateLogs();
+  }, POLL_INTERVAL_MS);
+}
+
+function stopUpdateLogPolling() {
+  if (!updatePollTimer) return;
+  clearInterval(updatePollTimer);
+  updatePollTimer = null;
+}
+
+updateCheckBtn.addEventListener('click', async () => {
+  setMsg(updateMsg, '確認中…');
+  await refreshUpdateStatus();
+  setMsg(updateMsg, '');
+});
+
+updateApplyBtn.addEventListener('click', async () => {
+  if (
+    !window.confirm(
+      '最新 Release のイメージを取り込みます。スポーン中の相棒は再起動されます。続行しますか？'
+    )
+  ) {
+    return;
+  }
+  updateApplyBtn.disabled = true;
+  updateLogsEl.classList.remove('hidden');
+  setMsg(updateMsg, '更新を開始します…');
+  try {
+    const result = await api('/api/update/apply', {
+      method: 'POST',
+      body: JSON.stringify({})
+    });
+    if (!result.ok) throw new Error(result.error || '更新を開始できませんでした');
+    setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）', 'ok');
+    updateLogsEl.textContent = result.log || '(ログなし)';
+    startUpdateLogPolling();
+  } catch (error) {
+    setMsg(updateMsg, error.message, 'err');
+    await refreshUpdateStatus();
+  }
+});
+
 /* ===== logs ===== */
 function updateLogButtons() {
   document.querySelectorAll('[data-log]').forEach((button) => {
@@ -499,6 +629,7 @@ async function boot() {
   if (readyToSpawn) {
     await refreshStatus();
     await refreshLogs();
+    await refreshUpdateStatus();
   } else {
     await refreshMsLogin();
   }

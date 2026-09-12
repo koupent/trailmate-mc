@@ -15,6 +15,9 @@ data/*
 # Runtime / local debug dumps
 data/
 
+# Local release pin written by dashboard updater
+VERSION
+
 # ViaProxy secrets and runtime
 services/viaproxy/viaproxy.yml
 services/viaproxy/saves.json

@@ -10,6 +10,7 @@ import {
   findServiceContainerId,
   stripAnsi
 } from './dockerApi.mjs';
+import { createUpdateManager } from './update.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
@@ -17,6 +18,7 @@ const projectRoot = process.env.PROJECT_ROOT || path.resolve(here, '..');
 const port = Number(process.env.DASHBOARD_PORT || 8787);
 const controlUrl = (process.env.TRAILMATE_CONTROL_URL || 'http://trailmate:8790').replace(/\/$/, '');
 const viaproxyService = process.env.VIAPROXY_SERVICE || 'viaproxy';
+const updateManager = createUpdateManager(projectRoot);
 
 const PATHS = {
   env: path.join(projectRoot, '.env'),
@@ -81,6 +83,20 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'POST' && url.pathname === '/api/ms-login/cancel') {
       await cancelMicrosoftLogin('cancelled by user');
       return json(response, 200, { ok: true, ...msLogin });
+    }
+    if (request.method === 'GET' && url.pathname === '/api/update/status') {
+      return json(response, 200, await updateManager.getStatus());
+    }
+    if (request.method === 'GET' && url.pathname === '/api/update/logs') {
+      return json(response, 200, updateManager.getLogs());
+    }
+    if (request.method === 'POST' && url.pathname === '/api/update/apply') {
+      const length = Number(request.headers['content-length'] || 0);
+      const body = length > 0 ? await readJson(request) : {};
+      const result = await updateManager.startApply({
+        targetVersion: body?.targetVersion
+      });
+      return json(response, result.ok ? 200 : 409, result);
     }
     if (request.method === 'GET') {
       return serveStatic(url.pathname, response);
