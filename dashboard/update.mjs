@@ -78,16 +78,20 @@ export function createUpdateManager(projectRoot) {
   async function startApply(options = {}) {
     await hydrateJobFromDisk();
     if (job.active || (await isUpdaterContainerRunning())) {
-      return { ok: false, error: 'すでに更新を実行中です', ...(await getLogs()) };
+      return {
+        ...(await getLogs()),
+        ok: false,
+        error: 'すでに更新を実行中です'
+      };
     }
 
     const status = await getStatus();
     const targetVersion = options.targetVersion || status.latestVersion;
     if (!targetVersion) {
       return {
+        ...(await getLogs()),
         ok: false,
-        error: status.latestError || '最新リリースを取得できませんでした',
-        ...(await getLogs())
+        error: status.latestError || '最新リリースを取得できませんでした'
       };
     }
 
@@ -107,7 +111,12 @@ export function createUpdateManager(projectRoot) {
       await persistJob();
     });
 
-    return { ok: true, started: true, targetVersion, ...(await getLogs()) };
+    return {
+      ...(await getLogs()),
+      ok: true,
+      started: true,
+      targetVersion
+    };
   }
 
   async function readCurrentVersion() {
