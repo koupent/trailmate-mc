@@ -59,14 +59,17 @@ const shellApp = document.getElementById('shell-app');
 const stepServer = document.getElementById('step-server');
 const stepAccount = document.getElementById('step-account');
 const logsEl = document.getElementById('logs');
-const logsDetails = document.getElementById('logs-details');
 const refreshLogsBtn = document.getElementById('refresh-logs');
 const logsServiceLabel = document.getElementById('logs-service-label');
 const updatePanel = document.getElementById('update-panel');
+const updateZone = document.getElementById('update-zone');
+const updateExpand = document.getElementById('update-expand');
 const updateCheckBtn = document.getElementById('update-check-btn');
 const updateApplyBtn = document.getElementById('update-apply-btn');
 const updateMsg = document.getElementById('update-msg');
 const updateLogsEl = document.getElementById('update-logs');
+const updateLogsDetails = document.getElementById('update-logs-details');
+
 
 let currentLogService = 'trailmate';
 let lastKnownAccountName = null;
@@ -475,7 +478,11 @@ let updatePollTimer = null;
 function renderUpdateStatus(status) {
   if (!status) {
     updatePanel.textContent = '更新情報を取得できません';
+    updateApplyBtn.hidden = true;
     updateApplyBtn.disabled = true;
+    updateZone.classList.remove('is-alert', 'is-busy');
+    updateZone.classList.add('is-quiet');
+    if (updateExpand) updateExpand.hidden = true;
     return;
   }
 
@@ -483,31 +490,51 @@ function renderUpdateStatus(status) {
   const latest = status.latestVersion
     ? escapeHtml(status.latestVersion)
     : '未取得';
-  const badge = status.updating
-    ? '<span class="pill">更新中</span>'
-    : status.updateAvailable
-      ? '<span class="pill available">更新あり</span>'
-      : '<span class="pill on">最新</span>';
+  const updating = Boolean(status.updating);
+  const available = Boolean(status.updateAvailable);
+  const needsAttention = updating || available;
+
+  updateZone.classList.toggle('is-quiet', !needsAttention);
+  updateZone.classList.toggle('is-alert', available && !updating);
+  updateZone.classList.toggle('is-busy', updating);
+  if (updateExpand) updateExpand.hidden = !needsAttention;
+
+  let badge;
+  if (updating) {
+    badge = '<span class="pill busy">更新中</span>';
+  } else if (available) {
+    badge = '<span class="pill available">更新あり</span>';
+  } else {
+    badge = '<span class="pill on">最新</span>';
+  }
 
   const link = status.latestUrl
     ? ` <a class="ms-login-link" href="${escapeHtml(status.latestUrl)}" target="_blank" rel="noopener noreferrer">Release</a>`
     : '';
-
   const err = status.latestError
-    ? `<div class="msg err">${escapeHtml(status.latestError)}</div>`
+    ? `<span class="msg err">${escapeHtml(status.latestError)}</span>`
     : '';
 
-  updatePanel.innerHTML = `
-    <div>${badge}</div>
-    <div>現在: <strong>${current}</strong></div>
-    <div>最新: <strong>${latest}</strong>${link}</div>
-    ${err}
-  `;
+  if (needsAttention) {
+    updatePanel.innerHTML = `
+      ${badge}
+      <span>現在 <strong>${current}</strong></span>
+      <span>最新 <strong>${latest}</strong>${link}</span>
+      ${err}
+    `;
+  } else {
+    updatePanel.innerHTML = `
+      ${badge}
+      <span>${current}</span>
+      ${err}
+    `;
+  }
 
-  updateApplyBtn.disabled = Boolean(status.updating) || !status.updateAvailable;
-  if (status.updating) {
+  updateApplyBtn.hidden = !needsAttention;
+  updateApplyBtn.disabled = updating || !available;
+  if (updating) {
     setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
-    updateLogsEl.classList.remove('hidden');
+    if (updateLogsDetails) updateLogsDetails.open = true;
   }
 }
 
@@ -531,7 +558,7 @@ async function refreshUpdateLogs() {
   try {
     const data = await api('/api/update/logs');
     updateLogsEl.textContent = data.log || '(ログなし)';
-    updateLogsEl.classList.remove('hidden');
+    if (data.updating && updateLogsDetails) updateLogsDetails.open = true;
     if (data.updating) {
       setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
     } else if (data.ok) {
@@ -576,7 +603,7 @@ updateApplyBtn.addEventListener('click', async () => {
     return;
   }
   updateApplyBtn.disabled = true;
-  updateLogsEl.classList.remove('hidden');
+  if (updateLogsDetails) updateLogsDetails.open = true;
   setMsg(updateMsg, '更新を開始します…');
   try {
     const result = await api('/api/update/apply', {
@@ -618,10 +645,6 @@ document.querySelectorAll('[data-log]').forEach((button) => {
   });
 });
 refreshLogsBtn.addEventListener('click', () => void refreshLogs());
-
-logsDetails?.addEventListener('toggle', (event) => {
-  if (event.currentTarget.open) void refreshLogs();
-});
 
 /* ===== boot / polling ===== */
 async function boot() {
