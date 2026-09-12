@@ -320,36 +320,31 @@ body.mode-app .setup { display: none; }
   color: var(--muted);
 }
 
-/* 普段は細い帯、更新あり／更新中だけ目立たせる */
-.update-zone {
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: #121925;
-  padding: 10px 14px;
-}
-
+/* 他ゾーンと同じ骨格。更新あり／更新中だけ枠を強調 */
 .update-zone.is-quiet .update-expand {
   display: none !important;
 }
 
 .update-zone.is-alert {
   border-color: var(--warn);
-  background: linear-gradient(180deg, var(--zone-block) 0%, #1a2332 72px);
-  padding: 14px 16px;
+  box-shadow: inset 0 0 0 1px rgba(240, 180, 41, 0.22);
+  background: linear-gradient(180deg, var(--zone-block) 0%, var(--card) 56px);
 }
 
 .update-zone.is-busy {
   border-color: var(--accent);
-  background: #152033;
-  padding: 14px 16px;
+  box-shadow: inset 0 0 0 1px rgba(91, 140, 255, 0.25);
+  background: linear-gradient(180deg, #152033 0%, var(--card) 56px);
 }
 
-.update-bar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 16px;
-  align-items: center;
-  justify-content: space-between;
+.update-row {
+  margin-top: 0;
+}
+
+.update-row .update-panel {
+  margin-left: auto;
+  justify-content: flex-end;
+  text-align: right;
 }
 
 .update-panel {
@@ -388,25 +383,22 @@ body.mode-app .setup { display: none; }
   color: #9ec1ff;
 }
 
-.update-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  flex-shrink: 0;
+/* 空メッセージ用の予約高さは持たない（スポーン行と同じ） */
+.update-row > .msg {
+  margin: 0;
+  min-height: 0;
 }
 
-.update-msg {
-  margin: 8px 0 0;
-  min-height: 1.25em;
+.update-row > .msg:empty {
+  display: none;
 }
 
 .update-expand {
-  margin-top: 12px;
+  margin-top: 10px;
 }
 
 .update-expand-note {
-  margin: 0;
+  margin: 0 0 8px;
   font-size: 0.9rem;
 }
 

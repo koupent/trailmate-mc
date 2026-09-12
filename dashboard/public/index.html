@@ -33,19 +33,20 @@
       </nav>
 
       <section id="tab-operate" class="tab-panel is-active" role="tabpanel">
-        <article id="update-zone" class="update-zone is-quiet" aria-live="polite">
-          <div class="update-bar">
-            <div id="update-panel" class="update-panel">確認中…</div>
-            <div class="update-actions">
-              <button type="button" id="update-check-btn">確認</button>
-              <button type="button" id="update-apply-btn" class="primary" hidden disabled>更新する</button>
-            </div>
+        <article id="update-zone" class="zone update-zone is-quiet" aria-live="polite">
+          <div class="zone-head">
+            <h2 class="zone-title">アップデート</h2>
+            <p class="zone-lead muted">公開中の最新版を確認し、必要なら取り込みます。</p>
           </div>
-          <p id="update-msg" class="msg update-msg" aria-live="polite"></p>
+          <div class="row update-row">
+            <button type="button" id="update-check-btn">確認</button>
+            <button type="button" id="update-apply-btn" class="primary" hidden disabled>更新する</button>
+            <span id="update-msg" class="msg" aria-live="polite"></span>
+            <div id="update-panel" class="update-panel">確認中…</div>
+          </div>
           <div id="update-expand" class="update-expand" hidden>
             <p class="muted update-expand-note">
-              GitHub Release の最新版を取り込みます。更新中はボットが再起動します。
-              ホスト側ファイル（<code>docker-compose.yml</code> など）の変更がある場合は ZIP の再展開が必要です。
+              更新中はボットが再起動します。ホスト側ファイル（<code>docker-compose.yml</code> など）の変更がある場合は ZIP の再展開が必要です。
             </p>
             <details id="update-logs-details" class="fold">
               <summary>更新の進行ログ</summary>
