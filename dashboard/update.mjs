@@ -1,12 +1,9 @@
-import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { existsSync } from 'node:fs';
+import { recreateServiceContainer } from './dockerApi.mjs';
 
 const githubRepo = process.env.GITHUB_REPO || 'koupent/trailmate-mc';
-const dockerSock = process.env.DOCKER_SOCK || '/var/run/docker.sock';
-const composeProject = process.env.COMPOSE_PROJECT_NAME || 'trailmate-mc';
-const updaterImage = process.env.UPDATE_IMAGE || 'alpine:3.20';
+const updateServices = ['trailmate', 'dashboard'];
 
 /**
  * @param {string} projectRoot
@@ -15,15 +12,12 @@ export function createUpdateManager(projectRoot) {
   const versionFile = path.join(projectRoot, 'VERSION');
   const logFile = path.join(projectRoot, 'data', 'update.log');
   const stateFile = path.join(projectRoot, 'data', 'update-state.json');
+  const lockFile = path.join(projectRoot, 'data', 'update.lock');
 
   /** @type {{ active: boolean, startedAt: number | null, finishedAt: number | null, ok: boolean | null, error: string | null, targetVersion: string | null, log: string }} */
   let job = emptyJob();
 
-  return {
-    getStatus,
-    getLogs,
-    startApply
-  };
+  return { getStatus, getLogs, startApply };
 
   async function getStatus() {
     await hydrateJobFromDisk();
@@ -37,8 +31,11 @@ export function createUpdateManager(projectRoot) {
     }
 
     const latestVersion = latest?.tag || null;
+    const updating = job.active || (await hasLock());
     const updateAvailable = Boolean(
-      latestVersion && normalizeTag(latestVersion) !== normalizeTag(currentVersion)
+      !updating &&
+        latestVersion &&
+        normalizeTag(latestVersion) !== normalizeTag(currentVersion)
     );
 
     return {
@@ -47,7 +44,7 @@ export function createUpdateManager(projectRoot) {
       latestUrl: latest?.url || null,
       latestName: latest?.name || null,
       updateAvailable,
-      updating: job.active || (await isUpdaterContainerRunning()),
+      updating,
       lastJob: {
         ok: job.ok,
         error: job.error,
@@ -62,7 +59,7 @@ export function createUpdateManager(projectRoot) {
 
   async function getLogs() {
     await hydrateJobFromDisk();
-    const updating = job.active || (await isUpdaterContainerRunning());
+    const updating = job.active || (await hasLock());
     return {
       updating,
       log: job.log || '(ログなし)',
@@ -77,7 +74,7 @@ export function createUpdateManager(projectRoot) {
    */
   async function startApply(options = {}) {
     await hydrateJobFromDisk();
-    if (job.active || (await isUpdaterContainerRunning())) {
+    if (job.active || (await hasLock())) {
       return {
         ...(await getLogs()),
         ok: false,
@@ -100,6 +97,8 @@ export function createUpdateManager(projectRoot) {
     job.startedAt = Date.now();
     job.targetVersion = targetVersion;
     appendLog('更新開始: ' + targetVersion);
+    await fs.mkdir(path.dirname(lockFile), { recursive: true });
+    await fs.writeFile(lockFile, String(Date.now()), 'utf8');
     await persistJob();
 
     void runUpdater(targetVersion).catch(async (error) => {
@@ -108,6 +107,7 @@ export function createUpdateManager(projectRoot) {
       job.ok = false;
       job.error = error instanceof Error ? error.message : String(error);
       appendLog('失敗: ' + job.error);
+      await clearLock();
       await persistJob();
     });
 
@@ -124,9 +124,8 @@ export function createUpdateManager(projectRoot) {
       const text = (await fs.readFile(versionFile, 'utf8')).trim();
       if (text) return text;
     } catch {
-      /* missing VERSION is normal for git clone */
+      /* missing */
     }
-
     const fromEnv = String(process.env.TRAILMATE_VERSION || process.env.DASHBOARD_VERSION || '').trim();
     if (fromEnv && fromEnv !== 'dev') return fromEnv;
     return fromEnv || 'dev';
@@ -156,37 +155,24 @@ export function createUpdateManager(projectRoot) {
     };
   }
 
-  async function isUpdaterContainerRunning() {
+  async function hasLock() {
     try {
-      const result = await new Promise((resolve, reject) => {
-        const child = spawn(
-          'docker',
-          ['ps', '-q', '-f', 'name=' + composeProject + '-updater'],
-          { env: process.env }
-        );
-        const chunks = [];
-        child.stdout.on('data', (c) => chunks.push(c));
-        child.on('error', reject);
-        child.on('close', (code) => {
-          if (code === 0) resolve(Buffer.concat(chunks).toString('utf8').trim());
-          else resolve('');
-        });
-      });
-      return Boolean(result);
+      await fs.access(lockFile);
+      return true;
     } catch {
       return false;
     }
+  }
+
+  async function clearLock() {
+    await fs.unlink(lockFile).catch(() => null);
   }
 
   async function hydrateJobFromDisk() {
     try {
       const raw = JSON.parse(await fs.readFile(stateFile, 'utf8'));
       if (!raw || typeof raw !== 'object') return;
-      job = {
-        ...emptyJob(),
-        ...raw,
-        active: false
-      };
+      job = { ...emptyJob(), ...raw, active: false };
       try {
         job.log = await fs.readFile(logFile, 'utf8');
       } catch {
@@ -210,77 +196,41 @@ export function createUpdateManager(projectRoot) {
   async function runUpdater(targetVersion) {
     await fs.mkdir(path.dirname(logFile), { recursive: true });
 
-    const script = [
-      'set -e',
-      'echo "[updater] pull trailmate dashboard"',
-      'docker-compose pull trailmate dashboard',
-      'echo "[updater] recreate trailmate"',
-      'docker-compose up -d --no-deps trailmate',
-      "printf '%s\\n' '" + shellQuote(targetVersion) + "' > VERSION",
-      'echo "[updater] recreate dashboard (接続が切れることがあります)"',
-      'docker-compose up -d --no-deps dashboard',
-      'echo "[updater] DONE"'
-    ].join('\n');
+    const onProgress = (line) => {
+      appendLog(line);
+      void persistJob();
+    };
 
-    const dockerBin = '/usr/local/bin/docker';
-    const composeBin = '/usr/local/bin/docker-compose';
-    if (!existsSync(dockerBin) || !existsSync(composeBin)) {
-      throw new Error('docker / docker-compose がダッシュボードイメージにありません');
+    // dashboard 以外を先に更新し、VERSION を書いてから自身を更新する
+    for (const service of updateServices) {
+      if (service === 'dashboard') continue;
+      appendLog('[updater] recreate ' + service);
+      await persistJob();
+      await recreateServiceContainer(service, onProgress);
     }
 
-    const args = [
-      'run',
-      '--rm',
-      '--name',
-      composeProject + '-updater',
-      '-v',
-      dockerSock + ':/var/run/docker.sock',
-      '-v',
-      projectRoot + ':/project',
-      '-v',
-      dockerBin + ':/usr/local/bin/docker:ro',
-      '-v',
-      composeBin + ':/usr/local/bin/docker-compose:ro',
-      '-w',
-      '/project',
-      '-e',
-      'COMPOSE_PROJECT_NAME=' + composeProject,
-      '--entrypoint',
-      'sh',
-      updaterImage,
-      '-c',
-      script
-    ];
-
-    appendLog('updater コンテナを起動します（' + updaterImage + '）');
-    await persistJob();
-
-    await new Promise((resolve, reject) => {
-      const child = spawn('docker', args, {
-        env: process.env,
-        cwd: projectRoot
-      });
-      child.stdout.on('data', (chunk) => {
-        appendLog(chunk.toString('utf8'));
-        void persistJob();
-      });
-      child.stderr.on('data', (chunk) => {
-        appendLog(chunk.toString('utf8'));
-        void persistJob();
-      });
-      child.on('error', reject);
-      child.on('close', (code) => {
-        if (code === 0) resolve(undefined);
-        else reject(new Error('updater 終了コード ' + code));
-      });
-    });
+    await fs.writeFile(versionFile, targetVersion + '\n', 'utf8');
+    appendLog('[updater] VERSION=' + targetVersion);
 
     job.active = false;
     job.finishedAt = Date.now();
     job.ok = true;
     job.error = null;
-    appendLog('更新完了。ページを再読み込みしてください。');
+    appendLog('[updater] recreate dashboard（接続が切れることがあります。再読み込みしてください）');
     await persistJob();
+    await clearLock();
+
+    try {
+      await recreateServiceContainer('dashboard', onProgress);
+      appendLog('[updater] DONE');
+      await persistJob();
+    } catch (error) {
+      appendLog(
+        'dashboard 再作成の応答待ちで切断された可能性があります: ' +
+          (error instanceof Error ? error.message : String(error))
+      );
+      await persistJob();
+    }
   }
 
   function appendLog(text) {
@@ -310,11 +260,4 @@ export function normalizeTag(tag) {
     .trim()
     .replace(/^v/i, '')
     .toLowerCase();
-}
-
-/**
- * @param {string} value
- */
-function shellQuote(value) {
-  return String(value).replace(/'/g, "'\\''");
 }
