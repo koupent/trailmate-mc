@@ -603,8 +603,36 @@ function stopUpdateLogPolling() {
 
 updateCheckBtn.addEventListener('click', async () => {
   setMsg(updateMsg, '確認中…');
-  await refreshUpdateStatus();
-  setMsg(updateMsg, '');
+  try {
+    const status = await api('/api/update/status');
+    renderUpdateStatus(status);
+    if (status.updating) {
+      setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
+      await refreshUpdateLogs();
+      startUpdateLogPolling();
+      return;
+    }
+    stopUpdateLogPolling();
+    if (status.latestError && !status.latestVersion) {
+      setMsg(updateMsg, status.latestError, 'err');
+      return;
+    }
+    if (status.updateAvailable) {
+      setMsg(
+        updateMsg,
+        `更新があります（${status.latestVersion}）`,
+        'ok'
+      );
+      return;
+    }
+    setMsg(
+      updateMsg,
+      `最新です（${status.currentVersion || 'unknown'}）`,
+      'ok'
+    );
+  } catch (error) {
+    setMsg(updateMsg, error.message, 'err');
+  }
 });
 
 updateApplyBtn.addEventListener('click', async () => {
