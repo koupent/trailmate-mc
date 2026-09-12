@@ -11,6 +11,12 @@ import {
   stripAnsi
 } from './dockerApi.mjs';
 import { createUpdateManager } from './update.mjs';
+import {
+  BACKEND_STARTING_MESSAGE,
+  backendUnavailableStatus,
+  probeTrailmateBackend,
+  withBackendReady
+} from './backendReady.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
@@ -51,10 +57,10 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, { ok: true, settings: await readSettings() });
     }
     if (request.method === 'GET' && url.pathname === '/api/status') {
-      return proxyControl(response, '/status');
+      return sendControlStatus(response);
     }
     if (request.method === 'POST' && url.pathname === '/api/spawn') {
-      const readiness = buildSetup((await readSettings()));
+      const readiness = buildSetup(await readSettings());
       if (!readiness.readyToSpawn) {
         return json(response, 409, {
           ok: false,
@@ -62,9 +68,25 @@ const server = http.createServer(async (request, response) => {
           setup: readiness
         });
       }
+      const backend = await probeTrailmateBackend(controlUrl);
+      if (!backend.ok) {
+        return json(response, 503, {
+          ok: false,
+          error: backend.error || BACKEND_STARTING_MESSAGE,
+          backendReady: false
+        });
+      }
       return proxyControl(response, '/spawn', 'POST');
     }
     if (request.method === 'POST' && url.pathname === '/api/despawn') {
+      const backend = await probeTrailmateBackend(controlUrl);
+      if (!backend.ok) {
+        return json(response, 503, {
+          ok: false,
+          error: backend.error || BACKEND_STARTING_MESSAGE,
+          backendReady: false
+        });
+      }
       return proxyControl(response, '/despawn', 'POST');
     }
     if (request.method === 'GET' && url.pathname === '/api/logs') {
@@ -245,9 +267,34 @@ async function readRegisteredAccount() {
   }
 }
 
+async function sendControlStatus(response) {
+  try {
+    const upstream = await fetch(`${controlUrl}/status`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    });
+    const text = await upstream.text();
+    let data = {};
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { error: text || `HTTP ${upstream.status}` };
+    }
+    if (!upstream.ok) {
+      return json(response, 200, backendUnavailableStatus(BACKEND_STARTING_MESSAGE));
+    }
+    return json(response, 200, withBackendReady(data, true));
+  } catch {
+    return json(response, 200, backendUnavailableStatus());
+  }
+}
+
 async function proxyControl(response, pathname, method = 'GET') {
   try {
-    const upstream = await fetch(`${controlUrl}${pathname}`, { method });
+    const upstream = await fetch(`${controlUrl}${pathname}`, {
+      method,
+      signal: AbortSignal.timeout(method === 'GET' ? 2000 : 60000)
+    });
     const text = await upstream.text();
     response.writeHead(upstream.status, {
       'content-type': 'application/json; charset=utf-8',
@@ -255,8 +302,11 @@ async function proxyControl(response, pathname, method = 'GET') {
     });
     response.end(text);
   } catch (error) {
-    json(response, 502, {
-      error: `trailmate に接続できません: ${error instanceof Error ? error.message : String(error)}`
+    json(response, 503, {
+      ok: false,
+      backendReady: false,
+      error: BACKEND_STARTING_MESSAGE,
+      detail: error instanceof Error ? error.message : String(error)
     });
   }
 }
