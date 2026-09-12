@@ -88,7 +88,7 @@ const server = http.createServer(async (request, response) => {
       return json(response, 200, await updateManager.getStatus());
     }
     if (request.method === 'GET' && url.pathname === '/api/update/logs') {
-      return json(response, 200, updateManager.getLogs());
+      return json(response, 200, await updateManager.getLogs());
     }
     if (request.method === 'POST' && url.pathname === '/api/update/apply') {
       const length = Number(request.headers['content-length'] || 0);

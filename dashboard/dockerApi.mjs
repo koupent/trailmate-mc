@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { spawn } from 'node:child_process';
 
 const dockerSock = process.env.DOCKER_SOCK || '/var/run/docker.sock';
 const composeProject = process.env.COMPOSE_PROJECT_NAME || 'trailmate-mc';
@@ -189,8 +190,11 @@ export async function pullImage(imageRef, onProgress) {
  * Pull the container's current image tag, then recreate with the same mounts/env.
  * @param {string} service
  * @param {(line: string) => void} [onProgress]
+ * @param {{ selfReplace?: boolean }} [options]
+ *   selfReplace: 自分自身（dashboard）を更新するとき。停止でプロセスが死ぬ前に
+ *   差し替え用コンテナを別プロセスで起動する。
  */
-export async function recreateServiceContainer(service, onProgress) {
+export async function recreateServiceContainer(service, onProgress, options = {}) {
   const id = await findServiceContainerId(service);
   if (!id) throw new Error(service + ' コンテナが見つかりません');
 
@@ -205,10 +209,6 @@ export async function recreateServiceContainer(service, onProgress) {
 
   if (onProgress) onProgress('[pull] ' + image);
   await pullImage(image, onProgress);
-
-  if (onProgress) onProgress('[recreate] stop ' + name);
-  await dockerRequest('POST', '/containers/' + id + '/stop?t=20');
-  await dockerRequest('DELETE', '/containers/' + id + '?v=0');
 
   const networks = info.NetworkSettings?.Networks || {};
   const createBody = {
@@ -235,6 +235,14 @@ export async function recreateServiceContainer(service, onProgress) {
     NetworkingConfig: { EndpointsConfig: networks }
   };
 
+  if (options.selfReplace) {
+    return replaceContainerExternally(id, name, createBody, onProgress);
+  }
+
+  if (onProgress) onProgress('[recreate] stop ' + name);
+  await dockerRequest('POST', '/containers/' + id + '/stop?t=20');
+  await dockerRequest('DELETE', '/containers/' + id + '?v=0');
+
   const created = await dockerRequest(
     'POST',
     '/containers/create?name=' + encodeURIComponent(name),
@@ -253,6 +261,103 @@ export async function recreateServiceContainer(service, onProgress) {
       service + ' の start に失敗: ' + started.body.toString('utf8').slice(0, 300)
     );
   }
+  return newId;
+}
+
+/**
+ * dashboard 自己更新用: 新コンテナを先に作り、差し替えは別コンテナに任せる。
+ * @param {string} oldId
+ * @param {string} name
+ * @param {object} createBody
+ * @param {(line: string) => void} [onProgress]
+ */
+async function replaceContainerExternally(oldId, name, createBody, onProgress) {
+  const tempName = name + '-next';
+  const swapperName = composeProject + '-dash-swap';
+
+  await dockerRequest('DELETE', '/containers/' + encodeURIComponent(tempName) + '?force=1').catch(
+    () => null
+  );
+  await dockerRequest('DELETE', '/containers/' + encodeURIComponent(swapperName) + '?force=1').catch(
+    () => null
+  );
+
+  if (onProgress) onProgress('[recreate] create replacement ' + tempName);
+  const created = await dockerRequest(
+    'POST',
+    '/containers/create?name=' + encodeURIComponent(tempName),
+    createBody
+  );
+  if (created.status >= 400) {
+    throw new Error(
+      'dashboard の create に失敗: ' + created.body.toString('utf8').slice(0, 300)
+    );
+  }
+  const newId = JSON.parse(created.body.toString('utf8')).Id;
+
+  const updated = await dockerRequest('POST', '/containers/' + oldId + '/update', {
+    RestartPolicy: { Name: 'no', MaximumRetryCount: 0 }
+  });
+  if (updated.status >= 400 && onProgress) {
+    onProgress(
+      '[recreate] warn: restart policy update failed: ' +
+        updated.body.toString('utf8').slice(0, 200)
+    );
+  }
+
+  const script = [
+    'set -e',
+    'echo "[swap] begin"',
+    'docker update --restart=no "' + name + '" || true',
+    'echo "[swap] stop old"',
+    'docker stop -t 15 "' + name + '" || true',
+    'docker rm -f "' + name + '" || true',
+    'echo "[swap] rename new"',
+    'docker rename "' + tempName + '" "' + name + '"',
+    'docker update --restart=unless-stopped "' + name + '" || true',
+    'echo "[swap] start"',
+    'docker start "' + name + '"',
+    'echo "[swap] DONE"'
+  ].join('\n');
+
+  if (onProgress) onProgress('[recreate] hand off swap to ' + swapperName);
+  const runOut = await new Promise((resolve, reject) => {
+    const child = spawn(
+      'docker',
+      [
+        'run',
+        '-d',
+        '--name',
+        swapperName,
+        '-v',
+        dockerSock + ':/var/run/docker.sock',
+        'docker:27.5.1-cli',
+        'sh',
+        '-c',
+        script
+      ],
+      { env: process.env }
+    );
+    const chunks = [];
+    const errs = [];
+    child.stdout.on('data', (c) => chunks.push(c));
+    child.stderr.on('data', (c) => errs.push(c));
+    child.on('error', reject);
+    child.on('close', (code) => {
+      const stdout = Buffer.concat(chunks).toString('utf8').trim();
+      const stderr = Buffer.concat(errs).toString('utf8').trim();
+      if (code === 0) resolve(stdout);
+      else
+        reject(
+          new Error(
+            'swapper 起動終了コード ' + code + ' ' + (stderr || stdout).slice(0, 300)
+          )
+        );
+    });
+  });
+  if (onProgress) onProgress('[recreate] swapper id ' + runOut);
+
+  await new Promise((r) => setTimeout(r, 1500));
   return newId;
 }
 

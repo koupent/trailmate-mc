@@ -221,12 +221,12 @@ export function createUpdateManager(projectRoot) {
     await clearLock();
 
     try {
-      await recreateServiceContainer('dashboard', onProgress);
-      appendLog('[updater] DONE');
+      await recreateServiceContainer('dashboard', onProgress, { selfReplace: true });
+      appendLog('[updater] DONE（dashboard 差し替えを起動済み）');
       await persistJob();
     } catch (error) {
       appendLog(
-        'dashboard 再作成の応答待ちで切断された可能性があります: ' +
+        'dashboard 差し替えの起動に失敗: ' +
           (error instanceof Error ? error.message : String(error))
       );
       await persistJob();
