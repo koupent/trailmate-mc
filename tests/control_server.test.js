@@ -47,9 +47,12 @@ describe('control server status', () => {
     assert.equal(status.preferredMode, 'follow');
     assert.equal(status.activeFsm, 'combat');
     assert.deepEqual(status.position, { x: 1.2, y: 64, z: -3.6 });
-    assert.deepEqual(status.inventory, [
-      { name: 'bread', count: 5 },
-      { name: 'torch', count: 40 }
-    ]);
+    const byName = Object.fromEntries(
+      status.inventory.map((item) => [item.name, item])
+    );
+    assert.equal(byName.torch.count, 40);
+    assert.equal(byName.torch.displayName, '松明');
+    assert.equal(byName.bread.count, 5);
+    assert.equal(byName.bread.displayName, 'パン');
   });
 });
