@@ -39,6 +39,9 @@ const settingsMsg = document.getElementById('settings-msg');
 const placeholderWarn = document.getElementById('placeholder-warn');
 const targetAddressInput = document.getElementById('targetAddress');
 const botNameInput = document.getElementById('botName');
+const botNameOnline = document.getElementById('bot-name-online');
+const botNameOffline = document.getElementById('bot-name-offline');
+const botDisplayName = document.getElementById('bot-display-name');
 const minecraftVersionInput = document.getElementById('minecraftVersion');
 const authMethodSelect = document.getElementById('authMethod');
 const spawnBtn = document.getElementById('spawn-btn');
@@ -218,6 +221,29 @@ function updateAccountStepVisibility(offline) {
   msLoginControls.classList.toggle('hidden', offline);
   msSkipNote.classList.toggle('hidden', !offline);
   msLoginPanel.classList.toggle('hidden', offline);
+  // オンライン: Microsoft プロフィール名がワールド名。オフラインのみ BOT_NAME が本体。
+  if (botNameOnline) botNameOnline.classList.toggle('hidden', offline);
+  if (botNameOffline) botNameOffline.classList.toggle('hidden', !offline);
+  if (botNameInput) {
+    botNameInput.required = Boolean(offline);
+    if (!offline) botNameInput.removeAttribute('required');
+  }
+}
+
+function renderBotDisplayName(account, authMethod) {
+  if (!botDisplayName) return;
+  if (authMethod === 'NONE') {
+    botDisplayName.textContent = '';
+    botDisplayName.className = 'msg';
+    return;
+  }
+  if (account?.registered && account.name) {
+    botDisplayName.textContent = account.name;
+    botDisplayName.className = 'msg ok';
+    return;
+  }
+  botDisplayName.textContent = '未登録（設定の Microsoft ログインを完了してください）';
+  botDisplayName.className = 'msg err';
 }
 
 function renderRegisteredAccount(account) {
@@ -243,6 +269,7 @@ function fillSettingsForm(settings) {
   authMethodSelect.value = settings.authMethod || 'ACCOUNT';
   minecraftVersionInput.value = settings.minecraftVersion || '1.21.6';
   updateAccountStepVisibility(authMethodSelect.value === 'NONE');
+  renderBotDisplayName(settings.registeredAccount, authMethodSelect.value);
 }
 
 /** チェックリスト等を更新。fillForm は初回表示・明示的な再読込時のみ。 */
@@ -251,6 +278,10 @@ function applySettingsState(settings, { fillForm = false } = {}) {
   placeholderWarn.classList.toggle('hidden', !settings.placeholder);
   renderRegisteredAccount(settings.registeredAccount);
   lastKnownAccountName = settings.registeredAccount?.name || null;
+  renderBotDisplayName(
+    settings.registeredAccount,
+    settings.authMethod || authMethodSelect.value
+  );
   renderSetup(settings.setup, settings);
 }
 
@@ -264,18 +295,23 @@ settingsForm.addEventListener('submit', async (event) => {
   event.preventDefault();
   setMsg(settingsMsg, '保存中…');
   try {
+    const authMethod = authMethodSelect.value;
+    const body = {
+      targetAddress: targetAddressInput.value.trim(),
+      authMethod,
+      minecraftVersion: minecraftVersionInput.value.trim()
+    };
+    // オフライン時のみワールド名として保存。オンラインでは ViaProxy 接続用に既存値を維持。
+    if (authMethod === 'NONE') {
+      body.botName = botNameInput.value.trim() || 'Trailmate';
+    }
     const result = await api('/api/settings', {
       method: 'POST',
-      body: JSON.stringify({
-        targetAddress: targetAddressInput.value.trim(),
-        botName: botNameInput.value.trim(),
-        authMethod: authMethodSelect.value,
-        minecraftVersion: minecraftVersionInput.value.trim()
-      })
+      body: JSON.stringify(body)
     });
     setMsg(settingsMsg, '保存しました（ViaProxy を再起動しました）', 'ok');
     if (result.settings) {
-      applySettingsState(result.settings, { fillForm: false });
+      applySettingsState(result.settings, { fillForm: true });
     }
   } catch (error) {
     setMsg(settingsMsg, error.message, 'err');
@@ -284,6 +320,10 @@ settingsForm.addEventListener('submit', async (event) => {
 
 authMethodSelect.addEventListener('change', () => {
   updateAccountStepVisibility(authMethodSelect.value === 'NONE');
+  renderBotDisplayName(
+    { registered: Boolean(lastKnownAccountName), name: lastKnownAccountName, count: 1 },
+    authMethodSelect.value
+  );
 });
 
 /* ===== spawn / status ===== */

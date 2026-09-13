@@ -101,15 +101,24 @@
             <input id="targetAddress" name="targetAddress" placeholder="play.example.com:25565" required />
           </label>
           <label>
-            ボット名
-            <input id="botName" name="botName" placeholder="Trailmate" required />
-          </label>
-          <label>
             認証
             <select id="authMethod" name="authMethod">
               <option value="ACCOUNT">オンライン（Microsoft アカウント）</option>
               <option value="NONE">オフライン</option>
             </select>
+          </label>
+          <div id="bot-name-online" class="name-panel">
+            <div class="name-panel-title">ワールド内の名前</div>
+            <p id="bot-display-name" class="msg">Microsoft アカウント登録後に表示されます</p>
+            <p class="muted name-help">
+              オンラインでは、ログインした Minecraft プロフィール名がそのまま使われます。
+              この画面の入力では変えられません（変更は Minecraft / Microsoft 側の名前変更になります）。
+            </p>
+          </div>
+          <label id="bot-name-offline" class="hidden">
+            ボット名（オフライン）
+            <input id="botName" name="botName" placeholder="Trailmate" />
+            <span class="muted name-help-inline">オフラインサーバーでは、この名前がワールド内の表示名になります。</span>
           </label>
           <label>
             Minecraft バージョン（config）

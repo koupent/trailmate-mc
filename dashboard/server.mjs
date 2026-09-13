@@ -217,7 +217,6 @@ function buildSetup(settings) {
 async function writeSettings(body) {
   await ensureConfigFiles();
   const targetAddress = String(body.targetAddress || '').trim();
-  const botName = String(body.botName || 'Trailmate').trim() || 'Trailmate';
   const authMethod = body.authMethod === 'NONE' ? 'NONE' : 'ACCOUNT';
   const minecraftVersion = String(body.minecraftVersion || '').trim();
 
@@ -226,6 +225,13 @@ async function writeSettings(body) {
   }
 
   let envText = await fs.readFile(PATHS.env, 'utf8');
+  const currentEnv = parseEnv(envText);
+  // ACCOUNT 時の BOT_NAME は Mineflayer→ViaProxy のオフライン握手名に過ぎず、
+  // ワールド内名は Microsoft プロフィール側。未指定なら既存／既定を維持する。
+  const botName =
+    authMethod === 'NONE'
+      ? String(body.botName || currentEnv.BOT_NAME || 'Trailmate').trim() || 'Trailmate'
+      : String(currentEnv.BOT_NAME || body.botName || 'Trailmate').trim() || 'Trailmate';
   envText = upsertEnv(envText, 'BOT_NAME', botName);
   await fs.writeFile(PATHS.env, envText, 'utf8');
 
