@@ -45,6 +45,7 @@ const spawnBtn = document.getElementById('spawn-btn');
 const despawnBtn = document.getElementById('despawn-btn');
 const spawnMsg = document.getElementById('spawn-msg');
 const spawnBlockReason = document.getElementById('spawn-block-reason');
+const spawnDiagnosticsEl = document.getElementById('spawn-diagnostics');
 const statusPanel = document.getElementById('status-panel');
 const msLoginBtn = document.getElementById('ms-login-btn');
 const msCancelBtn = document.getElementById('ms-cancel-btn');
@@ -165,7 +166,7 @@ function renderSetup(setup, settings = {}) {
   syncSpawnControls(setup);
 }
 
-/** セットアップ完了かつスポーン依存（trailmate + ViaProxy）準備完了のときだけスポーン可能。 */
+/** セットアップ完了かつ診断 OK のときだけスポーン可能。 */
 function syncSpawnControls(setup = null) {
   const setupReady = readyToSpawn;
   const canSpawn = setupReady && spawnReady;
@@ -185,15 +186,32 @@ function syncSpawnControls(setup = null) {
   if (!backendReady || !spawnReady) {
     spawnBlockReason.classList.remove('hidden');
     spawnBlockReason.textContent =
-      lastBackendMessage ||
-      (!backendReady
-        ? 'ボット側の準備中です。コンテナ起動が終わるまでスポーンできません。'
-        : '接続用プロキシ（ViaProxy）の起動中です。しばらく待ってからスポーンしてください。');
+      lastBackendMessage || 'スポーンの前提条件がまだ揃っていません。下の診断を確認してください。';
     return;
   }
 
   spawnBlockReason.classList.add('hidden');
   spawnBlockReason.textContent = '';
+}
+
+function renderSpawnDiagnostics(diagnostics) {
+  if (!spawnDiagnosticsEl) return;
+  const steps = Array.isArray(diagnostics?.steps) ? diagnostics.steps : [];
+  if (!steps.length) {
+    spawnDiagnosticsEl.innerHTML = '';
+    return;
+  }
+  spawnDiagnosticsEl.innerHTML = steps
+    .map((step) => {
+      const state = step.state === 'ok' ? 'ok' : step.state === 'starting' ? 'starting' : 'error';
+      const mark = state === 'ok' ? '✓' : state === 'starting' ? '…' : '✗';
+      return `<li class="is-${state}">
+        <span class="diag-mark">${mark}</span>
+        <span class="diag-label">${escapeHtml(step.label || step.id || '')}</span>
+        <span class="diag-detail">${escapeHtml(step.detail || '')}</span>
+      </li>`;
+    })
+    .join('');
 }
 
 function updateAccountStepVisibility(offline) {
@@ -317,8 +335,11 @@ despawnBtn.addEventListener('click', async () => {
 });
 
 function renderStatus(status) {
+  renderSpawnDiagnostics(status?.diagnostics);
+
   if (!status || status.backendReady === false) {
     const message =
+      status?.diagnostics?.summary ||
       status?.backendMessage ||
       status?.error ||
       'ボット側の準備中です。コンテナ起動が終わるまでお待ちください。';
@@ -337,8 +358,9 @@ function renderStatus(status) {
   const preparingNote =
     status.spawnReady === false
       ? `<div class="warn">${escapeHtml(
-          status.backendMessage ||
-            '接続用プロキシ（ViaProxy）の起動中です。しばらく待ってからスポーンしてください。'
+          status.diagnostics?.summary ||
+            status.backendMessage ||
+            'スポーンの前提条件がまだ揃っていません。'
         )}</div>`
       : '';
 
@@ -355,6 +377,8 @@ function renderStatus(status) {
     `;
     return;
   }
+
+  renderSpawnDiagnostics(null);
 
   const pos = status.position
     ? `${status.position.x}, ${status.position.y}, ${status.position.z}`
@@ -382,7 +406,8 @@ async function refreshStatus() {
     const status = await api('/api/status');
     backendReady = status.backendReady !== false;
     spawnReady = Boolean(status.spawnReady);
-    lastBackendMessage = status.backendMessage || '';
+    lastBackendMessage =
+      status.diagnostics?.summary || status.backendMessage || status.error || '';
     syncSpawnControls();
     renderStatus(status);
   } catch (error) {
@@ -393,7 +418,8 @@ async function refreshStatus() {
     renderStatus({
       backendReady: false,
       spawnReady: false,
-      backendMessage: lastBackendMessage
+      backendMessage: lastBackendMessage,
+      diagnostics: null
     });
   }
 }

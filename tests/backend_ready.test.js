@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import {
   BACKEND_STARTING_MESSAGE,
   PROXY_STARTING_MESSAGE,
+  SESSION_FAILED_MESSAGE,
+  TARGET_UNREACHABLE_MESSAGE,
   backendUnavailableStatus,
+  buildSpawnDiagnostics,
   humanizeSpawnError,
+  parseHostPort,
   probeSpawnReady,
   probeTrailmateBackend,
   withReadiness
@@ -30,6 +34,17 @@ describe('backend readiness helpers', () => {
     assert.equal(status.botName, 'Trailmate');
   });
 
+  it('parses host:port', () => {
+    assert.deepEqual(parseHostPort('example.com:25565'), {
+      host: 'example.com',
+      port: 25565
+    });
+    assert.deepEqual(parseHostPort('example.com'), {
+      host: 'example.com',
+      port: 25565
+    });
+  });
+
   it('probeTrailmateBackend returns ok when /health succeeds', async () => {
     const result = await probeTrailmateBackend('http://trailmate:8790', {
       fetch: async (url) => {
@@ -40,42 +55,43 @@ describe('backend readiness helpers', () => {
     assert.equal(result.ok, true);
   });
 
-  it('probeTrailmateBackend treats connection failure as starting', async () => {
-    const result = await probeTrailmateBackend('http://trailmate:8790', {
-      fetch: async () => {
-        throw new Error('fetch failed');
-      }
-    });
-    assert.equal(result.ok, false);
-    assert.equal(result.error, BACKEND_STARTING_MESSAGE);
-  });
-
-  it('probeSpawnReady stays blocked while ViaProxy is starting', async () => {
-    const result = await probeSpawnReady({
+  it('buildSpawnDiagnostics blocks on unreachable target even when proxy is healthy', async () => {
+    const result = await buildSpawnDiagnostics({
       controlUrl: 'http://trailmate:8790',
+      targetAddress: 'mc.example.com:25565',
+      authMethod: 'NONE',
       fetch: async () => ({ ok: true, status: 200 }),
-      getProxyHealth: async () => ({ ok: false, status: 'starting' })
+      getProxyHealth: async () => ({ ok: true, status: 'healthy' }),
+      probeTcpFn: async () => ({ ok: false, detail: 'timeout' })
     });
-    assert.equal(result.ok, false);
-    assert.equal(result.backendReady, true);
     assert.equal(result.spawnReady, false);
-    assert.equal(result.error, PROXY_STARTING_MESSAGE);
+    assert.equal(result.blockerId, 'target');
+    assert.equal(result.error, TARGET_UNREACHABLE_MESSAGE);
+    assert.ok(result.steps.some((s) => s.id === 'target' && s.state === 'error'));
   });
 
-  it('probeSpawnReady becomes ok when trailmate and ViaProxy are ready', async () => {
+  it('probeSpawnReady becomes ok when all checks pass', async () => {
     const result = await probeSpawnReady({
       controlUrl: 'http://trailmate:8790',
+      targetAddress: 'mc.example.com:25565',
+      authMethod: 'NONE',
       fetch: async () => ({ ok: true, status: 200 }),
-      getProxyHealth: async () => ({ ok: true, status: 'healthy' })
+      getProxyHealth: async () => ({ ok: true, status: 'healthy' }),
+      probeTcpFn: async () => ({ ok: true, detail: 'mc.example.com:25565' })
     });
     assert.equal(result.ok, true);
     assert.equal(result.spawnReady, true);
+    assert.equal(result.diagnostics.summary, 'スポーンできる状態です。');
   });
 
-  it('humanizes socketClosed spawn failures', () => {
+  it('humanizes socketClosed differently when infrastructure is ready', () => {
     assert.equal(
-      humanizeSpawnError('bot ended before spawn: socketClosed'),
-      PROXY_STARTING_MESSAGE
+      humanizeSpawnError('bot ended before spawn: socketClosed', { spawnReady: true }),
+      SESSION_FAILED_MESSAGE
+    );
+    assert.equal(
+      humanizeSpawnError('bot ended before spawn: socketClosed', { blockerId: 'target' }),
+      TARGET_UNREACHABLE_MESSAGE
     );
   });
 });

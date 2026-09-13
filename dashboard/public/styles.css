@@ -126,6 +126,45 @@ code {
   margin-top: 18px;
 }
 
+.spawn-diagnostics {
+  list-style: none;
+  margin: 10px 0 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.spawn-diagnostics:empty {
+  display: none;
+}
+
+.spawn-diagnostics li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: baseline;
+  font-size: 0.9rem;
+  color: var(--muted);
+}
+
+.spawn-diagnostics .diag-mark {
+  font-weight: 700;
+  min-width: 1.2em;
+}
+
+.spawn-diagnostics li.is-ok .diag-mark { color: var(--ok); }
+.spawn-diagnostics li.is-starting .diag-mark { color: var(--warn); }
+.spawn-diagnostics li.is-error .diag-mark { color: var(--danger); }
+
+.spawn-diagnostics .diag-label {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.spawn-diagnostics .diag-detail {
+  color: var(--muted);
+}
+
 .step.is-done .step-title::after {
   content: " · 完了";
   color: var(--ok);
