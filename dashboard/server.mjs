@@ -16,6 +16,7 @@ import {
   PROXY_STARTING_MESSAGE,
   backendUnavailableStatus,
   humanizeSpawnError,
+  isPlaceholderAddress,
   probeSpawnReady,
   probeTrailmateBackend,
   withReadiness
@@ -71,19 +72,21 @@ const server = http.createServer(async (request, response) => {
           setup: readiness
         });
       }
-      const spawnGate = await probeSpawnReady({
-        controlUrl,
-        getProxyHealth: () => readServiceHealth(viaproxyService)
-      });
+      const spawnGate = await evaluateSpawnGate();
       if (!spawnGate.ok) {
         return json(response, 503, {
           ok: false,
           error: spawnGate.error || PROXY_STARTING_MESSAGE,
           backendReady: Boolean(spawnGate.backendReady),
-          spawnReady: false
+          spawnReady: false,
+          diagnostics: spawnGate.diagnostics || null
         });
       }
-      return proxyControl(response, '/spawn', 'POST', { humanizeErrors: true });
+      return proxyControl(response, '/spawn', 'POST', {
+        humanizeErrors: true,
+        spawnReady: true,
+        blockerId: null
+      });
     }
     if (request.method === 'POST' && url.pathname === '/api/despawn') {
       const backend = await probeTrailmateBackend(controlUrl);
@@ -174,7 +177,7 @@ async function readSettings() {
     authMethod,
     botName,
     minecraftVersion: config.minecraft_version || '1.21.6',
-    placeholder: /your-minecraft-host|example\.com/i.test(targetAddress),
+    placeholder: isPlaceholderAddress(targetAddress),
     registeredAccount
   };
   return {
@@ -275,6 +278,17 @@ async function readRegisteredAccount() {
   }
 }
 
+async function evaluateSpawnGate() {
+  const settings = await readSettings();
+  return probeSpawnReady({
+    controlUrl,
+    targetAddress: settings.targetAddress,
+    authMethod: settings.authMethod,
+    registeredAccount: settings.registeredAccount,
+    getProxyHealth: () => readServiceHealth(viaproxyService)
+  });
+}
+
 async function readServiceHealth(service) {
   try {
     const id = await findServiceContainerId(service);
@@ -287,7 +301,6 @@ async function readServiceHealth(service) {
     const health = body?.State?.Health?.Status;
     if (health === 'healthy') return { ok: true, status: 'healthy' };
     if (health == null) return { ok: true, status: 'running' };
-    // starting / unhealthy / other
     return { ok: false, status: String(health) };
   } catch {
     return { ok: false, status: 'error' };
@@ -295,13 +308,13 @@ async function readServiceHealth(service) {
 }
 
 async function sendControlStatus(response) {
-  const spawnGate = await probeSpawnReady({
-    controlUrl,
-    getProxyHealth: () => readServiceHealth(viaproxyService)
-  });
+  const spawnGate = await evaluateSpawnGate();
 
   if (!spawnGate.backendReady) {
-    return json(response, 200, backendUnavailableStatus(spawnGate.error || BACKEND_STARTING_MESSAGE));
+    return json(response, 200, {
+      ...backendUnavailableStatus(spawnGate.error || BACKEND_STARTING_MESSAGE),
+      diagnostics: spawnGate.diagnostics || null
+    });
   }
 
   try {
@@ -317,10 +330,19 @@ async function sendControlStatus(response) {
       data = { error: text || `HTTP ${upstream.status}` };
     }
     if (!upstream.ok) {
-      return json(response, 200, backendUnavailableStatus(BACKEND_STARTING_MESSAGE));
+      return json(response, 200, {
+        ...backendUnavailableStatus(BACKEND_STARTING_MESSAGE),
+        diagnostics: spawnGate.diagnostics || null
+      });
     }
     if (data?.lastError) {
-      data = { ...data, lastError: humanizeSpawnError(data.lastError) };
+      data = {
+        ...data,
+        lastError: humanizeSpawnError(data.lastError, {
+          spawnReady: Boolean(spawnGate.spawnReady),
+          blockerId: spawnGate.diagnostics?.blockerId
+        })
+      };
     }
     return json(
       response,
@@ -328,11 +350,17 @@ async function sendControlStatus(response) {
       withReadiness(data, {
         backendReady: true,
         spawnReady: Boolean(spawnGate.spawnReady),
-        backendMessage: spawnGate.spawnReady ? null : spawnGate.error || PROXY_STARTING_MESSAGE
+        backendMessage: spawnGate.spawnReady
+          ? null
+          : spawnGate.diagnostics?.summary || spawnGate.error || PROXY_STARTING_MESSAGE,
+        diagnostics: spawnGate.diagnostics || null
       })
     );
   } catch {
-    return json(response, 200, backendUnavailableStatus());
+    return json(response, 200, {
+      ...backendUnavailableStatus(),
+      diagnostics: spawnGate.diagnostics || null
+    });
   }
 }
 
@@ -347,11 +375,17 @@ async function proxyControl(response, pathname, method = 'GET', options = {}) {
       try {
         const data = JSON.parse(text);
         if (data && data.ok === false && data.error) {
-          data.error = humanizeSpawnError(data.error);
+          data.error = humanizeSpawnError(data.error, {
+            spawnReady: options.spawnReady !== false,
+            blockerId: options.blockerId ?? null
+          });
           if (data.status?.lastError) {
             data.status = {
               ...data.status,
-              lastError: humanizeSpawnError(data.status.lastError)
+              lastError: humanizeSpawnError(data.status.lastError, {
+                spawnReady: options.spawnReady !== false,
+                blockerId: options.blockerId ?? null
+              })
             };
           }
           text = JSON.stringify(data);
