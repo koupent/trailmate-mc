@@ -80,6 +80,9 @@ let currentTab = 'operate';
 let readyToSpawn = false;
 /** trailmate control API に届くか。起動直後は false のままにする。 */
 let backendReady = false;
+/** ViaProxy 込みでスポーンしてよいか。 */
+let spawnReady = false;
+let lastBackendMessage = '';
 let lastMsLoginRenderKey = '';
 let lastMsLoginUrl = '';
 let lastMsLoginCode = '';
@@ -162,10 +165,10 @@ function renderSetup(setup, settings = {}) {
   syncSpawnControls(setup);
 }
 
-/** セットアップ完了かつボット側準備完了のときだけスポーン可能にする。 */
+/** セットアップ完了かつスポーン依存（trailmate + ViaProxy）準備完了のときだけスポーン可能。 */
 function syncSpawnControls(setup = null) {
   const setupReady = readyToSpawn;
-  const canSpawn = setupReady && backendReady;
+  const canSpawn = setupReady && spawnReady;
   spawnBtn.disabled = !canSpawn;
   despawnBtn.disabled = !backendReady;
 
@@ -179,10 +182,13 @@ function syncSpawnControls(setup = null) {
     return;
   }
 
-  if (!backendReady) {
+  if (!backendReady || !spawnReady) {
     spawnBlockReason.classList.remove('hidden');
     spawnBlockReason.textContent =
-      'ボット側の準備中です。コンテナ起動が終わるまでスポーンできません。';
+      lastBackendMessage ||
+      (!backendReady
+        ? 'ボット側の準備中です。コンテナ起動が終わるまでスポーンできません。'
+        : '接続用プロキシ（ViaProxy）の起動中です。しばらく待ってからスポーンしてください。');
     return;
   }
 
@@ -264,9 +270,14 @@ authMethodSelect.addEventListener('change', () => {
 
 /* ===== spawn / status ===== */
 spawnBtn.addEventListener('click', async () => {
-  if (!backendReady) {
+  if (!spawnReady) {
     syncSpawnControls();
-    setMsg(spawnMsg, 'ボット側の準備中です。少し待ってから再度お試しください。', 'err');
+    setMsg(
+      spawnMsg,
+      lastBackendMessage ||
+        'まだ準備中です。少し待ってから再度お試しください。',
+      'err'
+    );
     return;
   }
   spawnBtn.disabled = true;
@@ -318,18 +329,28 @@ function renderStatus(status) {
     return;
   }
 
-  if (status.error) {
+  if (status.error && status.spawned == null) {
     statusPanel.innerHTML = `<div class="msg err">${escapeHtml(status.error)}</div>`;
     return;
   }
 
-  if (!status.spawned) {
-    const err = status.lastError
-      ? `<div class="msg err">前回のエラー: ${escapeHtml(status.lastError)}</div>`
+  const preparingNote =
+    status.spawnReady === false
+      ? `<div class="warn">${escapeHtml(
+          status.backendMessage ||
+            '接続用プロキシ（ViaProxy）の起動中です。しばらく待ってからスポーンしてください。'
+        )}</div>`
       : '';
+
+  if (!status.spawned) {
+    const err =
+      status.lastError && status.spawnReady !== false
+        ? `<div class="msg err">前回のエラー: ${escapeHtml(status.lastError)}</div>`
+        : '';
     statusPanel.innerHTML = `
       <div><span class="pill off">未スポーン</span> ${escapeHtml(status.botName || '')}</div>
       <div class="muted">${status.spawning ? '接続処理中…' : 'ワールドには出ていません。時間は進みません。'}</div>
+      ${preparingNote}
       ${err}
     `;
     return;
@@ -360,14 +381,19 @@ async function refreshStatus() {
   try {
     const status = await api('/api/status');
     backendReady = status.backendReady !== false;
+    spawnReady = Boolean(status.spawnReady);
+    lastBackendMessage = status.backendMessage || '';
     syncSpawnControls();
     renderStatus(status);
   } catch (error) {
     backendReady = false;
+    spawnReady = false;
+    lastBackendMessage = error.message || 'ボット側の準備中です。';
     syncSpawnControls();
     renderStatus({
       backendReady: false,
-      backendMessage: error.message || 'ボット側の準備中です。'
+      spawnReady: false,
+      backendMessage: lastBackendMessage
     });
   }
 }

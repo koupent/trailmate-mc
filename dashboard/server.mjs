@@ -13,9 +13,12 @@ import {
 import { createUpdateManager } from './update.mjs';
 import {
   BACKEND_STARTING_MESSAGE,
+  PROXY_STARTING_MESSAGE,
   backendUnavailableStatus,
+  humanizeSpawnError,
+  probeSpawnReady,
   probeTrailmateBackend,
-  withBackendReady
+  withReadiness
 } from './backendReady.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -68,15 +71,19 @@ const server = http.createServer(async (request, response) => {
           setup: readiness
         });
       }
-      const backend = await probeTrailmateBackend(controlUrl);
-      if (!backend.ok) {
+      const spawnGate = await probeSpawnReady({
+        controlUrl,
+        getProxyHealth: () => readServiceHealth(viaproxyService)
+      });
+      if (!spawnGate.ok) {
         return json(response, 503, {
           ok: false,
-          error: backend.error || BACKEND_STARTING_MESSAGE,
-          backendReady: false
+          error: spawnGate.error || PROXY_STARTING_MESSAGE,
+          backendReady: Boolean(spawnGate.backendReady),
+          spawnReady: false
         });
       }
-      return proxyControl(response, '/spawn', 'POST');
+      return proxyControl(response, '/spawn', 'POST', { humanizeErrors: true });
     }
     if (request.method === 'POST' && url.pathname === '/api/despawn') {
       const backend = await probeTrailmateBackend(controlUrl);
@@ -84,7 +91,8 @@ const server = http.createServer(async (request, response) => {
         return json(response, 503, {
           ok: false,
           error: backend.error || BACKEND_STARTING_MESSAGE,
-          backendReady: false
+          backendReady: false,
+          spawnReady: false
         });
       }
       return proxyControl(response, '/despawn', 'POST');
@@ -267,7 +275,35 @@ async function readRegisteredAccount() {
   }
 }
 
+async function readServiceHealth(service) {
+  try {
+    const id = await findServiceContainerId(service);
+    if (!id) return { ok: false, status: 'missing' };
+    const info = await dockerRequest('GET', `/containers/${id}/json`);
+    if (info.status >= 400) return { ok: false, status: 'error' };
+    const body = JSON.parse(info.body.toString('utf8'));
+    const running = Boolean(body?.State?.Running);
+    if (!running) return { ok: false, status: 'stopped' };
+    const health = body?.State?.Health?.Status;
+    if (health === 'healthy') return { ok: true, status: 'healthy' };
+    if (health == null) return { ok: true, status: 'running' };
+    // starting / unhealthy / other
+    return { ok: false, status: String(health) };
+  } catch {
+    return { ok: false, status: 'error' };
+  }
+}
+
 async function sendControlStatus(response) {
+  const spawnGate = await probeSpawnReady({
+    controlUrl,
+    getProxyHealth: () => readServiceHealth(viaproxyService)
+  });
+
+  if (!spawnGate.backendReady) {
+    return json(response, 200, backendUnavailableStatus(spawnGate.error || BACKEND_STARTING_MESSAGE));
+  }
+
   try {
     const upstream = await fetch(`${controlUrl}/status`, {
       method: 'GET',
@@ -283,19 +319,47 @@ async function sendControlStatus(response) {
     if (!upstream.ok) {
       return json(response, 200, backendUnavailableStatus(BACKEND_STARTING_MESSAGE));
     }
-    return json(response, 200, withBackendReady(data, true));
+    if (data?.lastError) {
+      data = { ...data, lastError: humanizeSpawnError(data.lastError) };
+    }
+    return json(
+      response,
+      200,
+      withReadiness(data, {
+        backendReady: true,
+        spawnReady: Boolean(spawnGate.spawnReady),
+        backendMessage: spawnGate.spawnReady ? null : spawnGate.error || PROXY_STARTING_MESSAGE
+      })
+    );
   } catch {
     return json(response, 200, backendUnavailableStatus());
   }
 }
 
-async function proxyControl(response, pathname, method = 'GET') {
+async function proxyControl(response, pathname, method = 'GET', options = {}) {
   try {
     const upstream = await fetch(`${controlUrl}${pathname}`, {
       method,
       signal: AbortSignal.timeout(method === 'GET' ? 2000 : 60000)
     });
-    const text = await upstream.text();
+    let text = await upstream.text();
+    if (options.humanizeErrors) {
+      try {
+        const data = JSON.parse(text);
+        if (data && data.ok === false && data.error) {
+          data.error = humanizeSpawnError(data.error);
+          if (data.status?.lastError) {
+            data.status = {
+              ...data.status,
+              lastError: humanizeSpawnError(data.status.lastError)
+            };
+          }
+          text = JSON.stringify(data);
+        }
+      } catch {
+        /* keep raw */
+      }
+    }
     response.writeHead(upstream.status, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store'
@@ -305,6 +369,7 @@ async function proxyControl(response, pathname, method = 'GET') {
     json(response, 503, {
       ok: false,
       backendReady: false,
+      spawnReady: false,
       error: BACKEND_STARTING_MESSAGE,
       detail: error instanceof Error ? error.message : String(error)
     });

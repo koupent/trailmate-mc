@@ -87,7 +87,9 @@ export async function spawnCompanion(
     });
     return { ok: true, status: buildStatus(state) };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = humanizeSpawnFailure(
+      error instanceof Error ? error.message : String(error)
+    );
     state.lastError = message;
     console.error('[trailmate] spawn failed:', message);
     return { ok: false, error: message, status: buildStatus(state) };
@@ -198,6 +200,19 @@ function cleanupHost(host: TrailmateHost): void {
 
 function roundCoord(value: number): number {
   return Math.round(value * 10) / 10;
+}
+
+function humanizeSpawnFailure(message: string): string {
+  const raw = String(message || '').trim();
+  if (
+    /bot ended before spawn:\s*socketClosed/i.test(raw) ||
+    /socketClosed/i.test(raw) ||
+    /ECONNREFUSED/i.test(raw) ||
+    /connect ETIMEDOUT/i.test(raw)
+  ) {
+    return 'サーバー／プロキシへの接続に失敗しました。起動直後なら少し待ってから再度スポーンしてください。';
+  }
+  return raw || 'スポーンに失敗しました';
 }
 
 function json(response: http.ServerResponse, status: number, value: unknown): void {
