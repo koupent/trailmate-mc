@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { recreateServiceContainer } from './dockerApi.mjs';
+import { recreateServiceContainer, findServiceContainerId } from './dockerApi.mjs';
+import { spawn } from 'node:child_process';
 
 const githubRepo = process.env.GITHUB_REPO || 'koupent/trailmate-mc';
 const updateServices = ['trailmate', 'dashboard'];
@@ -219,6 +220,9 @@ export function createUpdateManager(projectRoot, deps = {}) {
       appendLog('[updater] recreate ' + service);
       await persistJob();
       await recreate(service, onProgress);
+      if (service === 'trailmate') {
+        await syncItemsJaLocale(onProgress);
+      }
     }
 
     await fs.writeFile(versionFile, targetVersion + '\n', 'utf8');
@@ -272,6 +276,50 @@ export function createUpdateManager(projectRoot, deps = {}) {
       const detail = error instanceof Error ? error.message : String(error);
       onProgress?.('[updater] despawn skipped: ' + detail);
       appendLog('[updater] despawn skipped: ' + detail);
+    }
+  }
+
+  /**
+   * ホストの ./locales は volume でイメージを上書きするため、
+   * 更新後に同梱の items-ja.json をホストへ書き戻す。
+   * @param {(line: string) => void} [onProgress]
+   */
+  async function syncItemsJaLocale(onProgress) {
+    try {
+      const id = await findServiceContainerId('trailmate');
+      if (!id) {
+        onProgress?.('[updater] items-ja sync skipped: trailmate missing');
+        return;
+      }
+      const destDir = path.join(projectRoot, 'locales');
+      await fs.mkdir(destDir, { recursive: true });
+      const dest = path.join(destDir, 'items-ja.json');
+      // イメージ内は volume の外（src/i18n）に同梱する
+      const srcInContainer = id + ':/app/src/i18n/items-ja.json';
+      onProgress?.('[updater] sync items-ja.json to host locales');
+      appendLog('[updater] sync items-ja.json to host locales');
+      await new Promise((resolve, reject) => {
+        const child = spawn('docker', ['cp', srcInContainer, dest], {
+          env: process.env
+        });
+        const errs = [];
+        child.stderr.on('data', (c) => errs.push(c));
+        child.on('error', reject);
+        child.on('close', (code) => {
+          if (code === 0) resolve(undefined);
+          else {
+            reject(
+              new Error(
+                'docker cp failed: ' + Buffer.concat(errs).toString('utf8').slice(0, 200)
+              )
+            );
+          }
+        });
+      });
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      onProgress?.('[updater] items-ja sync skipped: ' + detail);
+      appendLog('[updater] items-ja sync skipped: ' + detail);
     }
   }
 }
