@@ -213,6 +213,9 @@ export function createUpdateManager(projectRoot, deps = {}) {
     // dashboard 以外を先に更新し、VERSION を書いてから自身を更新する
     for (const service of updateServices) {
       if (service === 'dashboard') continue;
+      if (service === 'trailmate') {
+        await softDespawnTrailmate(onProgress);
+      }
       appendLog('[updater] recreate ' + service);
       await persistJob();
       await recreate(service, onProgress);
@@ -246,6 +249,30 @@ export function createUpdateManager(projectRoot, deps = {}) {
     const chunk = String(text).replace(/\s+$/g, '');
     if (!chunk) return;
     job.log = (job.log + chunk + '\n').slice(-20000);
+  }
+
+  /**
+   * trailmate 再作成前にクリーン切断し、サーバー側の duplicate_login を減らす。
+   * @param {(line: string) => void} [onProgress]
+   */
+  async function softDespawnTrailmate(onProgress) {
+    const control = String(
+      process.env.TRAILMATE_CONTROL_URL || 'http://trailmate:8790'
+    ).replace(/\/$/, '');
+    try {
+      onProgress?.('[updater] despawn trailmate before recreate');
+      appendLog('[updater] despawn trailmate before recreate');
+      await fetchFn(control + '/despawn', {
+        method: 'POST',
+        signal: AbortSignal.timeout(15000)
+      });
+      // サーバーがセッションを落とす猶予
+      await new Promise((resolve) => setTimeout(resolve, 4000));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      onProgress?.('[updater] despawn skipped: ' + detail);
+      appendLog('[updater] despawn skipped: ' + detail);
+    }
   }
 }
 

@@ -299,7 +299,7 @@ spawnBtn.addEventListener('click', async () => {
     return;
   }
   spawnBtn.disabled = true;
-  setMsg(spawnMsg, 'スポーン中…');
+  setMsg(spawnMsg, 'スポーン中…（重複ログイン時は自動で再試行します）');
   try {
     const result = await api('/api/spawn', { method: 'POST' });
     if (!result.ok) throw new Error(result.error || 'スポーンに失敗しました');

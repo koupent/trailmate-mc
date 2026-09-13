@@ -19,7 +19,7 @@ export const ACCOUNT_MISSING_MESSAGE =
   'Microsoft アカウントが未登録です。設定タブでログインしてください。';
 
 export const SESSION_FAILED_MESSAGE =
-  '接続は試みましたが途中で切断されました。もう一度スポーンできます。失敗が続く場合はコンテナログを確認してください。';
+  '接続は試みましたが途中で切断されました。同一アカウントの重複ログインの可能性があります。数十秒待って再スポーンするか、別クライアントを退出してください。';
 
 /**
  * @param {string} [detail]
@@ -137,6 +137,12 @@ export function probeTcp(host, port, timeoutMs = 2500, connectFn = net.connect) 
 export function humanizeSpawnError(message, ctx = {}) {
   const raw = String(message || '').trim();
   if (!raw) return BACKEND_STARTING_MESSAGE;
+
+  if (/duplicate_login/i.test(raw) || /同じアカウント/.test(raw)) {
+    return raw.includes('残って') || raw.includes('既にログイン')
+      ? raw
+      : '同じアカウントがサーバー上で既にログイン中です。別クライアントを退出するか、数十秒待って再スポーンしてください。';
+  }
 
   const connectionLike =
     /bot ended before spawn:\s*socketClosed/i.test(raw) ||

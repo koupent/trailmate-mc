@@ -240,7 +240,9 @@ export async function recreateServiceContainer(service, onProgress, options = {}
   }
 
   if (onProgress) onProgress('[recreate] stop ' + name);
-  await dockerRequest('POST', '/containers/' + id + '/stop?t=20');
+  // trailmate は quit でサーバーセッションを切るため、猶予を長めに取る
+  const stopTimeout = service === 'trailmate' ? 40 : 20;
+  await dockerRequest('POST', '/containers/' + id + '/stop?t=' + stopTimeout);
   await dockerRequest('DELETE', '/containers/' + id + '?v=0');
 
   const created = await dockerRequest(

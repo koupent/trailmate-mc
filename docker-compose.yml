@@ -58,6 +58,7 @@ services:
           mode: 0o1777
     expose:
       - "8790"
+    stop_grace_period: 40s
     healthcheck:
       test:
         [

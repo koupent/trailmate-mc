@@ -8,6 +8,7 @@ import { startCompanion } from '../companion/index.js';
 import { Reflexes } from '../reflexes/Reflexes.js';
 import { setupAutoEat } from './autoEat.js';
 import { tCommand } from '../i18n/index.js';
+import { extractKickReason } from '../runtime/spawnErrors.js';
 
 export type TrailmateHost = {
   bot: Bot;
@@ -90,6 +91,7 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
   };
 
   await new Promise<void>((resolve, reject) => {
+    let kickReason: string | null = null;
     const onSpawn = () => {
       cleanup();
       resolve();
@@ -98,17 +100,24 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
       cleanup();
       reject(err);
     };
+    const onKicked = (reason: unknown) => {
+      kickReason = extractKickReason(reason);
+      console.warn(`[trailmate] kicked before spawn: ${kickReason}`);
+    };
     const onEnd = (reason: string) => {
       cleanup();
-      reject(new Error(`bot ended before spawn: ${reason}`));
+      const detail = kickReason || reason || 'ended';
+      reject(new Error(`bot ended before spawn: ${detail}`));
     };
     const cleanup = () => {
       bot.removeListener('spawn', onSpawn);
       bot.removeListener('error', onError);
+      bot.removeListener('kicked', onKicked);
       bot.removeListener('end', onEnd);
     };
     bot.once('spawn', onSpawn);
     bot.once('error', onError);
+    bot.once('kicked', onKicked);
     bot.once('end', onEnd);
   });
 
