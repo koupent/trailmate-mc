@@ -425,7 +425,10 @@ function renderStatus(status) {
     : '-';
   const inv = Array.isArray(status.inventory) && status.inventory.length
     ? `<ul class="inv">${status.inventory
-        .map((item) => `<li>${escapeHtml(item.name)} × ${item.count}</li>`)
+        .map((item) => {
+          const label = item.displayName || item.name;
+          return `<li>${escapeHtml(label)} × ${item.count}</li>`;
+        })
         .join('')}</ul>`
     : '<div class="muted">持ち物なし</div>';
 

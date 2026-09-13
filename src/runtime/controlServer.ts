@@ -7,6 +7,7 @@ import {
   humanizeSpawnFailure,
   isDuplicateLoginError
 } from './spawnErrors.js';
+import { itemDisplayNameJa } from '../i18n/itemNames.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -212,7 +213,9 @@ export function buildStatus(state: ControlState) {
   };
 }
 
-function collectInventory(bot: TrailmateHost['bot']): Array<{ name: string; count: number }> {
+function collectInventory(
+  bot: TrailmateHost['bot']
+): Array<{ name: string; displayName: string; count: number }> {
   try {
     const raw = bot.inventory?.items?.() || [];
     const merged = new Map<string, number>();
@@ -222,8 +225,12 @@ function collectInventory(bot: TrailmateHost['bot']): Array<{ name: string; coun
       merged.set(name, (merged.get(name) || 0) + count);
     }
     return [...merged.entries()]
-      .map(([name, count]) => ({ name, count }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+      .map(([name, count]) => ({
+        name,
+        displayName: itemDisplayNameJa(name),
+        count
+      }))
+      .sort((a, b) => a.displayName.localeCompare(b.displayName, 'ja'));
   } catch {
     return [];
   }
