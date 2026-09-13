@@ -3,6 +3,18 @@ import dotenv from 'dotenv';
 import type { AppConfig } from '../config.js';
 import { loadConfig } from '../config.js';
 import { bootHost, type TrailmateHost } from '../host/BotHost.js';
+import {
+  humanizeSpawnFailure,
+  isDuplicateLoginError
+} from './spawnErrors.js';
+
+const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
+  process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
+);
+const SPAWN_MAX_ATTEMPTS = Math.max(
+  1,
+  Number(process.env.SPAWN_MAX_ATTEMPTS || 3)
+);
 
 export type ControlState = {
   host: TrailmateHost | null;
@@ -75,7 +87,38 @@ export async function spawnCompanion(
     dotenv.config({ override: true });
     const resolved = config ?? loadConfig();
     console.log(`[trailmate] spawning to ${resolved.host}:${resolved.port} as ${resolved.botName}`);
-    const host = await bootHost(resolved);
+
+    let host: TrailmateHost | null = null;
+    let lastFailure = '';
+    for (let attempt = 1; attempt <= SPAWN_MAX_ATTEMPTS; attempt += 1) {
+      try {
+        if (attempt > 1) {
+          console.log(
+            `[trailmate] spawn retry ${attempt}/${SPAWN_MAX_ATTEMPTS} after duplicate login`
+          );
+          state.lastError = humanizeSpawnFailure(lastFailure, {
+            retriesExhausted: false
+          });
+          await sleep(DUPLICATE_LOGIN_RETRY_DELAY_MS);
+        }
+        host = await bootHost(resolved);
+        break;
+      } catch (error) {
+        lastFailure = error instanceof Error ? error.message : String(error);
+        const canRetry =
+          isDuplicateLoginError(lastFailure) && attempt < SPAWN_MAX_ATTEMPTS;
+        if (!canRetry) {
+          throw error;
+        }
+        console.warn(
+          `[trailmate] duplicate login on attempt ${attempt}; waiting ${DUPLICATE_LOGIN_RETRY_DELAY_MS}ms`
+        );
+      }
+    }
+    if (!host) {
+      throw new Error(lastFailure || 'spawn failed');
+    }
+
     state.host = host;
     host.bot.on('end', (reason) => {
       console.log(`[trailmate] bot ended: ${reason}`);
@@ -85,11 +128,15 @@ export async function spawnCompanion(
         state.lastError = `disconnected: ${reason}`;
       }
     });
+    host.bot.on('kicked', (reason) => {
+      console.warn(`[trailmate] kicked: ${String(reason)}`);
+    });
     return { ok: true, status: buildStatus(state) };
   } catch (error) {
-    const message = humanizeSpawnFailure(
-      error instanceof Error ? error.message : String(error)
-    );
+    const raw = error instanceof Error ? error.message : String(error);
+    const message = humanizeSpawnFailure(raw, {
+      retriesExhausted: isDuplicateLoginError(raw)
+    });
     state.lastError = message;
     console.error('[trailmate] spawn failed:', message);
     return { ok: false, error: message, status: buildStatus(state) };
@@ -202,17 +249,8 @@ function roundCoord(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
-function humanizeSpawnFailure(message: string): string {
-  const raw = String(message || '').trim();
-  if (
-    /bot ended before spawn:\s*socketClosed/i.test(raw) ||
-    /socketClosed/i.test(raw) ||
-    /ECONNREFUSED/i.test(raw) ||
-    /connect ETIMEDOUT/i.test(raw)
-  ) {
-    return 'サーバー／プロキシへの接続に失敗しました。起動直後なら少し待ってから再度スポーンしてください。';
-  }
-  return raw || 'スポーンに失敗しました';
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function json(response: http.ServerResponse, status: number, value: unknown): void {

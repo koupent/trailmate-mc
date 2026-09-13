@@ -368,7 +368,7 @@ async function proxyControl(response, pathname, method = 'GET', options = {}) {
   try {
     const upstream = await fetch(`${controlUrl}${pathname}`, {
       method,
-      signal: AbortSignal.timeout(method === 'GET' ? 2000 : 60000)
+      signal: AbortSignal.timeout(method === 'GET' ? 2000 : 120000)
     });
     let text = await upstream.text();
     if (options.humanizeErrors) {
