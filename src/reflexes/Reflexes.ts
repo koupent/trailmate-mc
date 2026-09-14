@@ -24,7 +24,7 @@ import {
   type CombatPresetParams
 } from '../combat/CombatProfiles.js';
 import {
-  chooseBestThreatPosition,
+  chooseStackThreatPosition,
   computeThreatArc,
   movementControlsTowardBearing,
   perpendicularDodgeBearing,
@@ -32,9 +32,8 @@ import {
   threatBearingRad,
   TARGET_THREAT_SPAN_RAD,
   WIDE_THREAT_SPAN_RAD,
-  shouldEnterArcNarrowing,
-  shouldExitArcNarrowing,
-  shouldApplyTacticalReposition,
+  updateArcNarrowLatch,
+  shouldApplyTacticalReposition
 } from '../combat/threatArc.js';
 import { CombatEpisodeTracker } from '../combat/CombatEpisodeTracker.js';
 import {
@@ -43,6 +42,11 @@ import {
   idleRangedDodgeLatch,
   type RangedDodgeLatch
 } from '../combat/CombatIntent.js';
+import {
+  LIVE_FOCUS_STICKY_MS,
+  LIVE_GUARD_RANGED_THREAT_THRESHOLD,
+  pickLiveFocus
+} from './combatPlanAdapter.js';
 import { CombatOptimizer } from '../combat/CombatOptimizer.js';
 import { CombatStateStore } from '../combat/CombatStateStore.js';
 import { CombatTrace } from '../combat/CombatTrace.js';
@@ -131,7 +135,7 @@ type ThreatArcBias = {
   threatCount: number;
   rangedThreatCount: number;
   observations: TacticalThreatObservation[];
-  selection: ReturnType<typeof chooseBestThreatPosition>;
+  selection: ReturnType<typeof chooseStackThreatPosition>;
 };
 
 type CombatMovementTrace = {
@@ -564,17 +568,26 @@ export class Reflexes {
       movement?.setSprintAllowed?.(true);
     }
 
-    if (this.shouldNarrowThreatArc(arcBias)) {
-      const intent = this.decideCurrentCombatIntent(enemy, arcBias);
-      const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
-      this.traceCombatDecision(enemy, arcBias, intent, movementTrace, now);
+    // 危険扇圧があるときだけ狭窄／stack位置取り（届かないだけでは狭窄しない）
+    const dangerFanExposed = this.isDangerFanExposed(arcBias);
+
+    if (dangerFanExposed && this.shouldNarrowThreatArc(arcBias)) {
+      const narrowedBias = this.collectThreatArcBias(enemy) ?? arcBias;
+      const intent = this.decideCurrentCombatIntent(enemy, narrowedBias);
+      const movementTrace = this.runArcNarrowing(enemy, narrowedBias!, intent, movement, now);
+      this.traceCombatDecision(enemy, narrowedBias, intent, movementTrace, now);
       return;
     }
 
     if (
-      arcBias
+      dangerFanExposed
+      && arcBias
       && !this.arcNarrowLatched
       && shouldApplyTacticalReposition(arcBias.threatCount, arcBias.selection)
+      && (
+        arcBias.rangedThreatCount >= 2
+        || (arcBias.selection?.meleeExposedCount ?? 0) >= 2
+      )
     ) {
       const intent = this.decideCurrentCombatIntent(enemy, arcBias!);
       const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
@@ -592,29 +605,29 @@ export class Reflexes {
     this.traceCombatDecision(enemy, arcBias, traceIntent, movementTrace, now);
   }
 
+  /** 遠距離露出／遠距離複数／近接扇に2体以上 */
+  private isDangerFanExposed(arcBias: ThreatArcBias | null): boolean {
+    if (!arcBias) return false;
+    return (arcBias.selection?.rangedExposedCount ?? 0) > 0
+      || arcBias.rangedThreatCount >= 2
+      || (arcBias.selection?.meleeExposedCount ?? 0) >= 2;
+  }
+
   /**
-   * 複数脅威の円弧。敵種別行動より先に共通の扇形を改善する。
-   * 近接・遠距離・爆発・混成のすべてに適用する。
+   * 複数脅威の円弧ラッチ。呼び出し側で危険扇圧を確認してから使う。
    */
   private shouldNarrowThreatArc(arcBias: ThreatArcBias | null): boolean {
     if (!arcBias) {
       this.arcNarrowLatched = false;
       return false;
     }
-    if (arcBias.threatCount < 2) {
-      this.arcNarrowLatched = false;
-      return false;
-    }
-    if (this.arcNarrowLatched) {
-      if (shouldExitArcNarrowing(arcBias.spanRad)) {
-        this.arcNarrowLatched = false;
-      }
-    } else if (shouldEnterArcNarrowing({
+    this.arcNarrowLatched = updateArcNarrowLatch({
+      latched: this.arcNarrowLatched,
       threatCount: arcBias.threatCount,
-      spanRad: arcBias.spanRad
-    })) {
-      this.arcNarrowLatched = true;
-    }
+      spanRad: arcBias.spanRad,
+      enterSpanRad: (this.activePresetParams.arcNarrowEnterSpanDeg * Math.PI) / 180,
+      exitSpanRad: (this.activePresetParams.arcNarrowExitSpanDeg * Math.PI) / 180
+    });
     return this.arcNarrowLatched;
   }
 
@@ -656,8 +669,10 @@ export class Reflexes {
         this.applyBearingMovement(threatBearingRad(
           this.bot.entity.position,
           arcBias.destination
-        ));
+        ), { sprint: true });
       }
+      // 接近位置取り中はダッシュ
+      this.bot.setControlState('sprint', true);
       movementTrace = {
         ...movementTrace,
         kind: 'positioning',
@@ -693,19 +708,20 @@ export class Reflexes {
       meleeAttackRange: RETREAT_MELEE_RANGE,
       rangedThreatCount: arcBias?.rangedThreatCount ?? (isRangedEntity(enemy) ? 1 : 0),
       hasShield: this.hasShieldEquipped(),
-      guardRangedThreatThreshold: this.activePresetParams.guardRangedThreatThreshold,
+      guardRangedThreatThreshold: LIVE_GUARD_RANGED_THREAT_THRESHOLD,
       explosiveImmediateDanger: isCreeperIgnited(enemy)
     });
   }
 
   /** MovementControllerがない場合の移動キーフォールバック。 */
-  private applyBearingMovement(bearingRad: number): void {
+  private applyBearingMovement(bearingRad: number, opts: { sprint?: boolean } = {}): void {
     if (!this.bot.entity) return;
     const controls = movementControlsTowardBearing(bearingRad, this.bot.entity.yaw);
     this.bot.setControlState('forward', controls.forward);
     this.bot.setControlState('back', controls.back);
     this.bot.setControlState('left', controls.left);
     this.bot.setControlState('right', controls.right);
+    this.bot.setControlState('sprint', Boolean(opts.sprint));
     applyCombatStepAssist(this.bot, bearingRad);
   }
 
@@ -761,6 +777,7 @@ export class Reflexes {
     this.bot.setControlState('right', false);
     this.bot.setControlState('back', false);
     this.bot.setControlState('forward', false);
+    this.bot.setControlState('sprint', false);
   }
 
   /** 毎tick視線命令を出さず、主脅威への戦闘視線を維持する。 */
@@ -1031,21 +1048,43 @@ export class Reflexes {
         this.currentTarget = picked;
         this.syncCombatLearning(picked, now);
         this.lastTargetSeenAt = now;
-        this.focusUntil = now + this.activePresetParams.focusStickyMs;
+        this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
       }
     } else if (canSwitch && stickyTarget && !ownerThreatLocked) {
-      const candidate = pickProtectTarget(
+      // 同ティア内のちらつきだけ CombatFocus で抑制
+      const preferred = pickProtectTarget(
         this.bot,
         ownerPos,
         ranges,
         hasLos,
         this.lastOwnerThreat
       );
-      if (candidate && candidate.id !== stickyTarget.id) {
-        this.currentTarget = candidate;
-        this.syncCombatLearning(candidate, now);
-        this.lastTargetSeenAt = now;
-        this.focusUntil = now + this.activePresetParams.focusStickyMs;
+      if (preferred && preferred.id !== stickyTarget.id) {
+        const preferredReason = isProtectThreat(botPos, ownerPos, preferred, ranges);
+        const stickyReason = isProtectThreat(botPos, ownerPos, stickyTarget, ranges);
+        if (preferredReason !== stickyReason) {
+          this.currentTarget = preferred;
+          this.syncCombatLearning(preferred, now);
+          this.lastTargetSeenAt = now;
+          this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
+        } else {
+          const focus = pickLiveFocus({
+            bot: { x: botPos.x, z: botPos.z },
+            candidates: [stickyTarget, preferred],
+            stickyId: stickyTarget.id,
+            now,
+            stickyMs: LIVE_FOCUS_STICKY_MS
+          });
+          const picked = focus.primary?.id === preferred.id ? preferred : stickyTarget;
+          if (picked.id !== stickyTarget.id) {
+            this.currentTarget = picked;
+            this.syncCombatLearning(picked, now);
+          }
+          this.focusUntil = focus.focusUntil;
+          if (hasLos(picked)) this.lastTargetSeenAt = now;
+        }
+      } else if (stickyTarget) {
+        this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
       }
     }
   }
@@ -1079,7 +1118,7 @@ export class Reflexes {
       this.currentTarget = ownerAttacker;
       this.syncCombatLearning(ownerAttacker, now);
       this.lastTargetSeenAt = now;
-      this.focusUntil = now + this.activePresetParams.focusStickyMs;
+      this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
     }
     return true;
   }
@@ -1294,10 +1333,14 @@ export class Reflexes {
       meleeAttackRange: RETREAT_MELEE_RANGE,
       latch: this.rangedDodgeLatch,
       lastDamageAt: this.lastDamageAt,
+      hasShield: this.hasShieldEquipped(),
       burstMs: this.activePresetParams.rangedDodgeBurstMs,
       advanceMs: this.activePresetParams.rangedDodgeReassessMs
     });
-    this.rangedDodgeLatch = dodgeBurst.latch;
+    // 近接到達で回避／前進ラッチを完全解除（殴打へ切替）
+    this.rangedDodgeLatch = (
+      distance <= RETREAT_MELEE_RANGE && dodgeBurst.phase === 'attack'
+    ) ? idleRangedDodgeLatch() : dodgeBurst.latch;
     const needStrafe = arcGuidedStrafe
       ? false
       : (decision.needStrafe
@@ -1321,7 +1364,7 @@ export class Reflexes {
     } else if (rangedThreatBearing != null && dodgeBurst.phase === 'advance') {
       // pvpの移動入力を解除した後、tick間の復帰に任せず共通脅威方向への
       // 前進を明示的に確定する。
-      this.applyBearingMovement(rangedThreatBearing);
+      this.applyBearingMovement(rangedThreatBearing, { sprint: true });
       movementTrace.kind = 'advance';
       movementTrace.bearingRad = rangedThreatBearing;
       movementTrace.destination = {
@@ -1382,7 +1425,10 @@ export class Reflexes {
     const observations = this.collectTacticalObservations(primary);
     const threats = observations.map(({ entity }) => ({
       x: entity.position.x,
-      z: entity.position.z
+      y: entity.position.y,
+      z: entity.position.z,
+      kind: entity.name,
+      id: entity.id
     }));
     const rangedThreatCount = observations.filter(({ entity }) => isRangedEntity(entity)).length;
     const arc = computeThreatArc(
@@ -1398,16 +1444,29 @@ export class Reflexes {
         )
       : ranges.ownerProtectRange;
 
-    const selection = chooseBestThreatPosition(
-      { x: botPos.x, z: botPos.z },
+    const selection = chooseStackThreatPosition(
+      { x: botPos.x, y: botPos.y, z: botPos.z },
       threats,
       {
         step: 2.25,
         minEnemyDistance: MELEE_COMMIT_RANGE,
-        minimumImprovement:
-          (this.activePresetParams.positioningImprovementMarginDeg * Math.PI) / 180,
+        minimumImprovement: this.arcNarrowLatched
+          ? 0
+          : (this.activePresetParams.positioningImprovementMarginDeg * Math.PI) / 180,
         ownerPos: ownerPos ? { x: ownerPos.x, z: ownerPos.z } : null,
-        maxOwnerDistance: tacticalOwnerLeash
+        maxOwnerDistance: tacticalOwnerLeash,
+        isTerrainBlocked: (from, to) => {
+          try {
+            const eyeFrom = new Vec3(from.x, (from.y ?? 1) + 1.62, from.z);
+            const eyeTo = new Vec3(to.x, (to.y ?? botPos.y) + 1.62, to.z);
+            const delta = eyeTo.minus(eyeFrom);
+            const dist = delta.norm();
+            if (dist < 0.15) return false;
+            return this.bot.world.raycast(eyeFrom, delta.scaled(1 / dist), dist) !== null;
+          } catch {
+            return false;
+          }
+        }
       }
     );
 
@@ -1423,7 +1482,21 @@ export class Reflexes {
       sign,
       spanRad: arc.spanRad,
       midRad: arc.midRad,
-      destination: selection.moved ? selection.chosen.position : null,
+      destination: (() => {
+        if (selection.moved && selection.chosen?.position) {
+          return selection.chosen.position;
+        }
+        // 扇に晒されているが stack 候補が動かないときも、攻撃扇の安全点へ寄せる
+        const safe = selection.safePoint;
+        if (
+          safe
+          && ((selection.rangedExposedCount ?? 0) > 0 || (selection.meleeExposedCount ?? 0) >= 2)
+          && Math.hypot(safe.x - botPos.x, safe.z - botPos.z) > 0.35
+        ) {
+          return { x: safe.x, y: botPos.y, z: safe.z };
+        }
+        return null;
+      })(),
       threatCount: threats.length,
       rangedThreatCount,
       observations,
@@ -1503,6 +1576,8 @@ export class Reflexes {
         context,
         presetId: choice.presetId,
         exploring: choice.exploring,
+        exploringParams: choice.exploringParams,
+        paramOverlay: choice.paramOverlay,
         enemyName: enemy.name ?? null,
         enemyId: enemy.id ?? null,
         enemyCount,

@@ -10,6 +10,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "tsx src/index.ts",
+    "sim": "tsx src/simulator/server.ts",
     "test": "tsx --test tests/",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

@@ -3,76 +3,140 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>TrailMate 戦闘シミュレータ</title>
+  <title>TrailMate 3D戦闘箱庭</title>
   <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
 </head>
 <body>
   <main>
-    <header>
+    <header class="top-bar">
       <div>
-        <h1>TrailMate 戦闘シミュレータ</h1>
-        <p>共有戦術ロジックを固定2D投影でtick実行します。</p>
+        <h1>TrailMate 3D戦闘箱庭</h1>
+        <p>放置で学習を回し、画面で監視する。失敗が溜まったら Cursor 用パックを書き出す。</p>
       </div>
-      <div class="controls compact">
-        <label>シナリオ <select id="scenario"></select></label>
-        <label class="check"><input id="enemy-ai" type="checkbox"> 敵AI</label>
-        <label class="range-label">AI速度 <span id="enemy-speed-value">1.00×</span><input id="enemy-speed" type="range" min="0.25" max="2" step="0.25" value="1"></label>
-        <button id="reset">リセット</button>
-        <button id="tick" class="primary">1 tick進める</button>
-        <button id="play">自動進行</button>
+      <div class="learn-controls">
+        <button id="learn-toggle" class="primary learn-btn">学習を開始（放置OK）</button>
+        <button id="gym-reset" type="button" title="画面統計と箱庭学習ファイルを空にする">統計・学習をリセット</button>
+        <span id="learn-status" class="learn-status stopped">停止中</span>
       </div>
     </header>
 
+    <section class="stats-strip" id="gym-stats" aria-live="polite"></section>
+
     <section class="layout">
-      <div class="arena-wrap">
-        <canvas id="arena" width="760" height="620" aria-label="戦闘シミュレーション平面"></canvas>
-        <div class="legend">● Bot　◆ オーナー　▲ 敵　■ 墓　○ ドロップ　▧ 障害物</div>
+      <div class="stage">
+        <div class="arena-wrap">
+          <div class="viewport-shell">
+            <div id="viewport" aria-label="3D戦闘箱庭"></div>
+            <button type="button" id="camera-follow-toggle" class="camera-follow-btn" aria-pressed="false" title="オンで相棒を追従、オフでカメラ固定（手動回転のまま）">
+              カメラ: 固定
+            </button>
+            <div id="action-banner" class="action-banner idle">学習開始を押すと自動で戦います</div>
+            <ol id="event-feed" class="event-feed" aria-live="polite"></ol>
+          </div>
+          <div class="legend">
+            緑=相棒　青=オーナー　赤系=敵　灰=ブロック　
+            黄リング=主対象　橙=近接　金=敵射撃　灰倒れ=相棒死亡　
+            緑箱=次の立ち位置（移動目標と同じ）　橙扇=危険射線（遮蔽まで）　緑破線=影　
+            水色線=直線移動目標　紫箱=移動目標
+          </div>
+        </div>
       </div>
 
-      <aside>
-        <section>
-          <h2>判断</h2>
+      <aside class="side-panes">
+        <section class="pane">
+          <h2>いまの戦闘</h2>
           <dl id="decision"></dl>
-          <div id="validation"></div>
         </section>
-        <section>
-          <h2>配置編集</h2>
-          <label>対象 <select id="entity"></select></label>
-          <p class="hint">対象を選び、平面をクリックして移動。</p>
+
+        <section class="pane utility-live-pane">
+          <h2>効用スコア（参考・未使用）</h2>
+          <p class="hint" id="utility-equation">行動決定は MixedCombatPlan。効用式はデバッグ表示のみ（探索停止）。</p>
+          <div id="utility-live" class="utility-live"></div>
+        </section>
+
+        <section class="pane">
+          <h2>分析（ルール修正）</h2>
+          <div id="clusters"></div>
           <div class="controls">
-            <select id="enemy-kind">
-              <option>zombie</option><option>skeleton</option><option>creeper</option><option>spider</option>
-            </select>
-            <button id="add-enemy">敵を追加</button>
-            <button id="add-drop">ドロップを追加</button>
-            <button id="add-obstacle">障害物を追加</button>
-            <button id="remove">選択対象を削除</button>
+            <button id="review-export" class="primary">Cursor用パックを書き出す</button>
           </div>
+          <p class="hint" id="review-status">数値は自動チューニング。頭打ち（plateau）後に失敗クラスタを Cursor へ。</p>
         </section>
-        <section>
-          <h2>期待結果</h2>
-          <label>制御所有者 <select id="expect-owner"><option value="">—</option><option value="follow">追従</option><option value="combat">戦闘</option><option value="recovery">復旧</option><option value="survival">緊急生存</option></select></label>
-          <label>戦闘意図 <select id="expect-intent"><option value="">—</option><option value="attack">攻撃</option><option value="guard">防御</option><option value="dodge">回避</option><option value="hold">維持</option></select></label>
-          <label>最大span（度） <input id="expect-span" type="number" min="0" max="360" step="1"></label>
-        </section>
-        <section>
-          <h2>テストケース</h2>
+
+        <section class="pane">
+          <h2>失敗リプレイ</h2>
+          <p class="hint">学習は止めずに、気になるシードだけ目視できます。</p>
           <div class="controls">
-            <input id="case-name" placeholder="ケース名">
-            <button id="save">保存</button>
-            <select id="saved"></select>
-            <button id="load">読込</button>
-            <button id="export">JSON出力</button>
-            <label class="file">JSON読込 <input id="import" type="file" accept="application/json"></label>
+            <label>シード <input id="replay-seed" type="number"></label>
+            <button id="replay-load">読込</button>
           </div>
+          <label>ワースト <select id="worst-list"></select></label>
+          <button id="worst-load">ワーストを再生</button>
         </section>
-        <section>
-          <h2>状態遷移</h2>
-          <ol id="transitions"></ol>
-        </section>
+
+        <details class="pane debug-panel">
+          <summary>手動デバッグ（通常は不要）</summary>
+          <div class="debug-body">
+            <label>回帰シナリオ <select id="scenario"></select></label>
+            <div class="controls">
+              <button id="reset">シナリオ読込</button>
+              <button id="tick">1 tick</button>
+              <button id="play">自動進行</button>
+            </div>
+            <label class="check"><input id="enemy-ai" type="checkbox" checked> 敵AI</label>
+            <label class="range-label">AI速度 <span id="enemy-speed-value">1.00×</span>
+              <input id="enemy-speed" type="range" min="0.25" max="2" step="0.25" value="1">
+            </label>
+            <label>対象 <select id="entity"></select></label>
+            <p class="hint">床クリックで選択対象を移動。学習入力には使いません。</p>
+            <div class="controls">
+              <select id="enemy-kind">
+                <option>zombie</option><option>skeleton</option><option>creeper</option><option>spider</option>
+              </select>
+              <button id="add-enemy">敵を追加</button>
+              <button id="remove">選択削除</button>
+            </div>
+            <div class="controls">
+              <label>バッチ数（手動1回分） <input id="gym-count" type="number" min="1" max="200" value="5"></label>
+              <button id="gym-run">1バッチだけ回す</button>
+              <button id="gym-refresh">統計更新</button>
+            </div>
+            <input id="gym-seed" type="hidden" value="">
+          </div>
+        </details>
       </aside>
     </section>
+
+    <details class="tuning-panel" id="tuning-panel" open aria-live="polite">
+      <summary class="tuning-summary-bar">
+        <span class="tuning-title">箱庭チューニング（敵クラス固有のみ）</span>
+        <span class="tuning-inline" id="tuning-summary-inline">学習前</span>
+      </summary>
+      <div class="tuning-panel-body">
+        <p class="hint" id="tuning-summary">表示も探索も敵クラス固有3キーだけ。効用重みや近接用の空欄は出しません。</p>
+        <div id="tuning-body"></div>
+      </div>
+    </details>
+
+    <details class="tuning-panel" id="utility-panel" aria-live="polite">
+      <summary class="tuning-summary-bar">
+        <span class="tuning-title">効用スコア（表示用・決定には未使用）</span>
+        <span class="tuning-inline" id="utility-summary-inline">参照のみ</span>
+      </summary>
+      <div class="tuning-panel-body">
+        <p class="hint" id="utility-summary">行動決定は MixedCombatPlan が担当。ここはデバッグ用のスコア表示です（探索は停止）。</p>
+        <div id="utility-body"></div>
+      </div>
+    </details>
   </main>
-  <script type="module" src="/app.js"></script>
+  <script type="module" src="/app.js?v=tune-ui-match3"></script>
 </body>
 </html>

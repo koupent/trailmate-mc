@@ -33,6 +33,16 @@ export type CombatPresetParams = {
   guardRangedThreatThreshold: number;
   /** 位置取りを開始するために必要な候補評価の最小改善量。 */
   positioningImprovementMarginDeg: number;
+  /**
+   * 扇狭窄ラッチ開始角（度）。これ以上なら位置取りを開始する。
+   * 学習で調整可。ゼロ固定ではない。
+   */
+  arcNarrowEnterSpanDeg: number;
+  /**
+   * 扇狭窄ラッチ解除角（度）。これ未満になったら位置取りを終えて戦闘へ戻る。
+   * enter より小さく保つ（ヒステリシス）。
+   */
+  arcNarrowExitSpanDeg: number;
 };
 
 export type CombatPresetId = string;
@@ -83,7 +93,9 @@ export const PRESET_BOUNDS: {
   rangedDodgeBurstMs: { min: 250, max: 1000 },
   rangedDodgeReassessMs: { min: 750, max: 3000 },
   guardRangedThreatThreshold: { min: 1, max: 3 },
-  positioningImprovementMarginDeg: { min: 1, max: 15 }
+  positioningImprovementMarginDeg: { min: 1, max: 15 },
+  arcNarrowEnterSpanDeg: { min: 20, max: 90 },
+  arcNarrowExitSpanDeg: { min: 10, max: 70 }
 };
 
 const MELEE_BASELINE: CombatPresetParams = {
@@ -102,7 +114,9 @@ const MELEE_BASELINE: CombatPresetParams = {
   rangedDodgeBurstMs: 650,
   rangedDodgeReassessMs: 1500,
   guardRangedThreatThreshold: 1,
-  positioningImprovementMarginDeg: 4
+  positioningImprovementMarginDeg: 4,
+  arcNarrowEnterSpanDeg: 35,
+  arcNarrowExitSpanDeg: 25
 };
 
 function cloneParams(params: CombatPresetParams): CombatPresetParams {
@@ -150,14 +164,20 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
   }),
 
   'ranged-baseline': adjust(MELEE_BASELINE, {
-    followRange: 2.2,
-    kiteFollowRange: 3.6,
-    backstepRange: 1.5,
-    strafeRange: 3.2,
-    rangedBackRange: 2.8,
-    strafeSwitchMs: 550,
-    focusStickyMs: 1000,
-    crowdAvoidBias: 0.2
+    followRange: 2.0,
+    kiteFollowRange: 3.2,
+    backstepRange: 1.4,
+    strafeRange: 3.0,
+    rangedBackRange: 2.4,
+    strafeSwitchMs: 500,
+    focusStickyMs: 1100,
+    crowdAvoidBias: 0.15,
+    rangedDodgeBurstMs: 450,
+    rangedDodgeReassessMs: 1800,
+    positioningImprovementMarginDeg: 6,
+    // 遠距離はゼロ度まで詰めず、やや広い目標で戦闘へ戻す
+    arcNarrowEnterSpanDeg: 50,
+    arcNarrowExitSpanDeg: 35
   }),
   'ranged-shield-push': adjust(MELEE_BASELINE, {
     followRange: 1.2,
@@ -167,41 +187,43 @@ const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
     rangedBackRange: 2.0,
     focusStickyMs: 1400,
     crowdAvoidBias: 0.1,
-    rangedDodgeBurstMs: 400,
-    rangedDodgeReassessMs: 1800,
+    rangedDodgeBurstMs: 300,
+    rangedDodgeReassessMs: 2400,
     guardRangedThreatThreshold: 2,
-    positioningImprovementMarginDeg: 5
+    positioningImprovementMarginDeg: 5,
+    arcNarrowEnterSpanDeg: 45,
+    arcNarrowExitSpanDeg: 30
   }),
 
   'explosive-baseline': adjust(MELEE_BASELINE, {
-    followRange: 1.8,
-    kiteFollowRange: 3.8,
-    backstepRange: 1.2,
-    strafeRange: 2.4,
-    creeperSoftEvadeRange: 2.0,
-    creeperFollowRange: 1.8,
-    focusStickyMs: 1200,
-    crowdAvoidBias: 0.1
+    followRange: 2.2,
+    kiteFollowRange: 4.2,
+    backstepRange: 1.4,
+    strafeRange: 2.6,
+    creeperSoftEvadeRange: 3.4,
+    creeperFollowRange: 3.8,
+    focusStickyMs: 1100,
+    crowdAvoidBias: 0.2
   }),
   'explosive-wide': adjust(MELEE_BASELINE, {
-    followRange: 2.4,
-    kiteFollowRange: 4.5,
-    backstepRange: 1.5,
-    strafeRange: 2.8,
-    creeperSoftEvadeRange: 2.4,
-    creeperFollowRange: 2.4,
+    followRange: 2.6,
+    kiteFollowRange: 4.8,
+    backstepRange: 1.6,
+    strafeRange: 3.0,
+    creeperSoftEvadeRange: 3.8,
+    creeperFollowRange: 4.2,
     focusStickyMs: 900,
-    crowdAvoidBias: 0.25
+    crowdAvoidBias: 0.3
   }),
   'explosive-aggressive': adjust(MELEE_BASELINE, {
-    followRange: 1.6,
-    kiteFollowRange: 3.5,
-    backstepRange: 1.1,
-    strafeRange: 2.2,
-    creeperSoftEvadeRange: 1.8,
-    creeperFollowRange: 1.6,
-    focusStickyMs: 1400,
-    crowdAvoidBias: 0.05
+    followRange: 2.0,
+    kiteFollowRange: 4.0,
+    backstepRange: 1.3,
+    strafeRange: 2.4,
+    creeperSoftEvadeRange: 3.0,
+    creeperFollowRange: 3.6,
+    focusStickyMs: 1300,
+    crowdAvoidBias: 0.15
   })
 };
 
@@ -212,8 +234,9 @@ const CONTEXT_PRESETS: Record<string, CombatPresetId[]> = {
   'agile|1': ['agile-baseline', 'melee-defensive'],
   'ranged|0': ['ranged-baseline', 'melee-defensive'],
   'ranged|1': ['ranged-baseline', 'ranged-shield-push'],
-  'explosive|0': ['explosive-aggressive', 'explosive-baseline', 'explosive-wide'],
-  'explosive|1': ['explosive-aggressive', 'explosive-baseline', 'explosive-wide']
+  // 混成（矢+クリーパー）では過接近プリセットより間合い広めを既定にする
+  'explosive|0': ['explosive-wide', 'explosive-baseline', 'explosive-aggressive'],
+  'explosive|1': ['explosive-wide', 'explosive-baseline', 'explosive-aggressive']
 };
 
 export function classifyEnemy(name: string | null | undefined): EnemyClass {
@@ -224,6 +247,35 @@ export function classifyEnemy(name: string | null | undefined): EnemyClass {
   if (RANGED_NAMES.has(base)) return 'ranged';
   if (AGILE_NAMES.has(base)) return 'agile';
   return 'melee';
+}
+
+const ENCOUNTER_CLASS_PRIORITY: Record<EnemyClass, number> = {
+  explosive: 3,
+  ranged: 2,
+  agile: 1,
+  melee: 0
+};
+
+/**
+ * 複数敵の遭遇クラス。最も危険な種別を採用する。
+ * （混成で先頭がゾンビでも、スケルトンがいれば ranged プリセットにする）
+ */
+export function classifyEncounterEnemyClass(
+  enemies: Array<{ kind?: string; name?: string; hp?: number } | null | undefined>
+): EnemyClass {
+  let best: EnemyClass = 'melee';
+  let bestRank = -1;
+  for (const enemy of enemies) {
+    if (!enemy) continue;
+    if (typeof enemy.hp === 'number' && enemy.hp <= 0) continue;
+    const cls = classifyEnemy(enemy.kind || enemy.name);
+    const rank = ENCOUNTER_CLASS_PRIORITY[cls] ?? 0;
+    if (rank > bestRank) {
+      best = cls;
+      bestRank = rank;
+    }
+  }
+  return best;
 }
 
 export function isRangedEntity(
@@ -262,6 +314,13 @@ export function clampPreset(params: CombatPresetParams): CombatPresetParams {
     out[key] = Number.isFinite(value)
       ? Math.min(max, Math.max(min, value))
       : min;
+  }
+  // ヒステリシス: 解除角は開始角より少なくとも 5° 狭くする
+  if (out.arcNarrowExitSpanDeg > out.arcNarrowEnterSpanDeg - 5) {
+    out.arcNarrowExitSpanDeg = Math.max(
+      PRESET_BOUNDS.arcNarrowExitSpanDeg.min,
+      out.arcNarrowEnterSpanDeg - 5
+    );
   }
   return out;
 }

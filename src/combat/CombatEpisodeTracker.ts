@@ -1,9 +1,14 @@
 import type { CombatContext } from './CombatProfiles.js';
+import type { ParamOverlay } from './ParamTuner.js';
 
 export type CombatEpisode = {
   context: CombatContext;
   presetId: string;
   exploring: boolean;
+  /** 連続パラメータ探索中（プリセット切替探索とは独立）。 */
+  exploringParams: boolean;
+  /** このエピソードで使った数値オーバーレイ。 */
+  paramOverlay: ParamOverlay | null;
   enemyName: string | null;
   enemyId: number | string | null;
   startedAt: number;
@@ -62,6 +67,8 @@ export class CombatEpisodeTracker {
     context: CombatContext;
     presetId: string;
     exploring: boolean;
+    exploringParams?: boolean;
+    paramOverlay?: ParamOverlay | null;
     enemyName: string | null;
     enemyId: number | string | null;
     enemyCount: number;
@@ -71,6 +78,8 @@ export class CombatEpisodeTracker {
       context: opts.context,
       presetId: opts.presetId,
       exploring: opts.exploring,
+      exploringParams: Boolean(opts.exploringParams),
+      paramOverlay: opts.paramOverlay ?? null,
       enemyName: opts.enemyName,
       enemyId: opts.enemyId,
       startedAt: opts.now ?? Date.now(),

@@ -2,9 +2,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { CombatContext, CombatPresetId } from './CombatProfiles.js';
 import { contextKey } from './CombatProfiles.js';
+import { filterSimTuneOverlay } from './CombatTuneCatalog.js';
+import type { ParamOverlay } from './ParamTuner.js';
+import {
+  ALL_SITUATION_IDS,
+  type SituationId
+} from './EncounterSituation.js';
+import {
+  mergeUtilityWeights,
+  type UtilityWeights
+} from './CombatUtility.js';
 
-/** コンテキストキー変更時に更新する（敵数バケットを廃止）。 */
-export const COMBAT_STATE_VERSION = 2;
+/** v4: 状況型ごとの効用重み。v3 のプリセット数値オーバーレイも維持。 */
+export const COMBAT_STATE_VERSION = 4;
 
 export type PresetStats = {
   trials: number;
@@ -21,20 +31,51 @@ export type ContextLearningState = {
   consecutiveWorse: number;
   exploreCooldownUntil: number;
   presets: Record<string, PresetStats>;
+  /** 選択プリセットに重ねる自動チューニング結果。 */
+  tunedParams: ParamOverlay | null;
+  tunedBestScore: number;
+  paramExploreCount: number;
+  paramAdoptCount: number;
+  noImproveStreak: number;
+};
+
+export type SituationLearningState = {
+  /** 採用済み重み（未設定キーは default）。 */
+  weights: Partial<UtilityWeights>;
+  bestBankScore: number;
+  exploreCount: number;
+  adoptCount: number;
+  noImproveStreak: number;
 };
 
 export type CombatStateFile = {
   version: number;
   updatedAt: number;
   contexts: Record<string, ContextLearningState>;
+  situations: Record<string, SituationLearningState>;
   enemyNameStats: Record<string, { fights: number; damage: number; kills: number }>;
 };
 
+export function emptySituationLearning(id: SituationId): SituationLearningState {
+  return {
+    weights: {},
+    bestBankScore: Number.NEGATIVE_INFINITY,
+    exploreCount: 0,
+    adoptCount: 0,
+    noImproveStreak: 0
+  };
+}
+
 export function emptyCombatState(): CombatStateFile {
+  const situations: Record<string, SituationLearningState> = {};
+  for (const id of ALL_SITUATION_IDS) {
+    situations[id] = emptySituationLearning(id);
+  }
   return {
     version: COMBAT_STATE_VERSION,
     updatedAt: 0,
     contexts: {},
+    situations,
     enemyNameStats: {}
   };
 }
@@ -50,12 +91,43 @@ export function emptyPresetStats(): PresetStats {
   };
 }
 
+function emptyContextLearning(fallbackPresetId: CombatPresetId): ContextLearningState {
+  return {
+    selectedPresetId: fallbackPresetId,
+    bestPresetId: fallbackPresetId,
+    consecutiveWorse: 0,
+    exploreCooldownUntil: 0,
+    presets: {},
+    tunedParams: null,
+    tunedBestScore: Number.NEGATIVE_INFINITY,
+    paramExploreCount: 0,
+    paramAdoptCount: 0,
+    noImproveStreak: 0
+  };
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
+function readParamOverlay(raw: unknown): ParamOverlay | null {
+  if (!isObject(raw)) return null;
+  const out: ParamOverlay = {};
+  for (const [key, value] of Object.entries(raw)) {
+    const n = Number(value);
+    if (Number.isFinite(n)) {
+      (out as Record<string, number>)[key] = n;
+    }
+  }
+  // 古いJSONに残った探索外キーは読み込み時に捨てる
+  return filterSimTuneOverlay(out);
+}
+
 export function normalizeCombatState(raw: unknown): CombatStateFile {
-  if (!isObject(raw) || raw.version !== COMBAT_STATE_VERSION) {
+  if (!isObject(raw)) return emptyCombatState();
+  const version = Number(raw.version);
+  // v2/v3 は状況重み無しで引き継ぎ、v4 へ昇格。
+  if (version !== 2 && version !== 3 && version !== COMBAT_STATE_VERSION) {
     return emptyCombatState();
   }
   const state = emptyCombatState();
@@ -77,12 +149,41 @@ export function normalizeCombatState(raw: unknown): CombatStateFile {
           };
         }
       }
+      const fallback = String(value.bestPresetId || value.selectedPresetId || 'melee-baseline');
       state.contexts[key] = {
-        selectedPresetId: String(value.selectedPresetId || value.bestPresetId || ''),
-        bestPresetId: String(value.bestPresetId || value.selectedPresetId || ''),
+        selectedPresetId: String(value.selectedPresetId || fallback),
+        bestPresetId: String(value.bestPresetId || fallback),
         consecutiveWorse: Math.max(0, Number(value.consecutiveWorse) || 0),
         exploreCooldownUntil: Number(value.exploreCooldownUntil) || 0,
-        presets
+        presets,
+        tunedParams: readParamOverlay(value.tunedParams),
+        tunedBestScore: Number.isFinite(Number(value.tunedBestScore))
+          ? Number(value.tunedBestScore)
+          : Number.NEGATIVE_INFINITY,
+        paramExploreCount: Math.max(0, Number(value.paramExploreCount) || 0),
+        paramAdoptCount: Math.max(0, Number(value.paramAdoptCount) || 0),
+        noImproveStreak: Math.max(0, Number(value.noImproveStreak) || 0)
+      };
+    }
+  }
+  if (isObject(raw.situations)) {
+    for (const id of ALL_SITUATION_IDS) {
+      const value = raw.situations[id];
+      if (!isObject(value)) continue;
+      const weightsRaw = isObject(value.weights) ? value.weights : {};
+      const weights: Partial<UtilityWeights> = {};
+      for (const [k, v] of Object.entries(weightsRaw)) {
+        const n = Number(v);
+        if (Number.isFinite(n)) (weights as Record<string, number>)[k] = n;
+      }
+      state.situations[id] = {
+        weights,
+        bestBankScore: Number.isFinite(Number(value.bestBankScore))
+          ? Number(value.bestBankScore)
+          : Number.NEGATIVE_INFINITY,
+        exploreCount: Math.max(0, Number(value.exploreCount) || 0),
+        adoptCount: Math.max(0, Number(value.adoptCount) || 0),
+        noImproveStreak: Math.max(0, Number(value.noImproveStreak) || 0)
       };
     }
   }
@@ -116,18 +217,17 @@ export class CombatStateStore {
     const key = contextKey(ctx);
     let entry = this.state.contexts[key];
     if (!entry) {
-      entry = {
-        selectedPresetId: fallbackPresetId,
-        bestPresetId: fallbackPresetId,
-        consecutiveWorse: 0,
-        exploreCooldownUntil: 0,
-        presets: {}
-      };
+      entry = emptyContextLearning(fallbackPresetId);
       this.state.contexts[key] = entry;
       this.dirty = true;
     }
     if (!entry.selectedPresetId) entry.selectedPresetId = fallbackPresetId;
     if (!entry.bestPresetId) entry.bestPresetId = fallbackPresetId;
+    if (entry.tunedParams === undefined) entry.tunedParams = null;
+    if (!Number.isFinite(entry.tunedBestScore)) entry.tunedBestScore = Number.NEGATIVE_INFINITY;
+    entry.paramExploreCount = Math.max(0, entry.paramExploreCount || 0);
+    entry.paramAdoptCount = Math.max(0, entry.paramAdoptCount || 0);
+    entry.noImproveStreak = Math.max(0, entry.noImproveStreak || 0);
     return entry;
   }
 
@@ -185,12 +285,94 @@ export class CombatStateStore {
     this.scheduleSave();
   }
 
+  setTunedParams(ctx: CombatContext, overlay: ParamOverlay | null): void {
+    const entry = this.getContextState(ctx, 'melee-baseline');
+    entry.tunedParams = filterSimTuneOverlay(overlay, ctx.enemyClass);
+    this.dirty = true;
+    this.scheduleSave();
+  }
+
+  setParamTuningMeta(ctx: CombatContext, patch: {
+    tunedBestScore?: number;
+    paramExploreCount?: number;
+    paramAdoptCount?: number;
+    noImproveStreak?: number;
+  }): void {
+    const entry = this.getContextState(ctx, 'melee-baseline');
+    if (patch.tunedBestScore != null) entry.tunedBestScore = patch.tunedBestScore;
+    if (patch.paramExploreCount != null) entry.paramExploreCount = patch.paramExploreCount;
+    if (patch.paramAdoptCount != null) entry.paramAdoptCount = patch.paramAdoptCount;
+    if (patch.noImproveStreak != null) entry.noImproveStreak = patch.noImproveStreak;
+    this.dirty = true;
+    this.scheduleSave();
+  }
+
+  getSituationState(situationId: SituationId): SituationLearningState {
+    let entry = this.state.situations[situationId];
+    if (!entry) {
+      entry = emptySituationLearning(situationId);
+      this.state.situations[situationId] = entry;
+      this.dirty = true;
+    }
+    entry.exploreCount = Math.max(0, entry.exploreCount || 0);
+    entry.adoptCount = Math.max(0, entry.adoptCount || 0);
+    entry.noImproveStreak = Math.max(0, entry.noImproveStreak || 0);
+    if (!entry.weights) entry.weights = {};
+    if (!Number.isFinite(entry.bestBankScore)) entry.bestBankScore = Number.NEGATIVE_INFINITY;
+    return entry;
+  }
+
+  getMergedSituationWeights(situationId: SituationId): UtilityWeights {
+    const entry = this.getSituationState(situationId);
+    return mergeUtilityWeights(situationId, entry.weights);
+  }
+
+  setSituationWeights(
+    situationId: SituationId,
+    weights: Partial<UtilityWeights>,
+    meta?: Partial<Pick<SituationLearningState, 'bestBankScore' | 'exploreCount' | 'adoptCount' | 'noImproveStreak'>>
+  ): void {
+    const entry = this.getSituationState(situationId);
+    entry.weights = { ...weights };
+    if (meta?.bestBankScore != null) entry.bestBankScore = meta.bestBankScore;
+    if (meta?.exploreCount != null) entry.exploreCount = meta.exploreCount;
+    if (meta?.adoptCount != null) entry.adoptCount = meta.adoptCount;
+    if (meta?.noImproveStreak != null) entry.noImproveStreak = meta.noImproveStreak;
+    this.dirty = true;
+    this.scheduleSave();
+  }
+
+  patchSituationMeta(
+    situationId: SituationId,
+    meta: Partial<Pick<SituationLearningState, 'bestBankScore' | 'exploreCount' | 'adoptCount' | 'noImproveStreak'>>
+  ): void {
+    const entry = this.getSituationState(situationId);
+    if (meta.bestBankScore != null) entry.bestBankScore = meta.bestBankScore;
+    if (meta.exploreCount != null) entry.exploreCount = meta.exploreCount;
+    if (meta.adoptCount != null) entry.adoptCount = meta.adoptCount;
+    if (meta.noImproveStreak != null) entry.noImproveStreak = meta.noImproveStreak;
+    this.dirty = true;
+    this.scheduleSave();
+  }
+
   flush(): void {
     if (this.saveTimer) {
       clearTimeout(this.saveTimer);
       this.saveTimer = null;
     }
     if (!this.dirty) return;
+    this.writeAtomic();
+    this.dirty = false;
+  }
+
+  /** 箱庭学習用の統計を空に戻す（本番 combat-state.json とは別ファイル想定）。 */
+  reset(): void {
+    if (this.saveTimer) {
+      clearTimeout(this.saveTimer);
+      this.saveTimer = null;
+    }
+    this.state = emptyCombatState();
+    this.dirty = true;
     this.writeAtomic();
     this.dirty = false;
   }
