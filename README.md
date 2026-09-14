@@ -144,26 +144,47 @@ docker compose up -d --build
 
 学習が有効なときは、敵の種類（近接 / 機敏 / 遠距離 / 爆発）と盾の有無ごとに安全な立ち回りプリセットを比較します。悪化した候補は自動で戻し、結果は `data/combat-state.json` に保存されます（敵数バケットは使いません）。
 
-### ローカル戦闘シミュレータ
+### ローカル戦闘箱庭（3D）
 
-Minecraftを起動せず、固定配置をtick単位で操作・可視化できます。
+Minecraftを起動せず、**3Dボクセル箱庭**で戦闘を自動学習・監視します。旧2D平面表示は廃止済みです。
 
 ```bash
 npx tsx src/simulator/server.ts
 # ブラウザで http://127.0.0.1:4173
 ```
 
-- 静的な `single-ranged`、`multi-positioning`、`recovery` に加え、`dynamic-melee-pincer`、`dynamic-ranged-pressure`、`dynamic-mixed` の動的ケースを同梱しています。
-- `敵AI` を有効にすると、近接敵はBotを追尾し、遠距離敵は射程を保ちながら横移動・射撃圧を加えます。AI速度は0.25～2倍で調整でき、各tickの挙動・速度・射撃を平面と判断欄で確認できます。
-- 複数脅威の位置取りは近傍1リングで止めず、同心円候補と敵列の延長候補を評価します。敵との安全距離、移動経路、owner追従制約を守りながら、可能なら片方の敵の後ろへ回り込み、35度以下の攻撃方向へ集約します。
-- 平面をクリックしてBot、owner、敵、ドロップ、障害物を移動できます。敵・ドロップ・障害物の追加、tick・自動進行、期待する制御所有者・戦闘意図・spanの検証、ケースのブラウザ保存とJSON入出力が可能です。
-- 判断は表示専用の再実装ではなく、`threatArc`、`CombatIntent`、`CombatProfiles`、`ControlPriority`、墓由来ID用のRecovery補助関数を直接利用します。Minecraft固有のMineflayer移動・PVP・ブロック操作はシミュレータadapterの後段です。
+**監視画面の使い方**
+
+1. 画面上部の **「学習を開始（放置OK）」** を押す（以降は放置でOK）
+2. 新しい地形・敵が自動生成され、1戦ずつ学習 → 画面で観戦 → 次の戦へ進む
+3. 相棒 HP が 0 になると **死亡して戦闘終了**（敵と同様）。勝利/敗北がエピソード結果になる
+4. 「分析」欄で失敗クラスタを確認し、「Cursor用パックを書き出す」
+5. パックを Cursor チャットに貼り、`src/combat/` のルール修正を依頼
+6. 失敗シードのリプレイで目視確認 → `npm test -- tests/simulator.test.ts` → 実ワールド
+
+手動のシナリオ読込・1 tick 操作は「手動デバッグ」に格納（通常は不要）。
+
+**技術メモ**
+
+- 判断は `threatArc` / `CombatIntent` / `CombatProfiles` を共有。表示は Three.js のみ（戦闘ロジックは持たない）
+- 座標は XYZ。段差1段・落下・ブロックLOSを簡易再現。脅威弧は本番どおり水平XZ
+- 回帰シナリオ: `single-ranged`、`multi-positioning`、`recovery`、動的3種、加えて `elevated-ranged` / `wall-los-block`
+- 学習状態は箱庭専用の `data/sim-combat-state.json`（本番 `data/combat-state.json` とは分離）
+- 失敗シードの再現例: `curl -s -X POST http://127.0.0.1:4173/api/gym/replay -H "content-type: application/json" -d "{\"seed\":1000}"`
 
 戦闘改善の受け入れ順序:
 
-1. **シミュレータ・テスト** — ケースを配置・保存し、期待する制御所有者、戦闘意図、span、Recovery遷移を決定論的テストにする。
-2. **Bot統合** — 合格した純粋ルールだけをMineflayer adapterへ接続する。
-3. **Minecraft動作確認** — 最後に固定した敵配置で移動、視線、被弾、攻撃結果を確認する。
+1. **箱庭・テスト** — 自動ジムと固定シナリオで決定論的に確認する。
+2. **Bot統合** — 合格した純粋ルールだけをMineflayer adapterへ接続する（`src/reflexes/combatPlanAdapter.ts` → `Reflexes`）。
+3. **Minecraft動作確認** — 最後に実ワールドで移動・視線・被弾・攻撃を確認する。
+
+実ワールド確認の目安:
+
+- 純近接複数: 攻撃扇に晒されたとき回り込み、ノックバック後にヒット&アウェイしない
+- スケルトン: 盾なしは回避バースト、接近後に殴る
+- クリーパー: 未着火は処理、着火中だけ退避
+- オーナー被弾: 襲撃者へ即フォーカス
+- 学習 JSON は箱庭 `data/sim-combat-state.json` と本番 `data/combat-state.json` を混ぜない
 
 ### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し・作業退避
 

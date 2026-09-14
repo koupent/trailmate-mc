@@ -10,10 +10,22 @@ import {
 import type { CombatEpisode } from './CombatEpisodeTracker.js';
 import { scoreEpisode } from './CombatEpisodeTracker.js';
 import { CombatStateStore } from './CombatStateStore.js';
+import {
+  applyParamOverlay,
+  buildTuningDashboard,
+  describeTuningStatus,
+  mutateParamOverlayDetailed,
+  type ParamOverlay,
+  type TuningDashboard,
+  type TuningStatus
+} from './ParamTuner.js';
+import { tunableKeysForClass, filterSimTuneOverlay } from './CombatTuneCatalog.js';
 
 export type CombatLearningOptions = {
   enabled: boolean;
   exploreRate: number;
+  /** 連続パラメータ探索の確率（プリセット探索とは独立）。 */
+  paramExploreRate: number;
   minTrials: number;
   minHealthToExplore: number;
   /** 探索中の1エピソードでこの値以上被弾したら即座にロールバックする。 */
@@ -21,6 +33,8 @@ export type CombatLearningOptions = {
   /** 悪化した探索結果がこの回数続いたら、探索を短時間休止する。 */
   maxConsecutiveWorse: number;
   exploreCooldownMs: number;
+  /** このスコア差以上なら数値オーバーレイを採用する。 */
+  paramAdoptMargin: number;
 };
 
 export type PresetChoice = {
@@ -28,16 +42,23 @@ export type PresetChoice = {
   params: CombatPresetParams;
   reason: 'disabled' | 'baseline' | 'selected' | 'explore' | 'defensive' | 'rollback';
   exploring: boolean;
+  exploringParams: boolean;
+  paramOverlay: ParamOverlay | null;
+  /** この回にいじったキー（数値探索時のみ）。 */
+  changedKeys: string[];
+  changes: Array<{ key: string; from: number; to: number }>;
 };
 
 const DEFAULT_OPTIONS: CombatLearningOptions = {
   enabled: true,
   exploreRate: 0.12,
+  paramExploreRate: 0.28,
   minTrials: 3,
   minHealthToExplore: 12,
   exploreDamageAbort: 8,
   maxConsecutiveWorse: 2,
-  exploreCooldownMs: 45000
+  exploreCooldownMs: 45000,
+  paramAdoptMargin: 0.2
 };
 
 export class CombatOptimizer {
@@ -61,6 +82,60 @@ export class CombatOptimizer {
     this.store.flush();
   }
 
+  getTuningStatus(context: CombatContext): TuningStatus {
+    const baseline = baselinePresetId(context);
+    const entry = this.store.getContextState(context, baseline);
+    return describeTuningStatus({
+      paramExploreCount: entry.paramExploreCount,
+      paramAdoptCount: entry.paramAdoptCount,
+      noImproveStreak: entry.noImproveStreak,
+      bestScore: Number.isFinite(entry.tunedBestScore) ? entry.tunedBestScore : null
+    });
+  }
+
+  /** 全コンテキストのチューニング状態を要約（分析パック用）。 */
+  getAggregateTuningStatus(): TuningStatus {
+    const snap = this.store.getSnapshot();
+    let explore = 0;
+    let adopt = 0;
+    let streak = 0;
+    let best: number | null = null;
+    const contexts = Object.values(snap.contexts);
+    if (!contexts.length) {
+      return describeTuningStatus({
+        paramExploreCount: 0,
+        paramAdoptCount: 0,
+        noImproveStreak: 0,
+        bestScore: null
+      });
+    }
+    for (const entry of contexts) {
+      explore += entry.paramExploreCount || 0;
+      adopt += entry.paramAdoptCount || 0;
+      streak = Math.max(streak, entry.noImproveStreak || 0);
+      if (Number.isFinite(entry.tunedBestScore)) {
+        best = best == null
+          ? entry.tunedBestScore
+          : Math.max(best, entry.tunedBestScore);
+      }
+    }
+    return describeTuningStatus({
+      paramExploreCount: explore,
+      paramAdoptCount: adopt,
+      noImproveStreak: streak,
+      bestScore: best
+    });
+  }
+
+  /** UI用: 対象パラメータ一覧と文脈別の採用値。 */
+  getTuningDashboard(): TuningDashboard {
+    const snap = this.store.getSnapshot();
+    return buildTuningDashboard({
+      aggregate: this.getAggregateTuningStatus(),
+      contexts: snap.contexts
+    });
+  }
+
   pickPreset(opts: {
     context: CombatContext;
     health: number;
@@ -69,7 +144,7 @@ export class CombatOptimizer {
     const now = opts.now ?? Date.now();
     const baseline = baselinePresetId(opts.context);
     if (!this.options.enabled) {
-      return this.choice(baseline, 'disabled', false);
+      return this.choice(baseline, 'disabled', false, false, null);
     }
 
     const entry = this.store.getContextState(opts.context, baseline);
@@ -83,35 +158,73 @@ export class CombatOptimizer {
 
     if (opts.health < this.options.minHealthToExplore) {
       const defensive = defensivePresetId(opts.context);
-      return this.choice(defensive, 'defensive', false);
+      return this.choice(defensive, 'defensive', false, false, entry.tunedParams);
     }
 
     if (now < entry.exploreCooldownUntil) {
-      return this.choice(best, 'selected', false);
+      return this.choice(best, 'selected', false, false, entry.tunedParams);
     }
 
     const baselineStats = entry.presets[baseline];
     const baselineReady = (baselineStats?.trials || 0) >= this.options.minTrials;
-    const canExplore = baselineReady
+    const canExplorePreset = baselineReady
       && candidates.length > 1
       && Math.random() < this.options.exploreRate;
 
-    if (canExplore) {
+    let presetId: CombatPresetId = baseline;
+    let reason: PresetChoice['reason'] = 'baseline';
+    let exploring = false;
+
+    if (canExplorePreset) {
       const others = candidates.filter((id) => id !== best);
-      const pick = others[Math.floor(Math.random() * others.length)] || baseline;
-      return this.choice(pick, 'explore', true);
+      presetId = others[Math.floor(Math.random() * others.length)] || baseline;
+      reason = 'explore';
+      exploring = true;
+    } else {
+      const selectedStats = entry.presets[selected];
+      if (
+        selected !== baseline
+        && (selectedStats?.trials || 0) >= this.options.minTrials
+        && (selectedStats?.avgScore || -Infinity) >= (baselineStats?.avgScore || -Infinity)
+      ) {
+        presetId = selected;
+        reason = 'selected';
+      } else {
+        presetId = best === baseline ? baseline : best;
+        reason = best === baseline ? 'baseline' : 'selected';
+      }
     }
 
-    // 十分な実績がある場合は選択済み設定を優先し、それまでは基準設定を保つ。
-    const selectedStats = entry.presets[selected];
-    if (
-      selected !== baseline
-      && (selectedStats?.trials || 0) >= this.options.minTrials
-      && (selectedStats?.avgScore || -Infinity) >= (baselineStats?.avgScore || -Infinity)
-    ) {
-      return this.choice(selected, 'selected', false);
+    // プリセット探索中は数値も同時にいじらない（結果の帰属を明確にする）
+    // 当該クラスに探索キーが無い（近接など）場合は数値探索しない
+    const classTuneKeys = tunableKeysForClass(opts.context.enemyClass);
+    const canExploreParams = !exploring
+      && baselineReady
+      && classTuneKeys.length > 0
+      && Math.random() < this.options.paramExploreRate;
+    if (canExploreParams) {
+      const base = getPresetParams(presetId);
+      const mutation = mutateParamOverlayDetailed(
+        base,
+        entry.tunedParams,
+        Math.random,
+        opts.context.enemyClass
+      );
+      if (mutation.changedKeys.length === 0) {
+        return this.choice(presetId, reason, exploring, false, entry.tunedParams);
+      }
+      return this.choice(
+        presetId,
+        reason,
+        false,
+        true,
+        mutation.overlay,
+        mutation.changedKeys,
+        mutation.changes
+      );
     }
-    return this.choice(best === baseline ? baseline : best, 'baseline', false);
+
+    return this.choice(presetId, reason, exploring, false, entry.tunedParams);
   }
 
   /**
@@ -122,13 +235,15 @@ export class CombatOptimizer {
     adopted: boolean;
     rolledBack: boolean;
     reason: string;
+    paramsAdopted: boolean;
   } {
     if (!this.options.enabled || !episode.learnable || episode.interrupted) {
       return {
         score: scoreEpisode(episode).total,
         adopted: false,
         rolledBack: false,
-        reason: 'skipped-unlearnable'
+        reason: 'skipped-unlearnable',
+        paramsAdopted: false
       };
     }
 
@@ -151,6 +266,7 @@ export class CombatOptimizer {
     let adopted = false;
     let rolledBack = false;
     let reason = 'recorded';
+    let paramsAdopted = false;
 
     const abortExplore = episode.exploring
       && (
@@ -168,7 +284,7 @@ export class CombatOptimizer {
       rolledBack = true;
       reason = episode.died ? 'rollback-death' : 'rollback-damage';
       this.logDecision(ctx, episode.presetId, reason, score);
-      return { score, adopted, rolledBack, reason };
+      return { score, adopted, rolledBack, reason, paramsAdopted };
     }
 
     if (
@@ -190,7 +306,7 @@ export class CombatOptimizer {
       this.store.setConsecutiveWorse(ctx, entry.consecutiveWorse);
       this.store.setExploreCooldown(ctx, entry.exploreCooldownUntil);
       this.logDecision(ctx, episode.presetId, reason, score);
-      return { score, adopted, rolledBack, reason };
+      return { score, adopted, rolledBack, reason, paramsAdopted };
     }
 
     // 十分な試行数があり、現行最良値を明確に上回った設定を採用する。
@@ -209,29 +325,86 @@ export class CombatOptimizer {
       this.store.setSelectedPreset(ctx, episode.presetId, true);
       this.store.setConsecutiveWorse(ctx, 0);
       this.logDecision(ctx, episode.presetId, reason, score);
-      return { score, adopted, rolledBack, reason };
-    }
-
-    if (episode.exploring) {
+    } else if (episode.exploring) {
       entry.consecutiveWorse = 0;
       this.store.setConsecutiveWorse(ctx, 0);
       reason = 'explore-ok';
+      this.logDecision(ctx, episode.presetId, reason, score);
     }
 
-    this.logDecision(ctx, episode.presetId, reason, score);
-    return { score, adopted, rolledBack, reason };
+    paramsAdopted = this.completeParamExplore(episode, score);
+    if (!adopted && !rolledBack && !episode.exploring) {
+      this.logDecision(ctx, episode.presetId, reason, score);
+    }
+    return { score, adopted, rolledBack, reason, paramsAdopted };
+  }
+
+  private completeParamExplore(episode: CombatEpisode, score: number): boolean {
+    const ctx = episode.context;
+    const entry = this.store.getContextState(ctx, episode.presetId);
+    if (!episode.exploringParams) {
+      // 採用済みオーバーレイ運用中も最良スコアを追従
+      if (
+        entry.tunedParams
+        && score > entry.tunedBestScore
+      ) {
+        this.store.setParamTuningMeta(ctx, {
+          tunedBestScore: score,
+          noImproveStreak: 0
+        });
+      } else if (entry.tunedParams) {
+        this.store.setParamTuningMeta(ctx, {
+          noImproveStreak: entry.noImproveStreak + 1
+        });
+      }
+      return false;
+    }
+
+    const exploreCount = entry.paramExploreCount + 1;
+    const improved = score >= entry.tunedBestScore + this.options.paramAdoptMargin
+      || (!Number.isFinite(entry.tunedBestScore) && !episode.died);
+
+    if (improved && !episode.died) {
+      this.store.setTunedParams(
+        ctx,
+        filterSimTuneOverlay(episode.paramOverlay, ctx.enemyClass)
+      );
+      this.store.setParamTuningMeta(ctx, {
+        tunedBestScore: score,
+        paramExploreCount: exploreCount,
+        paramAdoptCount: entry.paramAdoptCount + 1,
+        noImproveStreak: 0
+      });
+      this.logDecision(ctx, episode.presetId, 'params-adopted', score);
+      return true;
+    }
+
+    this.store.setParamTuningMeta(ctx, {
+      paramExploreCount: exploreCount,
+      noImproveStreak: entry.noImproveStreak + 1
+    });
+    this.logDecision(ctx, episode.presetId, 'params-reject', score);
+    return false;
   }
 
   private choice(
     presetId: CombatPresetId,
     reason: PresetChoice['reason'],
-    exploring: boolean
+    exploring: boolean,
+    exploringParams: boolean,
+    overlay: ParamOverlay | null,
+    changedKeys: string[] = [],
+    changes: Array<{ key: string; from: number; to: number }> = []
   ): PresetChoice {
     return {
       presetId,
-      params: getPresetParams(presetId),
+      params: applyParamOverlay(presetId, overlay),
       reason,
-      exploring
+      exploring,
+      exploringParams,
+      paramOverlay: overlay,
+      changedKeys,
+      changes
     };
   }
 

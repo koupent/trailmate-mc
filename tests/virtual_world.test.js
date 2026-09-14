@@ -363,7 +363,9 @@ describe('決定論的な仮想3D相棒シナリオ', () => {
         await world.combatTick();
         assert.ok(world.bot.entity.position.distanceTo(skeleton.position) <= 3.5);
         assert.ok(world.directAttacks >= 1);
-        assert.equal(world.reflexes.rangedDodgeLatch.advanceUntil, 0);
+        assert.equal(world.reflexes.rangedDodgeLatch.burstUntil, 0);
+        // 近接後も前進コミットを残し、離脱カイトで初回回避が再発火しないようにする
+        assert.ok(world.reflexes.rangedDodgeLatch.advanceUntil > 0);
     });
 
     it('複数脅威: 敵列の外側へ移動し35度未満へ収束する', async () => {

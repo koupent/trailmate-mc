@@ -6,6 +6,13 @@
  * movementControlsTowardBearing() を使うこと。
  */
 
+import { classifyEnemy } from './CombatProfiles.js';
+import {
+  chooseAttackFanSafePoint,
+  type AttackFanDebug,
+  type AttackFanThreat
+} from './attackFanSafeZone.js';
+
 export type XZ = { x: number; z: number };
 
 export type ThreatArc = {
@@ -64,11 +71,11 @@ export type BearingMovementControls = {
   right: boolean;
 };
 
-/** 理想とする脅威扇形の最大角。 */
+/** 理想とする脅威扇形の最大角（デフォルト。実運用はプリセットの arcNarrow* を使う）。 */
 export const TARGET_THREAT_SPAN_RAD = (35 * Math.PI) / 180;
 /** 通常の横移動より位置取りを優先する広い挟撃角。 */
 export const WIDE_THREAT_SPAN_RAD = (90 * Math.PI) / 180;
-/** 開始・終了閾値で円弧位置取りにヒステリシスを持たせる。 */
+/** 開始・終了閾値のデフォルト（プリセット未指定時）。 */
 export const ENTER_ARC_NARROW_SPAN_RAD = TARGET_THREAT_SPAN_RAD;
 export const EXIT_ARC_NARROW_SPAN_RAD = (25 * Math.PI) / 180;
 
@@ -356,17 +363,361 @@ export function strafeSignForOpenArc(opts: {
   return arcSign;
 }
 
+export type ArcNarrowThresholds = {
+  /** これ以上でラッチ開始（rad）。 */
+  enterSpanRad?: number;
+  /** これ未満でラッチ解除（rad）。 */
+  exitSpanRad?: number;
+};
+
 export function shouldEnterArcNarrowing(opts: {
   threatCount: number;
   spanRad: number;
+  enterSpanRad?: number;
 }): boolean {
-  return opts.threatCount >= 2 && opts.spanRad >= ENTER_ARC_NARROW_SPAN_RAD;
+  const enter = opts.enterSpanRad ?? ENTER_ARC_NARROW_SPAN_RAD;
+  return opts.threatCount >= 2 && opts.spanRad >= enter;
 }
 
-export function shouldExitArcNarrowing(spanRad: number): boolean {
-  return spanRad < EXIT_ARC_NARROW_SPAN_RAD;
+export function shouldExitArcNarrowing(
+  spanRad: number,
+  exitSpanRad: number = EXIT_ARC_NARROW_SPAN_RAD
+): boolean {
+  return spanRad < exitSpanRad;
 }
 
+/**
+ * 扇狭窄のヒステリシス。一度入ったら exit まで位置取りを継続する。
+ * enter/exit はプリセット学習で調整する（Reflexes / 旧経路用）。
+ * 箱庭の主経路は updateArcNarrowLatchByImprovement を使う。
+ */
+export function updateArcNarrowLatch(opts: {
+  latched: boolean;
+  threatCount: number;
+  spanRad: number | null | undefined;
+  enterSpanRad?: number;
+  exitSpanRad?: number;
+}): boolean {
+  if (opts.threatCount < 2 || opts.spanRad == null || !Number.isFinite(opts.spanRad)) {
+    return false;
+  }
+  if (opts.latched) {
+    return !shouldExitArcNarrowing(
+      opts.spanRad,
+      opts.exitSpanRad ?? EXIT_ARC_NARROW_SPAN_RAD
+    );
+  }
+  return shouldEnterArcNarrowing({
+    threatCount: opts.threatCount,
+    spanRad: opts.spanRad,
+    enterSpanRad: opts.enterSpanRad
+  });
+}
+
+/**
+ * 決定論ラッチ: 候補で扇をまだ狭められる間、または目標へ移動中だけ続ける。
+ * 学習用の enter/exit 角度には依存しない。
+ */
+export function updateArcNarrowLatchByImprovement(opts: {
+  latched: boolean;
+  threatCount: number;
+  selectionMoved: boolean;
+  /** 位置取り目標へまだ到着していない */
+  pursuingGoal?: boolean;
+}): boolean {
+  if (opts.threatCount < 2) return false;
+  if (opts.selectionMoved || opts.pursuingGoal) return true;
+  // 局所最小かつ目標なし／到着 → 解除（種別問わず扇を重ね切った）
+  return false;
+}
+
+/**
+ * 最寄り脅威を sticky に選ぶ。わずかな距離差では切り替えない。
+ */
+export function pickStickyNearestThreatIndex(
+  botPos: XZ,
+  threats: XZ[],
+  stickyIndex: number | null | undefined,
+  switchMargin = 1.75
+): number {
+  if (threats.length === 0) return -1;
+  let bestIndex = 0;
+  let bestDist = distance2(botPos, threats[0]);
+  for (let index = 1; index < threats.length; index += 1) {
+    const dist = distance2(botPos, threats[index]);
+    if (dist + 1e-6 < bestDist) {
+      bestDist = dist;
+      bestIndex = index;
+    }
+  }
+  if (
+    stickyIndex != null
+    && stickyIndex >= 0
+    && stickyIndex < threats.length
+  ) {
+    const stickyDist = distance2(botPos, threats[stickyIndex]);
+    if (stickyDist <= bestDist + switchMargin) return stickyIndex;
+  }
+  return bestIndex;
+}
+
+/**
+ * 最寄り敵の周囲を回り、他敵方位を重ねるための候補。
+ * （近接を壁にする／遠距離を壁にする、の両方を扇最小化で兼ねる）
+ */
+export function generateNearestOrbitCandidates(
+  botPos: XZ,
+  threats: XZ[],
+  nearestIndex: number,
+  minEnemyDistance = DEFAULT_MIN_ENEMY_DISTANCE
+): XZ[] {
+  if (nearestIndex < 0 || nearestIndex >= threats.length) return [];
+  const nearest = threats[nearestIndex];
+  const others = threats.filter((_, index) => index !== nearestIndex);
+  const out: XZ[] = [];
+  // 学習ホットパス用に候補を抑える（旧: 5半径×16方位）
+  const radii = [
+    Math.max(1.5, minEnemyDistance),
+    Math.max(2.2, minEnemyDistance + 0.6),
+    Math.max(2.9, minEnemyDistance + 1.2)
+  ];
+  for (const radius of radii) {
+    for (let index = 0; index < 8; index += 1) {
+      const bearing = (index * Math.PI) / 4;
+      out.push({
+        x: nearest.x + Math.sin(bearing) * radius,
+        z: nearest.z + Math.cos(bearing) * radius
+      });
+    }
+  }
+  if (others.length > 0) {
+    const centroid = others.reduce((sum, threat) => ({
+      x: sum.x + threat.x / others.length,
+      z: sum.z + threat.z / others.length
+    }), { x: 0, z: 0 });
+    const dx = nearest.x - centroid.x;
+    const dz = nearest.z - centroid.z;
+    const len = Math.hypot(dx, dz) || 1;
+    const ux = dx / len;
+    const uz = dz / len;
+    const px = -uz;
+    const pz = ux;
+    for (const radius of radii) {
+      out.push({ x: nearest.x + ux * radius, z: nearest.z + uz * radius });
+      out.push({ x: nearest.x + ux * radius + px * 1.1, z: nearest.z + uz * radius + pz * 1.1 });
+      out.push({ x: nearest.x + ux * radius - px * 1.1, z: nearest.z + uz * radius - pz * 1.1 });
+    }
+  }
+  const toNearestX = nearest.x - botPos.x;
+  const toNearestZ = nearest.z - botPos.z;
+  const toLen = Math.hypot(toNearestX, toNearestZ) || 1;
+  const tx = -toNearestZ / toLen;
+  const tz = toNearestX / toLen;
+  out.push({ x: botPos.x + tx * 2.2, z: botPos.z + tz * 2.2 });
+  out.push({ x: botPos.x - tx * 2.2, z: botPos.z - tz * 2.2 });
+  return dedupePositions(out);
+}
+
+export type StackThreatPositionSelection = ThreatPositionSelection & {
+  nearestIndex: number;
+  /** 攻撃扇ベースの安全点（遠距離非露出を優先）。 */
+  safePoint?: XZ | null;
+  /** 各敵の攻撃扇デバッグ（相棒／評価点向け）。 */
+  attackFans?: AttackFanDebug[];
+  coverPoint?: XZ & { y?: number } | null;
+  rangedExposedCount?: number;
+  /** 近接／爆発／敏捷の攻撃扇に晒されている数 */
+  meleeExposedCount?: number;
+};
+
+export function chooseStackThreatPosition(
+  botPos: XZ & { y?: number },
+  threats: AttackFanThreat[],
+  options: ThreatPositionOptions & {
+    stickyNearestIndex?: number | null;
+    stickySafePoint?: XZ | null;
+    /** 3D地形LOS。true なら射手→点は地形で遮られる。 */
+    isTerrainBlocked?: (from: AttackFanThreat, to: XZ & { y?: number }) => boolean;
+    skirtSide?: 1 | -1;
+    skirtMode?: 'dodge' | 'advance';
+  } = {}
+): StackThreatPositionSelection {
+  const minEnemyDistance = options.minEnemyDistance ?? DEFAULT_MIN_ENEMY_DISTANCE;
+  const evaluate = (candidate: XZ) => evaluateThreatPosition({
+    origin: botPos,
+    candidate,
+    threats,
+    minEnemyDistance,
+    dangerWeight: options.dangerWeight,
+    movementWeight: options.movementWeight ?? DEFAULT_MOVEMENT_WEIGHT,
+    ownerPos: options.ownerPos,
+    maxOwnerDistance: options.maxOwnerDistance,
+    ownerWeight: options.ownerWeight
+  });
+  const current = evaluate(botPos);
+  const nearestIndex = pickStickyNearestThreatIndex(
+    botPos,
+    threats,
+    options.stickyNearestIndex
+  );
+  const empty = (): StackThreatPositionSelection => ({
+    current,
+    chosen: current,
+    moved: false,
+    improvement: 0,
+    nearestIndex,
+    safePoint: null,
+    attackFans: [],
+    coverPoint: null,
+    rangedExposedCount: 0,
+    meleeExposedCount: 0
+  });
+  if (nearestIndex < 0) {
+    return empty();
+  }
+
+  const fanSafe = chooseAttackFanSafePoint(botPos, threats, {
+    stickyNearestIndex: options.stickyNearestIndex,
+    stickySafePoint: options.stickySafePoint,
+    ownerPos: options.ownerPos,
+    maxOwnerDistance: options.maxOwnerDistance,
+    isTerrainBlocked: options.isTerrainBlocked,
+    minEnemyDistance,
+    skirtSide: options.skirtSide,
+    skirtMode: options.skirtMode
+  });
+
+  const hasRanged = threats.some((threat) => classifyEnemy(threat.kind) === 'ranged');
+  const rangedExposed = fanSafe?.rangedExposedCount ?? 0;
+  const meleeExposed = fanSafe?.meleeExposedCount ?? 0;
+  const attackFans = fanSafe?.fans ?? [];
+  const coverPoint = fanSafe?.coverPoint ?? null;
+
+  // 単体遠距離でも斜め接近点を返す（従来は count<2 で null になり真正面突撃していた）
+  if (usableThreatCount(botPos, threats) < 2) {
+    if (!fanSafe) return empty();
+    const chosen = fanSafe.moved ? evaluate(fanSafe.safePoint) : current;
+    return {
+      current,
+      chosen,
+      moved: fanSafe.moved,
+      improvement: Math.max(0, current.spanRad - chosen.spanRad),
+      nearestIndex: fanSafe.nearestIndex,
+      safePoint: fanSafe.safePoint,
+      attackFans,
+      coverPoint,
+      rangedExposedCount: rangedExposed,
+      meleeExposedCount: meleeExposed
+    };
+  }
+
+  // 遠距離あり＋すでに非露出（肉壁）: 扇狭窄で引きずり出さない
+  if (hasRanged && fanSafe && rangedExposed === 0 && fanSafe.mode === 'umbra' && !fanSafe.moved) {
+    return {
+      current,
+      chosen: current,
+      moved: false,
+      improvement: 0,
+      nearestIndex: fanSafe.nearestIndex,
+      safePoint: fanSafe.safePoint,
+      attackFans,
+      coverPoint,
+      rangedExposedCount: 0,
+      meleeExposedCount: meleeExposed
+    };
+  }
+
+  const preferAttackFanSafe = Boolean(
+    fanSafe
+    && hasRanged
+    && (rangedExposed > 0 || fanSafe.moved || fanSafe.mode === 'skirt')
+  );
+
+  // 斜め接近は扇狭窄ラッチの対象外（毎tick moved で位置取り固定化しない）
+  if (preferAttackFanSafe && fanSafe && fanSafe.mode === 'skirt') {
+    return {
+      current,
+      chosen: current,
+      moved: false,
+      improvement: 0,
+      nearestIndex: fanSafe.nearestIndex,
+      safePoint: fanSafe.safePoint,
+      attackFans,
+      coverPoint,
+      rangedExposedCount: rangedExposed,
+      meleeExposedCount: meleeExposed
+    };
+  }
+
+  let targetPoint: XZ | null = null;
+  // CORE: 扇が広いときは遠／近を問わず「最寄りへ回り込み」で狭窄。
+  // umbra へ一直線／遠距離側への広域探索は挟まれ180°で原則を壊す。
+  const spanWideForOrbit = current.spanRad > (55 * Math.PI) / 180;
+  if (preferAttackFanSafe && fanSafe && !spanWideForOrbit) {
+    targetPoint = fanSafe.safePoint;
+  } else if (spanWideForOrbit) {
+    const orbitCandidates = generateNearestOrbitCandidates(
+      botPos,
+      threats,
+      nearestIndex,
+      minEnemyDistance
+    );
+    const spanSelection = chooseBestThreatPosition(botPos, threats, {
+      ...options,
+      candidates: orbitCandidates
+    });
+    if (spanSelection.moved) {
+      targetPoint = spanSelection.chosen.position;
+    } else if (preferAttackFanSafe && fanSafe) {
+      targetPoint = fanSafe.safePoint;
+    }
+  } else {
+    const spanSelection = chooseBestThreatPosition(botPos, threats, options);
+    if (spanSelection.moved) {
+      targetPoint = spanSelection.chosen.position;
+    } else if (preferAttackFanSafe && fanSafe) {
+      targetPoint = fanSafe.safePoint;
+    }
+  }
+
+  const safePoint = fanSafe?.safePoint
+    ?? (targetPoint ? { ...targetPoint } : null);
+
+  if (!targetPoint) {
+    return {
+      current,
+      chosen: current,
+      moved: false,
+      improvement: 0,
+      nearestIndex: fanSafe?.nearestIndex ?? nearestIndex,
+      safePoint,
+      attackFans,
+      coverPoint,
+      rangedExposedCount: rangedExposed,
+      meleeExposedCount: meleeExposed
+    };
+  }
+
+  const chosen = evaluate(targetPoint);
+  const improvement = current.spanRad - chosen.spanRad;
+  return {
+    current,
+    chosen,
+    moved: chosen.moveDistance > POSITION_EPSILON,
+    improvement: Math.max(0, improvement),
+    nearestIndex: fanSafe?.nearestIndex ?? nearestIndex,
+    safePoint: safePoint ?? { ...targetPoint },
+    attackFans,
+    coverPoint,
+    rangedExposedCount: rangedExposed,
+    meleeExposedCount: meleeExposed
+  };
+}
+
+/**
+ * 最寄り敵を中心に円弧を描きながら半径を縮めて目標へ寄る1ステップ。
+ * 直線接近で射線に乗り続けるのを避ける。
+ */
 /**
  * 扇形が既に狭くても chooseBestThreatPosition が改善位置を返したら移動する。
  */

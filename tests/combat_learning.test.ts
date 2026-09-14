@@ -24,6 +24,7 @@ import {
   shouldEnterArcNarrowing,
   shouldExitArcNarrowing,
   shouldApplyTacticalReposition,
+  updateArcNarrowLatch,
   ENTER_ARC_NARROW_SPAN_RAD,
   EXIT_ARC_NARROW_SPAN_RAD,
   spanDegrees,
@@ -31,6 +32,7 @@ import {
 } from '../src/combat/threatArc.js';
 import {
   decideCombatIntent,
+  decideCombatMoveKind,
   decideRangedDodgeBurst,
   idleRangedDodgeLatch
 } from '../src/combat/CombatIntent.js';
@@ -43,6 +45,11 @@ import {
   normalizeCombatState
 } from '../src/combat/CombatStateStore.js';
 import { CombatOptimizer } from '../src/combat/CombatOptimizer.js';
+import {
+  applyParamOverlay,
+  describeTuningStatus,
+  mutateParamOverlay
+} from '../src/combat/ParamTuner.js';
 import {
   combatOwnsControl,
   refreshCombatControlUntil
@@ -66,6 +73,17 @@ describe('CombatProfiles', () => {
     });
     assert.equal(clamped.followRange, PRESET_BOUNDS.followRange.max);
     assert.equal(clamped.crowdAvoidBias, PRESET_BOUNDS.crowdAvoidBias.min);
+
+    const hysteresis = clampPreset({
+      ...getPresetParams('melee-baseline'),
+      arcNarrowEnterSpanDeg: 40,
+      arcNarrowExitSpanDeg: 50
+    });
+    assert.ok(
+      hysteresis.arcNarrowExitSpanDeg <= hysteresis.arcNarrowEnterSpanDeg - 5,
+      '解除角は開始角より狭く保つ'
+    );
+    assert.equal(getPresetParams('ranged-baseline').arcNarrowExitSpanDeg, 35);
   });
 
   it('敵数バケットを使わずクラス別プリセット一覧を返す', () => {
@@ -285,6 +303,46 @@ describe('threatArc位置取り', () => {
     assert.equal(shouldExitArcNarrowing(EXIT_ARC_NARROW_SPAN_RAD * 1.1), false);
   });
 
+  it('扇狭窄の開始・解除角はプリセット閾値で変えられる', () => {
+    const enter = (50 * Math.PI) / 180;
+    const exit = (35 * Math.PI) / 180;
+    assert.equal(
+      shouldEnterArcNarrowing({ threatCount: 2, spanRad: (40 * Math.PI) / 180, enterSpanRad: enter }),
+      false
+    );
+    assert.equal(
+      shouldEnterArcNarrowing({ threatCount: 2, spanRad: (55 * Math.PI) / 180, enterSpanRad: enter }),
+      true
+    );
+    assert.equal(shouldExitArcNarrowing((30 * Math.PI) / 180, exit), true);
+    assert.equal(shouldExitArcNarrowing((40 * Math.PI) / 180, exit), false);
+
+    let latched = updateArcNarrowLatch({
+      latched: false,
+      threatCount: 2,
+      spanRad: (55 * Math.PI) / 180,
+      enterSpanRad: enter,
+      exitSpanRad: exit
+    });
+    assert.equal(latched, true);
+    latched = updateArcNarrowLatch({
+      latched: true,
+      threatCount: 2,
+      spanRad: (40 * Math.PI) / 180,
+      enterSpanRad: enter,
+      exitSpanRad: exit
+    });
+    assert.equal(latched, true, 'exit まではラッチ維持');
+    latched = updateArcNarrowLatch({
+      latched: true,
+      threatCount: 2,
+      spanRad: (30 * Math.PI) / 180,
+      enterSpanRad: enter,
+      exitSpanRad: exit
+    });
+    assert.equal(latched, false, 'exit 未満で解除');
+  });
+
   it('狭い扇形でも改善位置があれば戦術 reposition を適用する', () => {
     const bot = { x: -338.13, z: 209.8 };
     const threats = [
@@ -460,6 +518,41 @@ describe('位置取り中の戦闘意図', () => {
     assert.equal(atLimit.dodge, false);
   });
 
+  it('遠距離圧が一瞬消えても前進コミット中は接近を継続する', () => {
+    const started = decideRangedDodgeBurst({
+      now: 1000,
+      underRangedPressure: true,
+      distanceToPrimary: 8,
+      meleeAttackRange: 3.5,
+      latch: idleRangedDodgeLatch(),
+      burstMs: 400,
+      advanceMs: 1500
+    });
+    const advancing = decideRangedDodgeBurst({
+      now: started.latch.burstUntil,
+      underRangedPressure: true,
+      distanceToPrimary: 7,
+      meleeAttackRange: 3.5,
+      latch: started.latch,
+      burstMs: 400,
+      advanceMs: 1500
+    });
+    assert.equal(advancing.phase, 'advance');
+    const pressureLost = decideRangedDodgeBurst({
+      now: advancing.latch.burstUntil + 50,
+      underRangedPressure: false,
+      distanceToPrimary: 6.5,
+      meleeAttackRange: 3.5,
+      latch: advancing.latch,
+      burstMs: 400,
+      advanceMs: 1500
+    });
+    assert.equal(pressureLost.phase, 'advance');
+    assert.equal(pressureLost.dodge, false);
+    assert.equal(pressureLost.latch.burstUntil, 0);
+    assert.ok(pressureLost.latch.advanceUntil > pressureLost.latch.burstUntil);
+  });
+
   it('距離が改善している間は回避を連鎖せず前進を続ける', () => {
     const started = decideRangedDodgeBurst({
       now: 1000,
@@ -498,7 +591,7 @@ describe('位置取り中の戦闘意図', () => {
     assert.equal(continued.latch.bestDistance, 7.5);
   });
 
-  it('前進停滞・期限・新規被弾時だけ防御を再開する', () => {
+  it('前進コミット後: カイト停滞は接近継続、盾なし被弾は再回避、盾ありは前進維持', () => {
     const started = decideRangedDodgeBurst({
       now: 1000,
       underRangedPressure: true,
@@ -509,6 +602,7 @@ describe('位置取り中の戦闘意図', () => {
       advanceMs: 1800,
       stallMs: 750
     });
+    assert.equal(started.phase, 'dodge');
     const advancing = decideRangedDodgeBurst({
       now: 1600,
       underRangedPressure: true,
@@ -527,20 +621,33 @@ describe('位置取り中の戦闘意図', () => {
       advanceMs: 1800,
       stallMs: 750
     });
-    assert.equal(stalled.phase, 'dodge');
+    assert.equal(stalled.phase, 'advance');
 
-    const freshHit = decideRangedDodgeBurst({
+    const chipNoShield = decideRangedDodgeBurst({
       now: 1700,
       underRangedPressure: true,
       distanceToPrimary: 7,
       meleeAttackRange: 3.5,
       latch: advancing.latch,
       lastDamageAt: 1699,
+      hasShield: false,
       burstMs: 600,
       advanceMs: 1800
     });
-    assert.equal(freshHit.phase, 'dodge');
-    assert.equal(freshHit.latch.handledDamageAt, 1699);
+    assert.equal(chipNoShield.phase, 'dodge');
+
+    const chipWithShield = decideRangedDodgeBurst({
+      now: 1700,
+      underRangedPressure: true,
+      distanceToPrimary: 7,
+      meleeAttackRange: 3.5,
+      latch: advancing.latch,
+      lastDamageAt: 1699,
+      hasShield: true,
+      burstMs: 600,
+      advanceMs: 1800
+    });
+    assert.equal(chipWithShield.phase, 'advance');
 
     const expired = decideRangedDodgeBurst({
       now: started.latch.advanceUntil,
@@ -554,7 +661,36 @@ describe('位置取り中の戦闘意図', () => {
       burstMs: 600,
       advanceMs: 1800
     });
-    assert.equal(expired.phase, 'dodge');
+    assert.equal(expired.phase, 'advance');
+  });
+
+  it('CORE: 扇補正位置取りは接触近接以外で接近・回避より優先する', () => {
+    const intent = {
+      attack: true,
+      guard: false,
+      dodge: false,
+      priority: 'attack' as const
+    };
+    assert.equal(decideCombatMoveKind({
+      intent,
+      dodgePhase: 'dodge',
+      canMeleeAttack: true,
+      multiThreatReposition: true,
+      meleeContactInterrupt: false
+    }), 'positioning');
+    assert.equal(decideCombatMoveKind({
+      intent,
+      dodgePhase: 'dodge',
+      canMeleeAttack: true,
+      multiThreatReposition: true,
+      meleeContactInterrupt: true
+    }), 'attack');
+    assert.equal(decideCombatMoveKind({
+      intent: { ...intent, attack: false, dodge: true, priority: 'dodge' },
+      dodgePhase: 'advance',
+      canMeleeAttack: false,
+      multiThreatReposition: true
+    }), 'positioning');
   });
 
   it('攻撃距離へ入ったら進行中の回避を即座に終了する', () => {
@@ -574,7 +710,8 @@ describe('位置取り中の戦闘意図', () => {
     assert.equal(decision.phase, 'attack');
     assert.equal(decision.dodge, false);
     assert.equal(decision.latch.burstUntil, 0);
-    assert.equal(decision.latch.advanceUntil, 0);
+    // 離脱後の再接近のため前進コミットは残す
+    assert.ok(decision.latch.advanceUntil >= 1200);
   });
 });
 
@@ -665,10 +802,50 @@ describe('CombatEpisodeTrackerの採点', () => {
   });
 });
 
+describe('ParamTuner', () => {
+  it('オーバーレイを安全範囲にクランプして合成する', () => {
+    const params = applyParamOverlay('melee-baseline', { followRange: 99 });
+    assert.equal(params.followRange, PRESET_BOUNDS.followRange.max);
+  });
+
+  it('変異はチューナブルキーのみを変える', () => {
+    const base = getPresetParams('melee-baseline');
+    let i = 0;
+    const rng = () => {
+      const seq = [0.1, 0.2, 0.3, 0.4, 0.5, 0.6];
+      return seq[i++ % seq.length];
+    };
+    const overlay = mutateParamOverlay(base, null, rng);
+    const keys = Object.keys(overlay);
+    assert.ok(keys.length >= 1);
+    assert.ok(keys.every((key) => key in PRESET_BOUNDS));
+  });
+
+  it('探索不足では plateau にしない', () => {
+    const status = describeTuningStatus({
+      paramExploreCount: 3,
+      paramAdoptCount: 0,
+      noImproveStreak: 10,
+      bestScore: null
+    });
+    assert.equal(status.mode, 'exploring');
+  });
+
+  it('探索十分かつ改善なしが続くとロジック瓶颈', () => {
+    const status = describeTuningStatus({
+      paramExploreCount: 12,
+      paramAdoptCount: 2,
+      noImproveStreak: 6,
+      bestScore: 1.2
+    });
+    assert.equal(status.mode, 'plateau-logic-bottleneck');
+  });
+});
+
 describe('CombatOptimizerとStateStore', () => {
   it('破損したJSONから既定値へ復元する', () => {
     const state = normalizeCombatState({ version: 999, contexts: 'nope' });
-    assert.equal(state.version, 2);
+    assert.equal(state.version, 4);
     assert.deepEqual(state.contexts, {});
   });
 
@@ -726,6 +903,8 @@ describe('CombatOptimizerとStateStore', () => {
       context: ctx,
       presetId: 'melee-aggressive',
       exploring: true,
+      exploringParams: false,
+      paramOverlay: null,
       enemyName: 'zombie',
       enemyId: 9,
       startedAt: Date.now() - 2000,
@@ -757,6 +936,8 @@ describe('CombatOptimizerとStateStore', () => {
       context: ctx,
       presetId: 'ranged-shield-push',
       exploring: true,
+      exploringParams: false,
+      paramOverlay: null,
       enemyName: 'skeleton',
       enemyId: 3,
       startedAt: Date.now() - 1000,
@@ -773,5 +954,75 @@ describe('CombatOptimizerとStateStore', () => {
     });
     assert.equal(result.reason, 'skipped-unlearnable');
     assert.deepEqual(store.getSnapshot().contexts, {});
+  });
+
+  it('数値オーバーレイ探索で改善したら採用する', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trailmate-param-'));
+    const store = new CombatStateStore(path.join(dir, 'combat-state.json'));
+    const optimizer = new CombatOptimizer(store, {
+      enabled: true,
+      paramExploreRate: 0,
+      paramAdoptMargin: 0.1,
+      minTrials: 1
+    });
+    const ctx = { enemyClass: 'ranged' as const, hasShield: false };
+    const overlay = { rangedDodgeBurstMs: 720 };
+    const result = optimizer.completeEpisode({
+      context: ctx,
+      presetId: 'ranged-baseline',
+      exploring: false,
+      exploringParams: true,
+      paramOverlay: overlay,
+      enemyName: 'skeleton',
+      enemyId: 1,
+      startedAt: Date.now() - 1000,
+      endedAt: Date.now(),
+      startEnemyCount: 1,
+      peakEnemyCount: 1,
+      damageTaken: 1,
+      hitsLanded: 3,
+      kills: 1,
+      retreated: false,
+      died: false,
+      interrupted: false,
+      learnable: true
+    });
+    assert.equal(result.paramsAdopted, true);
+    const entry = store.getContextState(ctx, 'ranged-baseline');
+    assert.equal(entry.tunedParams?.rangedDodgeBurstMs, 720);
+    assert.equal(entry.tunedParams?.followRange, undefined);
+    assert.equal(entry.paramAdoptCount, 1);
+  });
+
+  it('探索クールダウン判定に箱庭時刻0を使うと永久ロックするので壁時計が必要', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trailmate-combat-'));
+    const store = new CombatStateStore(path.join(dir, 'combat-state.json'));
+    // 数値探索は遠距離／爆発クラス（敵固有キー）
+    const ctx = { enemyClass: 'ranged' as const, hasShield: false };
+    for (let i = 0; i < 5; i += 1) {
+      store.recordEpisodeResult({
+        ctx,
+        presetId: 'ranged-baseline',
+        score: 2,
+        damageTaken: 1,
+        kills: 1,
+        died: false,
+        enemyName: 'skeleton'
+      });
+    }
+    store.setExploreCooldown(ctx, Date.now() - 1000);
+
+    const optimizer = new CombatOptimizer(store, {
+      enabled: true,
+      exploreRate: 0,
+      paramExploreRate: 1,
+      minTrials: 3
+    });
+    const locked = optimizer.pickPreset({ context: ctx, health: 20, now: 0 });
+    assert.equal(locked.exploringParams, false);
+
+    const open = optimizer.pickPreset({ context: ctx, health: 20, now: Date.now() });
+    assert.equal(open.exploringParams, true);
+    assert.ok(open.paramOverlay && Object.keys(open.paramOverlay).length >= 1);
   });
 });
