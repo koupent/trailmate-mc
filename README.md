@@ -240,6 +240,20 @@ npx tsx src/simulator/server.ts
 5. ダッシュボード（http://127.0.0.1:8787）が開かない → `docker compose ps` で `dashboard` が Up か確認
 6. `.bat` が意味不明なエラーで即終了する → 改行が LF になっている可能性。再クローンするか `.gitattributes` 適用後に `git add --renormalize "*.bat"`
 
+### Windows 起動直後にスポーンが失敗する（自動で直します）
+
+Windows 起動時は Docker Desktop が Tailscale より先に立ち上がることがあります。
+その順番で起動した ViaProxy は接続先サーバーへ一度も届かないまま動き続け、
+待ち受けポートは開いているので healthy に見えるのに、スポーンだけが
+`Could not connect to the backend server!` で失敗します。
+
+ダッシュボードがこれを見張って自動でつなぎ直すので、`restart.bat` は不要です。
+
+- 接続先サーバーに届かない時間帯があった後、届くようになったら ViaProxy を1回だけ再起動します（スポーン中は行いません）
+- スポーンがこのエラーで失敗した場合も、ViaProxy をつなぎ直してから自動で1回やり直します
+
+つなぎ直し中はダッシュボードに「ViaProxy をつなぎ直しています…」と出ます。終わればそのままスポーンできます。
+
 ## 更新（GitHub Release）
 
 タグ `v*` を push すると Actions が次を公開します。

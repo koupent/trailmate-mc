@@ -339,11 +339,18 @@ spawnBtn.addEventListener('click', async () => {
     return;
   }
   spawnBtn.disabled = true;
-  setMsg(spawnMsg, 'スポーン中…（重複ログイン時は自動で再試行します）');
+  setMsg(
+    spawnMsg,
+    'スポーン中…（重複ログインや ViaProxy の接続不良は自動で直して再試行します）'
+  );
   try {
     const result = await api('/api/spawn', { method: 'POST' });
     if (!result.ok) throw new Error(result.error || 'スポーンに失敗しました');
-    setMsg(spawnMsg, 'スポーンしました', 'ok');
+    setMsg(
+      spawnMsg,
+      result.proxyRestarted ? 'ViaProxy をつなぎ直してスポーンしました' : 'スポーンしました',
+      'ok'
+    );
     await refreshStatus();
   } catch (error) {
     setMsg(spawnMsg, error.message, 'err');

@@ -65,7 +65,7 @@ jobs:
           cp docker-compose.yml docker-compose.dev.yml Dockerfile package.json package-lock.json \
             tsconfig.json config.example.json .env.example .dockerignore .gitattributes \
             NOTICE LICENSE start.bat stop.bat restart.bat status.bat README.md "$STAGE/"
-          cp -r dashboard/Dockerfile dashboard/package.json dashboard/server.mjs dashboard/dockerApi.mjs dashboard/update.mjs dashboard/backendReady.mjs dashboard/public "$STAGE/dashboard/"
+          cp -r dashboard/Dockerfile dashboard/package.json dashboard/server.mjs dashboard/dockerApi.mjs dashboard/update.mjs dashboard/backendReady.mjs dashboard/proxyRecovery.mjs dashboard/public "$STAGE/dashboard/"
           cp services/viaproxy/viaproxy.yml.example services/viaproxy/README.md "$STAGE/services/viaproxy/"
           cp locales/*.json "$STAGE/locales/"
           # Pin images to this release tag (pull instead of long local builds).

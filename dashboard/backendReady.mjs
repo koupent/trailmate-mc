@@ -2,6 +2,10 @@
  * Spawn readiness diagnostics for the dashboard.
  */
 import net from 'node:net';
+import {
+  PROXY_BACKEND_UNREACHABLE_MESSAGE,
+  isProxyBackendFailure
+} from './proxyRecovery.mjs';
 
 export const BACKEND_STARTING_MESSAGE =
   'ボット API の起動中です。コンテナが立ち上がるまでスポーンできません。';
@@ -143,6 +147,8 @@ export function humanizeSpawnError(message, ctx = {}) {
       ? raw
       : '同じアカウントがサーバー上で既にログイン中です。別クライアントを退出するか、数十秒待って再スポーンしてください。';
   }
+
+  if (isProxyBackendFailure(raw)) return PROXY_BACKEND_UNREACHABLE_MESSAGE;
 
   const connectionLike =
     /bot ended before spawn:\s*socketClosed/i.test(raw) ||
