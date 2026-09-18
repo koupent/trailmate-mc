@@ -23,10 +23,16 @@ describe('update manager live log re-fetch', () => {
     const trailmateGate = new Promise((resolve) => {
       releaseTrailmate = resolve;
     });
+    let reachedPull;
+    const pullReached = new Promise((resolve) => {
+      reachedPull = resolve;
+    });
     /** @type {string[]} */
     const progressLines = [];
 
     const mgr = createUpdateManager(root, {
+      // 本番は despawn 後に 4 秒待つ。テストでは待たせない。
+      despawnGraceMs: 0,
       fetch: async () => ({
         ok: true,
         status: 200,
@@ -40,6 +46,7 @@ describe('update manager live log re-fetch', () => {
         if (service === 'trailmate') {
           onProgress('[docker] pulling trailmate');
           progressLines.push('pull');
+          reachedPull();
           await trailmateGate;
           onProgress('[docker] recreated trailmate');
           return;
@@ -53,9 +60,7 @@ describe('update manager live log re-fetch', () => {
     assert.match(started.log, /更新開始/);
 
     // Wait until recreate is blocked mid-job
-    for (let i = 0; i < 100 && progressLines.length === 0; i += 1) {
-      await new Promise((r) => setTimeout(r, 10));
-    }
+    await withTimeout(pullReached, 10000, 'recreate should reach trailmate pull');
     assert.ok(progressLines.includes('pull'), 'recreate should reach trailmate pull');
 
     const logFile = path.join(root, 'data', 'update.log');
@@ -103,6 +108,23 @@ describe('update manager live log re-fetch', () => {
     assert.fail('update did not finish');
   });
 });
+
+/**
+ * @param {Promise<unknown>} promise
+ * @param {number} ms
+ * @param {string} message
+ */
+async function withTimeout(promise, ms, message) {
+  let timer;
+  const timeout = new Promise((_resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  try {
+    await Promise.race([promise, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 describe('update normalizeTag', () => {
   it('still normalizes tags', () => {
