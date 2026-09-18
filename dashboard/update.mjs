@@ -4,13 +4,15 @@ import { recreateServiceContainer, findServiceContainerId } from './dockerApi.mj
 import { spawn } from 'node:child_process';
 
 const githubRepo = process.env.GITHUB_REPO || 'koupent/trailmate-mc';
+const DEFAULT_DESPAWN_GRACE_MS = 4000;
 const updateServices = ['trailmate', 'dashboard'];
 
 /**
  * @param {string} projectRoot
  * @param {{
  *   recreateServiceContainer?: typeof recreateServiceContainer,
- *   fetch?: typeof fetch
+ *   fetch?: typeof fetch,
+ *   despawnGraceMs?: number
  * }} [deps]
  */
 export function createUpdateManager(projectRoot, deps = {}) {
@@ -20,6 +22,10 @@ export function createUpdateManager(projectRoot, deps = {}) {
   const lockFile = path.join(projectRoot, 'data', 'update.lock');
   const recreate = deps.recreateServiceContainer || recreateServiceContainer;
   const fetchFn = deps.fetch || globalThis.fetch;
+  // サーバーがセッションを落とすのを待つ猶予（テストからは 0 にできる）
+  const despawnGraceMs = Number.isFinite(deps.despawnGraceMs)
+    ? Math.max(0, Number(deps.despawnGraceMs))
+    : DEFAULT_DESPAWN_GRACE_MS;
 
   /** @type {{ active: boolean, startedAt: number | null, finishedAt: number | null, ok: boolean | null, error: string | null, targetVersion: string | null, log: string }} */
   let job = emptyJob();
@@ -271,7 +277,9 @@ export function createUpdateManager(projectRoot, deps = {}) {
         signal: AbortSignal.timeout(15000)
       });
       // サーバーがセッションを落とす猶予
-      await new Promise((resolve) => setTimeout(resolve, 4000));
+      if (despawnGraceMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, despawnGraceMs));
+      }
     } catch (error) {
       const detail = error instanceof Error ? error.message : String(error);
       onProgress?.('[updater] despawn skipped: ' + detail);
