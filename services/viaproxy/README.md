@@ -99,3 +99,4 @@ minecraft-account-index: 1
 | `requires a valid authentication mode` | オンラインモード。Microsoftアカウントを登録して再起動 |
 | Trailmate が `ECONNRESET` | `target-address` が間違っている／サーバー未起動／認証未設定 |
 | healthcheck 失敗 | `docker compose logs viaproxy` を確認 |
+| `Could not connect to the backend server!` | Docker が Tailscale より先に起動した場合に出る。ダッシュボードが自動で ViaProxy をつなぎ直すので待つだけでよい |

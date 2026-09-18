@@ -17,10 +17,20 @@ import {
   backendUnavailableStatus,
   humanizeSpawnError,
   isPlaceholderAddress,
+  parseHostPort,
   probeSpawnReady,
+  probeTcp,
   probeTrailmateBackend,
   withReadiness
 } from './backendReady.mjs';
+import {
+  PROXY_RECYCLED_MESSAGE,
+  PROXY_RECYCLING_MESSAGE,
+  PROXY_RESTART_FAILED_MESSAGE,
+  PROXY_STILL_UNREACHABLE_MESSAGE,
+  createProxyWatch,
+  isProxyBackendFailure
+} from './proxyRecovery.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
@@ -29,6 +39,8 @@ const port = Number(process.env.DASHBOARD_PORT || 8787);
 const controlUrl = (process.env.TRAILMATE_CONTROL_URL || 'http://trailmate:8790').replace(/\/$/, '');
 const viaproxyService = process.env.VIAPROXY_SERVICE || 'viaproxy';
 const updateManager = createUpdateManager(projectRoot);
+const proxyWatchIntervalMs = Number(process.env.PROXY_WATCH_INTERVAL_MS || 5000);
+const proxyWatch = createProxyWatch();
 
 const PATHS = {
   env: path.join(projectRoot, '.env'),
@@ -45,6 +57,20 @@ let msLogin = emptyMsLogin();
 
 /** @type {import('node:net').Socket | null} */
 let msAttachSocket = null;
+
+/**
+ * Windows 起動直後の順番次第で ViaProxy は「動いているのに実サーバーへ行けない」
+ * 状態で居座る。その自動つなぎ直しの進行状況。
+ * @type {{ restarting: boolean, lastRestartAt: number | null, lastReason: string | null, message: string | null }}
+ */
+const proxyRecovery = {
+  restarting: false,
+  lastRestartAt: null,
+  lastReason: null,
+  message: null
+};
+
+let spawnInFlight = false;
 
 const server = http.createServer(async (request, response) => {
   try {
@@ -64,29 +90,7 @@ const server = http.createServer(async (request, response) => {
       return sendControlStatus(response);
     }
     if (request.method === 'POST' && url.pathname === '/api/spawn') {
-      const readiness = buildSetup(await readSettings());
-      if (!readiness.readyToSpawn) {
-        return json(response, 409, {
-          ok: false,
-          error: readiness.blockers.join(' / '),
-          setup: readiness
-        });
-      }
-      const spawnGate = await evaluateSpawnGate();
-      if (!spawnGate.ok) {
-        return json(response, 503, {
-          ok: false,
-          error: spawnGate.error || PROXY_STARTING_MESSAGE,
-          backendReady: Boolean(spawnGate.backendReady),
-          spawnReady: false,
-          diagnostics: spawnGate.diagnostics || null
-        });
-      }
-      return proxyControl(response, '/spawn', 'POST', {
-        humanizeErrors: true,
-        spawnReady: true,
-        blockerId: null
-      });
+      return handleSpawn(response);
     }
     if (request.method === 'POST' && url.pathname === '/api/despawn') {
       const backend = await probeTrailmateBackend(controlUrl);
@@ -142,6 +146,7 @@ const server = http.createServer(async (request, response) => {
 
 server.listen(port, '0.0.0.0', () => {
   console.log(`[dashboard] http://0.0.0.0:${port}`);
+  startProxyWatchdog();
 });
 
 function emptyMsLogin() {
@@ -313,13 +318,290 @@ async function readServiceHealth(service) {
   }
 }
 
+/**
+ * Windows 起動直後は Docker が Tailscale より先に上がることがあり、その順番で
+ * 起動した ViaProxy は実サーバーへ一度も届かないまま居座る（待ち受けポートは
+ * 開くので healthy に見える）。スポーンだけが失敗し、直し方は再起動だけ。
+ * ここでダッシュボードが肩代わりして、人が restart.bat を叩かなくて済むようにする。
+ * @param {string} reason
+ */
+async function restartViaProxy(reason) {
+  if (proxyRecovery.restarting) {
+    return { ok: false, error: PROXY_RECYCLING_MESSAGE };
+  }
+  const id = await findServiceContainerId(viaproxyService);
+  if (!id) {
+    return { ok: false, error: 'ViaProxy コンテナが見つかりません' };
+  }
+
+  proxyRecovery.restarting = true;
+  proxyRecovery.lastReason = reason;
+  proxyRecovery.message = PROXY_RECYCLING_MESSAGE;
+  console.log(`[dashboard] restarting viaproxy (${reason})`);
+  try {
+    const result = await dockerRequest('POST', `/containers/${id}/restart`);
+    if (result.status >= 400) {
+      throw new Error(result.body.toString('utf8').slice(0, 200));
+    }
+    const healthyId = await waitForViaProxyHealthy(60000);
+    proxyRecovery.lastRestartAt = Date.now();
+    if (!healthyId) {
+      proxyRecovery.message = PROXY_STARTING_MESSAGE;
+      return { ok: false, error: 'ViaProxy の再起動待ちがタイムアウトしました' };
+    }
+    proxyRecovery.message = PROXY_RECYCLED_MESSAGE;
+    console.log('[dashboard] viaproxy restarted and healthy');
+    return { ok: true, error: null };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    proxyRecovery.message = PROXY_RESTART_FAILED_MESSAGE;
+    console.error('[dashboard] viaproxy restart failed:', message);
+    return { ok: false, error: message };
+  } finally {
+    proxyRecovery.restarting = false;
+  }
+}
+
+async function readProxyContainerState() {
+  try {
+    const id = await findServiceContainerId(viaproxyService);
+    if (!id) return { running: false, startedAt: null };
+    const info = await dockerRequest('GET', `/containers/${id}/json`);
+    if (info.status >= 400) return { running: false, startedAt: null };
+    const body = JSON.parse(info.body.toString('utf8'));
+    const startedAt = Date.parse(body?.State?.StartedAt || '');
+    return {
+      running: Boolean(body?.State?.Running),
+      startedAt: Number.isFinite(startedAt) ? startedAt : null
+    };
+  } catch {
+    return { running: false, startedAt: null };
+  }
+}
+
+async function readSessionState() {
+  try {
+    const upstream = await fetch(`${controlUrl}/status`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(2000)
+    });
+    if (!upstream.ok) return { spawned: false, spawning: false };
+    const data = await upstream.json();
+    return { spawned: Boolean(data?.spawned), spawning: Boolean(data?.spawning) };
+  } catch {
+    return { spawned: false, spawning: false };
+  }
+}
+
+function startProxyWatchdog() {
+  let ticking = false;
+  const tick = async () => {
+    if (ticking) return;
+    ticking = true;
+    try {
+      await proxyWatchTick();
+    } catch (error) {
+      console.warn(
+        '[dashboard] proxy watchdog error:',
+        error instanceof Error ? error.message : String(error)
+      );
+    } finally {
+      ticking = false;
+    }
+  };
+  void tick();
+  const timer = setInterval(tick, proxyWatchIntervalMs);
+  timer.unref?.();
+  return timer;
+}
+
+async function proxyWatchTick() {
+  let settings;
+  try {
+    settings = await readSettings();
+  } catch {
+    return;
+  }
+  if (settings.placeholder || !settings.targetAddress) return;
+  const parsed = parseHostPort(settings.targetAddress);
+  if (!parsed) return;
+
+  const container = await readProxyContainerState();
+  const target = await probeTcp(parsed.host, parsed.port);
+  const session = await readSessionState();
+
+  const decision = proxyWatch.observe({
+    reachable: target.ok,
+    proxyRunning: container.running,
+    proxyStartedAt: container.startedAt,
+    spawned: session.spawned,
+    spawning: session.spawning,
+    busy: proxyRecovery.restarting || spawnInFlight || msLogin.active
+  });
+
+  if (decision.restart) {
+    await restartViaProxy('target-recovered');
+  }
+}
+
+async function handleSpawn(response) {
+  const readiness = buildSetup(await readSettings());
+  if (!readiness.readyToSpawn) {
+    return json(response, 409, {
+      ok: false,
+      error: readiness.blockers.join(' / '),
+      setup: readiness
+    });
+  }
+  if (proxyRecovery.restarting) {
+    return json(response, 503, {
+      ok: false,
+      error: PROXY_RECYCLING_MESSAGE,
+      backendReady: true,
+      spawnReady: false
+    });
+  }
+
+  const spawnGate = await evaluateSpawnGate();
+  if (!spawnGate.ok) {
+    return json(response, 503, {
+      ok: false,
+      error: spawnGate.error || PROXY_STARTING_MESSAGE,
+      backendReady: Boolean(spawnGate.backendReady),
+      spawnReady: false,
+      diagnostics: spawnGate.diagnostics || null
+    });
+  }
+
+  spawnInFlight = true;
+  try {
+    let attempt = await requestControlSpawn();
+    let proxyRestarted = false;
+    let restartError = null;
+
+    // 診断は全部緑（実サーバーには届く）なのに ViaProxy だけが背後へ行けない＝
+    // 起動順で壊れた ViaProxy。つなぎ直して一度だけやり直す。
+    if (!attempt.ok && isProxyBackendFailure(spawnErrorText(attempt))) {
+      const restart = await restartViaProxy('spawn-backend-unreachable');
+      if (restart.ok) {
+        proxyRestarted = true;
+        attempt = await requestControlSpawn();
+      } else {
+        restartError = restart.error;
+      }
+    }
+
+    const data =
+      attempt.data && typeof attempt.data === 'object'
+        ? { ...attempt.data }
+        : attempt.networkError
+          ? {
+              ok: false,
+              backendReady: false,
+              spawnReady: false,
+              error: BACKEND_STARTING_MESSAGE,
+              detail: attempt.networkError
+            }
+          : { ok: false, error: attempt.text || BACKEND_STARTING_MESSAGE };
+
+    const stillBlocked = !attempt.ok && isProxyBackendFailure(spawnErrorText(attempt));
+    if (data.ok === false && data.error) {
+      data.error =
+        proxyRestarted && stillBlocked
+          ? PROXY_STILL_UNREACHABLE_MESSAGE
+          : humanizeSpawnError(data.error, { spawnReady: true, blockerId: null });
+      if (restartError) data.error = `${data.error}（${restartError}）`;
+    }
+    if (data.status?.lastError) {
+      data.status = {
+        ...data.status,
+        lastError: humanizeSpawnError(data.status.lastError, {
+          spawnReady: true,
+          blockerId: null
+        })
+      };
+    }
+    if (proxyRestarted) data.proxyRestarted = true;
+
+    return json(response, attempt.status, data);
+  } finally {
+    spawnInFlight = false;
+  }
+}
+
+async function requestControlSpawn() {
+  try {
+    const upstream = await fetch(`${controlUrl}/spawn`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(120000)
+    });
+    const text = await upstream.text();
+    /** @type {any} */
+    let data = null;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      /* keep raw */
+    }
+    return {
+      ok: upstream.ok && data?.ok !== false,
+      status: upstream.status,
+      data,
+      text,
+      networkError: null
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      status: 503,
+      data: null,
+      text: '',
+      networkError: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+/**
+ * @param {{ data?: any, text?: string, networkError?: string | null }} attempt
+ */
+function spawnErrorText(attempt) {
+  return String(
+    attempt?.data?.error || attempt?.data?.status?.lastError || attempt?.text || ''
+  );
+}
+
+/**
+ * つなぎ直し中は診断の要約より、いま何をしているかを優先して見せる。
+ * @param {object | null} diagnostics
+ */
+function decorateDiagnostics(diagnostics) {
+  if (!proxyRecovery.restarting) return diagnostics || null;
+  if (!diagnostics) return null;
+  return { ...diagnostics, summary: PROXY_RECYCLING_MESSAGE };
+}
+
+function proxyRecoveryPayload() {
+  return {
+    restarting: proxyRecovery.restarting,
+    lastRestartAt: proxyRecovery.lastRestartAt,
+    reason: proxyRecovery.lastReason,
+    message: proxyRecovery.message
+  };
+}
+
 async function sendControlStatus(response) {
   const spawnGate = await evaluateSpawnGate();
+  const diagnostics = decorateDiagnostics(spawnGate.diagnostics);
 
   if (!spawnGate.backendReady) {
     return json(response, 200, {
-      ...backendUnavailableStatus(spawnGate.error || BACKEND_STARTING_MESSAGE),
-      diagnostics: spawnGate.diagnostics || null
+      ...backendUnavailableStatus(
+        proxyRecovery.restarting
+          ? PROXY_RECYCLING_MESSAGE
+          : spawnGate.error || BACKEND_STARTING_MESSAGE
+      ),
+      diagnostics,
+      proxyRecovery: proxyRecoveryPayload()
     });
   }
 
@@ -338,7 +620,8 @@ async function sendControlStatus(response) {
     if (!upstream.ok) {
       return json(response, 200, {
         ...backendUnavailableStatus(BACKEND_STARTING_MESSAGE),
-        diagnostics: spawnGate.diagnostics || null
+        diagnostics,
+        proxyRecovery: proxyRecoveryPayload()
       });
     }
     if (data?.lastError) {
@@ -350,56 +633,35 @@ async function sendControlStatus(response) {
         })
       };
     }
-    return json(
-      response,
-      200,
-      withReadiness(data, {
+    return json(response, 200, {
+      ...withReadiness(data, {
         backendReady: true,
-        spawnReady: Boolean(spawnGate.spawnReady),
-        backendMessage: spawnGate.spawnReady
-          ? null
-          : spawnGate.diagnostics?.summary || spawnGate.error || PROXY_STARTING_MESSAGE,
-        diagnostics: spawnGate.diagnostics || null
-      })
-    );
+        spawnReady: Boolean(spawnGate.spawnReady) && !proxyRecovery.restarting,
+        backendMessage: proxyRecovery.restarting
+          ? PROXY_RECYCLING_MESSAGE
+          : spawnGate.spawnReady
+            ? null
+            : diagnostics?.summary || spawnGate.error || PROXY_STARTING_MESSAGE,
+        diagnostics
+      }),
+      proxyRecovery: proxyRecoveryPayload()
+    });
   } catch {
     return json(response, 200, {
       ...backendUnavailableStatus(),
-      diagnostics: spawnGate.diagnostics || null
+      diagnostics,
+      proxyRecovery: proxyRecoveryPayload()
     });
   }
 }
 
-async function proxyControl(response, pathname, method = 'GET', options = {}) {
+async function proxyControl(response, pathname, method = 'GET') {
   try {
     const upstream = await fetch(`${controlUrl}${pathname}`, {
       method,
       signal: AbortSignal.timeout(method === 'GET' ? 2000 : 120000)
     });
-    let text = await upstream.text();
-    if (options.humanizeErrors) {
-      try {
-        const data = JSON.parse(text);
-        if (data && data.ok === false && data.error) {
-          data.error = humanizeSpawnError(data.error, {
-            spawnReady: options.spawnReady !== false,
-            blockerId: options.blockerId ?? null
-          });
-          if (data.status?.lastError) {
-            data.status = {
-              ...data.status,
-              lastError: humanizeSpawnError(data.status.lastError, {
-                spawnReady: options.spawnReady !== false,
-                blockerId: options.blockerId ?? null
-              })
-            };
-          }
-          text = JSON.stringify(data);
-        }
-      } catch {
-        /* keep raw */
-      }
-    }
+    const text = await upstream.text();
     response.writeHead(upstream.status, {
       'content-type': 'application/json; charset=utf-8',
       'cache-control': 'no-store'
