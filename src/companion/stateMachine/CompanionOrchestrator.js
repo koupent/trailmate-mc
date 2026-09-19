@@ -8,6 +8,7 @@ import { WaitMode } from '../modes/WaitMode.js';
 import { createCompanionTargets } from './targets.js';
 import { createRootMachine } from './createRootMachine.js';
 import { prepareCompanionWorldTick } from './prepareTick.js';
+import { startPassageUpkeep } from './passageUpkeep.js';
 import { refreshDutyFlags } from './transitions.js';
 
 export class CompanionOrchestrator {
@@ -117,10 +118,15 @@ export class CompanionOrchestrator {
             // Await active behavior BEFORE transitions so combat latch is visible.
             const active = this.root.activeState;
             if (active && typeof active.runTick === 'function') {
+                // Duty ticks (loot pickup, recovery) hold this await for
+                // seconds; keep closing and opening passages meanwhile.
+                const upkeep = startPassageUpkeep(this.ctx, this.targets);
                 try {
                     await active.runTick();
                 } catch (err) {
                     console.error(`[companion/fsm] ${active.stateName || 'active'} error:`, err);
+                } finally {
+                    upkeep.stop();
                 }
             }
 
