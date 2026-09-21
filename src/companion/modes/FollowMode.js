@@ -12,7 +12,8 @@ import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
 import { canPlaceUnderProtection } from '../blockProtection.js';
 import { Vec3 } from 'vec3';
 
-const CROP_SEARCH_RADIUS = 8;
+const CROP_SEARCH_RADIUS = 16;
+const CROP_OWNER_MAX_DISTANCE = 32;
 const CROP_PLACE_DISTANCE = 4;
 const CROP_APPROACH_RANGE = 2;
 const UNREACHABLE_CROP_RETRY_MS = 5000;
@@ -129,13 +130,12 @@ export class FollowMode extends Mode {
             return;
         }
 
-        const ownerNearRadius = ctx.config?.owner_near_radius ?? 12;
         const dutyPending = Boolean(
             ctx.agent?.companion?.manager?.targets?._dutyPending
         );
         if (!dutyPending
             && currentControlOwner(ctx, 'follow') === 'follow'
-            && bot.entity.position.distanceTo(owner.position) <= ownerNearRadius
+            && bot.entity.position.distanceTo(owner.position) <= CROP_OWNER_MAX_DISTANCE
             && await this._tryPlantNearbyCrop(ctx)) {
             return;
         }
@@ -179,7 +179,8 @@ export class FollowMode extends Mode {
         const farmland = findNearestEmptyFarmland(
             bot,
             this._unreachableFarmlandUntil,
-            now
+            now,
+            ctx.ownerEntity.position
         );
         if (!farmland) return false;
 
@@ -201,11 +202,11 @@ export class FollowMode extends Mode {
             const currentFarmland = bot.blockAt(farmland.position);
             const currentCrop = bot.blockAt(cropPosition);
             const owner = ctx.ownerEntity;
-            const ownerNearRadius = ctx.config?.owner_near_radius ?? 12;
             if (currentFarmland?.name !== 'farmland'
                 || currentCrop?.name !== 'air'
                 || !owner
-                || bot.entity.position.distanceTo(owner.position) > ownerNearRadius
+                || bot.entity.position.distanceTo(owner.position) > CROP_OWNER_MAX_DISTANCE
+                || farmland.position.distanceTo(owner.position) > CROP_OWNER_MAX_DISTANCE
                 || currentControlOwner(ctx, 'follow') !== 'follow') {
                 return false;
             }
@@ -296,13 +297,14 @@ function findPlantableItem(bot) {
     }
 }
 
-function findNearestEmptyFarmland(bot, excludedUntil, now) {
+function findNearestEmptyFarmland(bot, excludedUntil, now, ownerPosition) {
     try {
         return bot.findBlock({
             matching: (block) => block?.name === 'farmland',
             maxDistance: CROP_SEARCH_RADIUS,
             useExtraInfo: (block) => {
                 if (bot.entity.position.distanceTo(block.position) > CROP_SEARCH_RADIUS) return false;
+                if (block.position.distanceTo(ownerPosition) > CROP_OWNER_MAX_DISTANCE) return false;
                 if ((excludedUntil.get(blockKey(block.position)) || 0) > now) return false;
                 return bot.blockAt(block.position.offset(0, 1, 0))?.name === 'air';
             }
