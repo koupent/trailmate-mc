@@ -35,6 +35,8 @@ const OPEN_CONFIRM_MS = 2500;
 const CLOSE_CONFIRM_MS = 1200;
 /** Back off briefly before retrying a failed or unconfirmed close. */
 const CLOSE_RETRY_MS = 600;
+/** Give an active cleanup a bounded window before normal behavior resumes. */
+const CLEANUP_TIMEOUT_MS = 15000;
 /** Keep approach checks on the same walkable level as the authorized route. */
 const APPROACH_VERTICAL_TOLERANCE = 2.5;
 /**
@@ -189,7 +191,10 @@ export class DoorTracker {
          *   openedAt: number,
          *   openObserved: boolean,
          *   closeRequestedAt: number|null,
-         *   retryCloseAt: number
+         *   retryCloseAt: number,
+         *   cleanupReadyAt: number|null,
+         *   cleanupActiveSince: number|null,
+         *   cleanupActiveMs: number
          * }[]} */
         this._tracked = [];
         this._closing = false;
@@ -238,6 +243,52 @@ export class DoorTracker {
         return this._tracked.length;
     }
 
+    /** True after a tracked passage has been crossed and still needs closing. */
+    get cleanupPending() {
+        return this._tracked.some((tracked) => tracked.cleanupReadyAt != null);
+    }
+
+    /** Passage currently blocking normal movement, if any. */
+    get cleanupTarget() {
+        const tracked = this._tracked.find((entry) => entry.cleanupReadyAt != null);
+        if (!tracked) return null;
+        return {
+            key: tracked.key,
+            doorPos: tracked.doorPos
+        };
+    }
+
+    /** Start (or resume) the bounded active-cleanup window. */
+    resumeCleanup() {
+        const tracked = this._tracked.find((entry) => entry.cleanupReadyAt != null);
+        if (tracked && tracked.cleanupActiveSince == null) {
+            tracked.cleanupActiveSince = this.now();
+        }
+    }
+
+    /** Safety/combat may suspend cleanup without consuming its timeout. */
+    suspendCleanup() {
+        const now = this.now();
+        for (const tracked of this._tracked) {
+            if (tracked.cleanupActiveSince != null) {
+                tracked.cleanupActiveMs += Math.max(0, now - tracked.cleanupActiveSince);
+            }
+            tracked.cleanupActiveSince = null;
+        }
+    }
+
+    /**
+     * End the current cleanup explicitly when its route cannot be recovered.
+     * @param {string} reason
+     */
+    failCleanup(reason) {
+        const tracked = this._tracked.find((entry) => entry.cleanupReadyAt != null);
+        if (!tracked) return false;
+        console.warn(`[companion] passage cleanup failed (${reason}) at ${tracked.key}`);
+        this._forget(tracked.key);
+        return true;
+    }
+
     /**
      * True when an open door or gate separates the bot from the owner.
      * @param {{ x: number, y: number, z: number }} botPos
@@ -275,10 +326,13 @@ export class DoorTracker {
     /**
      * Expire stale entries and close a passage only after the bot crosses it.
      */
-    async tick() {
+    async tick(options = {}) {
+        const allowClose = options.allowClose !== false;
         const now = this.now();
         this._pending = this._pending.filter((p) => now - p.at <= SWING_MATCH_MS);
-        this._tracked = this._tracked.filter((tracked) => now - tracked.openedAt <= TRACK_TTL_MS);
+        this._tracked = this._tracked.filter((tracked) => (
+            tracked.cleanupReadyAt != null || now - tracked.openedAt <= TRACK_TTL_MS
+        ));
         for (const [key, activatedAt] of this._recentOpens) {
             if (now - activatedAt > REOPEN_GUARD_MS) this._recentOpens.delete(key);
         }
@@ -303,20 +357,38 @@ export class DoorTracker {
             }
 
             tracked.openObserved = true;
+            if (tracked.cleanupReadyAt != null) {
+                const activeMs = tracked.cleanupActiveMs + (
+                    tracked.cleanupActiveSince == null ? 0 : now - tracked.cleanupActiveSince
+                );
+                if (activeMs > CLEANUP_TIMEOUT_MS) {
+                    this.failCleanup('timeout');
+                    return;
+                }
+                if (!allowClose) return;
+                if (tracked.cleanupActiveSince == null) tracked.cleanupActiveSince = now;
+            }
             if (tracked.closeRequestedAt != null) {
                 if (now - tracked.closeRequestedAt <= CLOSE_CONFIRM_MS) continue;
                 tracked.closeRequestedAt = null;
                 tracked.retryCloseAt = now + CLOSE_RETRY_MS;
             }
 
-            const result = evaluatePassage(tracked, botPos);
-            tracked.approachSide = result.approachSide;
-            if (!result.readyToClose || now < tracked.retryCloseAt) continue;
+            if (tracked.cleanupReadyAt == null) {
+                const result = evaluatePassage(tracked, botPos);
+                tracked.approachSide = result.approachSide;
+                if (!result.readyToClose) continue;
+                tracked.cleanupReadyAt = now;
+                if (!allowClose) return;
+                tracked.cleanupActiveSince = now;
+            }
+            if (now < tracked.retryCloseAt) continue;
 
             await this._closeTracked(tracked, block);
             return;
         }
 
+        if (this.cleanupPending) return;
         await this._openAuthorizedPassageOnApproach(botPos);
     }
 
@@ -577,7 +649,10 @@ export class DoorTracker {
             openedAt,
             openObserved: options.openObserved === true,
             closeRequestedAt: null,
-            retryCloseAt: 0
+            retryCloseAt: 0,
+            cleanupReadyAt: null,
+            cleanupActiveSince: null,
+            cleanupActiveMs: 0
         });
     }
 

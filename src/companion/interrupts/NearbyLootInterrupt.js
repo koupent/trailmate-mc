@@ -103,6 +103,7 @@ export class NearbyLootInterrupt {
                         return shouldDeferRecoveryForCombat(ctx);
                     }
                     : () => shouldAbortPickupForCombat(ctx)
+                        || ctx.shouldYieldNormalAction?.() === true
             });
 
             if (recovering && ctx.deathRecovery?.active && !isRecoveryEmergencyActive(ctx)) {

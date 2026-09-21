@@ -75,6 +75,7 @@ describe('CompanionOrchestrator passage upkeep', () => {
     function makeWorld() {
         const blocks = new Map();
         const activations = [];
+        let now = 0;
         const owner = {
             id: 42,
             position: { x: 0.5, y: 64, z: 0.8, offset() { return this; } },
@@ -96,7 +97,14 @@ describe('CompanionOrchestrator passage upkeep', () => {
             blocks.set(`${pos.x},${pos.y},${pos.z}`, block);
             return block;
         };
-        return { bot, owner, activations, setBlock };
+        return {
+            bot,
+            owner,
+            activations,
+            setBlock,
+            now: () => now,
+            advance: (ms) => { now += ms; }
+        };
     }
 
     /** Minimal ctx accepted by prepareCompanionWorldTick. */
@@ -108,17 +116,28 @@ describe('CompanionOrchestrator passage upkeep', () => {
             playerWorkById: new Map(),
             worldState: { update() {} },
             stuck: { update() {}, seconds: 0 },
-            movement: { isTryingToMove: false, hasGoal: false },
+            movement: {
+                isTryingToMove: false,
+                hasGoal: false,
+                isBlocked: false,
+                isUnreachable: false,
+                stop() {},
+                goToward() {}
+            },
             deathRecovery: { active: false }
         };
-        ctx.doors = new DoorTracker(world.bot, { getOwnerEntity: () => world.owner });
+        ctx.doors = new DoorTracker(world.bot, {
+            getOwnerEntity: () => world.owner,
+            now: world.now
+        });
         return ctx;
     }
 
-    it('closes a gate crossed while a duty run still holds the tick (#105)', async () => {
+    it('yields normal work and waits for delayed close confirmation before resuming', async () => {
         const world = makeWorld();
         const ctx = makeCtx(world);
         const manager = new CompanionOrchestrator(ctx, {}, [], 'follow');
+        ctx.agent = { companion: { manager } };
 
         // Owner opens the gate while standing at it; the bot approaches from +z.
         const gatePos = { x: 0, y: 64, z: 0 };
@@ -127,22 +146,52 @@ describe('CompanionOrchestrator passage upkeep', () => {
         world.setBlock('oak_fence_gate', gatePos, { facing: 'north', open: true });
         assert.equal(ctx.doors.trackedCount, 1);
 
-        let closedDuringDuty = 0;
+        let normalRuns = 0;
+        let resumed = false;
         manager.root.activeState.runTick = async () => {
-            // Loot pickup walks the bot through the gate and keeps running.
+            normalRuns += 1;
+            if (normalRuns > 1) {
+                resumed = true;
+                return;
+            }
+
+            // A loot-equivalent long action crosses the gate, then cooperates
+            // with the common FSM yield signal instead of walking farther away.
             world.bot.entity.position = { x: 0.5, y: 64, z: -2 };
-            await sleep(80);
-            closedDuringDuty = world.activations.length;
+            while (!ctx.shouldYieldNormalAction()) await sleep(5);
         };
 
         try {
             await manager.tick();
+
+            assert.equal(manager.getActiveFsmId(), 'passage_cleanup');
+            assert.equal(world.activations.length, 0, 'detection must not close outside the FSM state');
+            assert.equal(world.bot.entity.position.z, -2, 'normal movement must yield within reach');
+
+            await manager.tick();
+            assert.equal(world.activations.length, 1);
+            assert.equal(manager.getActiveFsmId(), 'passage_cleanup');
+            assert.equal(resumed, false);
+
+            // The first close request is not reflected by the server.
+            world.advance(1201);
+            await manager.tick();
+            assert.equal(world.activations.length, 1);
+            assert.equal(resumed, false);
+
+            // Retry succeeds, but normal work still waits for world-state confirmation.
+            world.advance(600);
+            await manager.tick();
+            assert.equal(world.activations.length, 2);
+            assert.equal(resumed, false);
+            world.setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+
+            await manager.tick();
+            assert.equal(manager.getActiveFsmId(), 'follow');
+            assert.equal(resumed, true);
         } finally {
             ctx.doors.dispose();
         }
-
-        assert.equal(closedDuringDuty, 1, 'gate must be closed before the duty run returns');
-        assert.equal(world.activations[0].name, 'oak_fence_gate');
     });
 
     it('stops upkeep once the behavior tick returns', async () => {

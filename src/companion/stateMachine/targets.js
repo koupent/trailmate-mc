@@ -3,7 +3,7 @@
  */
 
 /**
- * @typedef {'follow'|'wait'|'combat'|'duty'} CompanionFsmStateId
+ * @typedef {'follow'|'wait'|'combat'|'passage_cleanup'|'duty'} CompanionFsmStateId
  */
 
 /**
@@ -27,6 +27,8 @@ export function createCompanionTargets(opts) {
         paused: false,
         /** @type {CompanionFsmStateId} */
         activeId: 'follow',
+        /** A crossed passage must be confirmed closed before normal work resumes. */
+        _passagePending: false,
         /** Last non-combat/duty mode for return transitions. */
         resumeMode: 'follow'
     };

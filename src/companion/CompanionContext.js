@@ -63,6 +63,8 @@ export class CompanionContext {
         this.playerDropGuard.attach();
         /** When true, companion loop skips combat reflexes. */
         this.holdReflexes = false;
+        /** Cooperative yield point used by long-running normal actions. */
+        this.shouldYieldNormalAction = () => false;
         /** @type {import('../world/companionAwareness.js').CompanionAwarenessSnapshot|null} */
         this._awareness = null;
     }
