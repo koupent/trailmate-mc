@@ -42,9 +42,10 @@
     },
     "item_share": {
       "enabled": true,
-      "keep_torch_stacks": 3,
-      "keep_food_stacks": 3,
-      "keep_weapon_stacks": 3
+      "keep_torch_stacks": 2,
+      "keep_food_stacks": 2,
+      "keep_weapon_stacks": 2,
+      "keep_equipment_sets": 2
     },
     "reflexes": {
       "self_defense": true,

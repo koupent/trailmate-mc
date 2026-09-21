@@ -90,10 +90,13 @@ export type ItemShareConfig = {
   enabled: boolean;
   /** @deprecated Transfers are triggered by an owner-placed chest. */
   interval_ms: number;
+  /** Total torch stacks kept. */
   keep_torch_stacks: number;
+  /** Total safe food stacks kept. */
   keep_food_stacks: number;
+  /** Total melee weapons kept, including the held weapon. */
   keep_weapon_stacks: number;
-  /** @deprecated Chest handoff keeps only currently worn armor. */
+  /** Items kept per armor/shield category, including equipped items. */
   keep_equipment_sets: number;
 };
 
@@ -168,10 +171,10 @@ const DEFAULT_COMPANION: CompanionConfig = {
   item_share: {
     enabled: true,
     interval_ms: 60000,
-    keep_torch_stacks: 3,
-    keep_food_stacks: 3,
-    keep_weapon_stacks: 3,
-    keep_equipment_sets: 3
+    keep_torch_stacks: 2,
+    keep_food_stacks: 2,
+    keep_weapon_stacks: 2,
+    keep_equipment_sets: 2
   },
   reflexes: {
     self_defense: true,

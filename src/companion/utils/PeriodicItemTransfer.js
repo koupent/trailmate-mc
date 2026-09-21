@@ -13,6 +13,7 @@ export const DEFAULT_ITEM_SHARE_CONFIG = {
     interval_ms: 60_000,
     keep_torch_stacks: DEFAULT_RETENTION.keep_torch_stacks,
     keep_food_stacks: DEFAULT_RETENTION.keep_food_stacks,
+    keep_weapon_stacks: DEFAULT_RETENTION.keep_weapon_stacks,
     keep_equipment_sets: DEFAULT_RETENTION.keep_equipment_sets
 };
 
@@ -70,12 +71,13 @@ export class PeriodicItemTransfer {
      * @param {import('../CompanionContext.js').CompanionContext} ctx
      */
     /**
-     * @returns {{ keep_torch_stacks: number, keep_food_stacks: number, keep_equipment_sets: number }}
+     * @returns {{ keep_torch_stacks: number, keep_food_stacks: number, keep_weapon_stacks: number, keep_equipment_sets: number }}
      */
     _retentionPolicy() {
         return {
             keep_torch_stacks: this.config.keep_torch_stacks,
             keep_food_stacks: this.config.keep_food_stacks,
+            keep_weapon_stacks: this.config.keep_weapon_stacks,
             keep_equipment_sets: this.config.keep_equipment_sets
         };
     }
