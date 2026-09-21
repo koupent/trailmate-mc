@@ -14,7 +14,18 @@ export const TORCH_LIGHT_LEVEL = 14;
 /** Default max fall distance for companion pathfinding. */
 export const DEFAULT_SAFE_MAX_DROP_DOWN = 4;
 
-const ALLOWED_PLACE_TYPES = new Set(['torch', 'wall_torch']);
+const ALLOWED_PLACE_TYPES = new Set([
+    'torch',
+    'wall_torch',
+    'wheat',
+    'beetroots',
+    'pumpkin_stem',
+    'melon_stem',
+    'torchflower_crop',
+    'pitcher_crop',
+    'carrots',
+    'potatoes'
+]);
 
 /** @type {{ enabled: boolean, torchLightThreshold: number }} */
 let policy = {
@@ -50,7 +61,7 @@ export function clampTorchLightThreshold(value) {
 }
 
 /**
- * Enable companion block protection (no dig, no scaffold, torch-only place).
+ * Enable companion block protection (no dig/scaffold; only torches and crops may be placed).
  * @param {{ torchLightThreshold?: number }} [options]
  */
 export function enableCompanionBlockProtection(options = {}) {
