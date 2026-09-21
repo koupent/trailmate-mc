@@ -104,7 +104,6 @@ describe('CombatTuneCatalog / 敵クラス固有キー', () => {
       ranged.params.map((p) => p.key),
       ['rangedDodgeBurstMs', 'rangedDodgeReassessMs']
     );
-    assert.equal(ranged.params.some((p) => p.key === 'followRange'), false);
   });
 });
 
@@ -132,7 +131,7 @@ describe('敵クラス固有チューニング後の箱庭スモーク', () => {
       y: 1,
       z: 0.2
     }];
-    state.enemyAiEnabled = false;
+    state.enemyAi.enabled = false;
     let attacks = 0;
     for (let i = 0; i < 12; i += 1) {
       const result = stepSimulation(state);
@@ -157,7 +156,7 @@ describe('敵クラス固有チューニング後の箱庭スモーク', () => {
       z: 0,
       fuseStartedAt: null
     }];
-    state.enemyAiEnabled = false;
+    state.enemyAi.enabled = false;
     let saw = false;
     for (let i = 0; i < 10; i += 1) {
       const result = stepSimulation(state);

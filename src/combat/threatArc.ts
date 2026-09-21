@@ -525,9 +525,9 @@ export type StackThreatPositionSelection = ThreatPositionSelection & {
   /** 各敵の攻撃扇デバッグ（相棒／評価点向け）。 */
   attackFans?: AttackFanDebug[];
   coverPoint?: XZ & { y?: number } | null;
-  rangedExposedCount?: number;
+  rangedExposedCount: number;
   /** 近接／爆発／敏捷の攻撃扇に晒されている数 */
-  meleeExposedCount?: number;
+  meleeExposedCount: number;
 };
 
 export function chooseStackThreatPosition(

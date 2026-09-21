@@ -236,7 +236,7 @@ export type TuningContextRow = {
   paramAdoptCount: number;
   noImproveStreak: number;
   bestScore: number | null;
-  tunedKeys: string[];
+  tunedKeys: SimTuneKey[];
   params: TuningParamRow[];
 };
 
