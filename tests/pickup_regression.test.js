@@ -124,6 +124,20 @@ describe('pickup regression', () => {
         }), 12);
     });
 
+    it('yields long-running normal pickup to the shared FSM signal', async () => {
+        const movement = mockMovement();
+        const ctx = makePickupCtx({
+            itemPos: new Vec3(6, 64, 0),
+            movement
+        });
+        ctx.shouldYieldNormalAction = () => true;
+
+        await new NearbyLootInterrupt().run(ctx);
+
+        assert.equal(movement.calls.length, 0);
+        assert.equal(ctx.nearbyLoot.active, false);
+    });
+
     it('approaches the nearest visible drop first when several are present', async () => {
         const movement = mockMovement();
         const ctx = makePickupCtx({

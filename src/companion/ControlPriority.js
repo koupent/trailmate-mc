@@ -10,7 +10,7 @@
  *   transferActive?: boolean,
  *   upperMode?: 'follow' | 'wait'
  * }} input
- * @returns {'hazard' | 'survival' | 'recovery' | 'combat' | 'transfer' | 'follow' | 'wait'}
+ * @returns {'hazard' | 'survival' | 'recovery' | 'combat' | 'passage_cleanup' | 'transfer' | 'follow' | 'wait'}
  */
 export function selectControlOwner(input = {}) {
     if (input.hazardActive) return 'hazard';
@@ -29,6 +29,9 @@ export function currentControlOwner(ctx, upperMode = 'follow', now = Date.now())
     const fsmId = ctx?.agent?.companion?.manager?.getActiveFsmId?.();
     if (fsmId === 'combat') {
         return 'combat';
+    }
+    if (fsmId === 'passage_cleanup') {
+        return 'passage_cleanup';
     }
 
     const reflexes = ctx?.agent?.reflexes;

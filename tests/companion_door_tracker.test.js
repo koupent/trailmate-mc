@@ -638,6 +638,54 @@ describe('DoorTracker integration', () => {
         assert.equal(tracker.trackedCount, 1);
     });
 
+    it('fails an active cleanup explicitly after its deadline', async () => {
+        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.entity.position = { x: 0.5, y: 64, z: -2 };
+
+        await tracker.tick({ allowClose: false });
+        assert.equal(tracker.cleanupPending, true);
+        assert.equal(activations.length, 0);
+        tracker.resumeCleanup();
+        now += 15001;
+
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (...args) => warnings.push(args.join(' '));
+        try {
+            await tracker.tick({ allowClose: true });
+        } finally {
+            console.warn = originalWarn;
+        }
+
+        assert.equal(tracker.cleanupPending, false);
+        assert.equal(tracker.trackedCount, 0);
+        assert.match(warnings[0], /passage cleanup failed \(timeout\)/);
+    });
+
+    it('preserves cleanup across a suspended safety interval', async () => {
+        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
+            facing: 'north',
+            half: 'lower'
+        });
+        bot.entity.position = { x: 0.5, y: 64, z: -2 };
+        await tracker.tick({ allowClose: false });
+
+        tracker.resumeCleanup();
+        now += 10000;
+        tracker.suspendCleanup();
+        now += 60000;
+        await tracker.tick({ allowClose: false });
+        assert.equal(tracker.cleanupPending, true);
+
+        tracker.resumeCleanup();
+        await tracker.tick({ allowClose: true });
+        assert.equal(activations.length, 1);
+        assert.equal(tracker.cleanupPending, true);
+    });
+
     it('does not track already-open doors activated by the bot', async () => {
         const openDoor = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
             open: true,

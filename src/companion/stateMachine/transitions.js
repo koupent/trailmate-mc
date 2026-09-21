@@ -46,6 +46,20 @@ export function dutyPending(targets) {
     return Boolean(targets._dutyPending);
 }
 
+/** @param {object} targets */
+export function passagePending(targets) {
+    return Boolean(targets._passagePending);
+}
+
+/** Recovery work keeps its safety priority over passage cleanup. */
+export function safetyDutyPending(targets) {
+    if (targets.ctx?.deathRecovery?.active) return true;
+    const next = (targets.interrupts || []).find((interrupt) => (
+        interrupt._lastShouldRun === true
+    ));
+    return Boolean(next && next.name !== 'nearby_loot');
+}
+
 /**
  * @param {object} targets
  */
@@ -91,6 +105,13 @@ export function shouldStayInCombat(targets) {
 export function shouldEnterDuty(targets) {
     if (shouldEnterCombat(targets)) return false;
     return dutyPending(targets);
+}
+
+/** @param {object} targets */
+export function shouldEnterPassageCleanup(targets) {
+    if (!passagePending(targets)) return false;
+    if (shouldEnterCombat(targets)) return false;
+    return !safetyDutyPending(targets);
 }
 
 /**

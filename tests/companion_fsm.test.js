@@ -6,10 +6,13 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
     dutyPending,
+    passagePending,
     preferGearRecovery,
     resumeUpperMode,
+    safetyDutyPending,
     shouldEnterCombat,
     shouldEnterDuty,
+    shouldEnterPassageCleanup,
     shouldStayInCombat
 } from '../src/companion/stateMachine/transitions.js';
 
@@ -61,6 +64,56 @@ describe('companion fsm transitions', () => {
         assert.equal(shouldEnterDuty(targets), true);
         targets.ctx.agent.reflexes.wantsCombat = true;
         assert.equal(shouldEnterDuty(targets), false);
+    });
+
+    it('prioritizes combat and safety duty above passage cleanup', () => {
+        const recovery = { name: 'recovery', _lastShouldRun: false };
+        const targets = makeTargets({
+            _passagePending: true,
+            interrupts: [recovery]
+        });
+
+        assert.equal(passagePending(targets), true);
+        assert.equal(shouldEnterPassageCleanup(targets), true);
+
+        targets.ctx.agent.reflexes.wantsCombat = true;
+        assert.equal(shouldEnterPassageCleanup(targets), false);
+
+        targets.ctx.agent.reflexes.wantsCombat = false;
+        recovery._lastShouldRun = true;
+        assert.equal(safetyDutyPending(targets), true);
+        assert.equal(shouldEnterPassageCleanup(targets), false);
+    });
+
+    it('returns from combat to a pending passage cleanup before normal work', async () => {
+        const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
+        const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
+        const base = makeTargets().ctx;
+        base.movement = { stop() {} };
+        base.doors = { resumeCleanup() {}, suspendCleanup() {} };
+        const mode = { onEnter() {}, onExit() {}, tick() {} };
+        const targets = createCompanionTargets({
+            ctx: base,
+            agent: base.agent,
+            followMode: mode,
+            waitMode: mode,
+            interrupts: []
+        });
+        const { root, states } = createRootMachine(targets);
+        root.active = true;
+        root.onStateEntered();
+
+        targets._passagePending = true;
+        root.update();
+        assert.equal(root.activeState, states.passageCleanup);
+
+        targets.ctx.agent.reflexes.wantsCombat = true;
+        root.update();
+        assert.equal(root.activeState, states.combat);
+
+        targets.ctx.agent.reflexes.wantsCombat = false;
+        root.update();
+        assert.equal(root.activeState, states.passageCleanup);
     });
 
     it('preferGearRecovery when unarmed near own grave helper path', () => {
