@@ -72,47 +72,98 @@ describe('handoff chest retention', () => {
         assert.equal(equipmentGroup('crossbow'), null);
     });
 
-    it('keeps equipped gear, three spare weapons, three foods and three torches', () => {
+    it('keeps equipped gear plus the best spare, and two food and torch stacks', () => {
         const bot = makeRetentionBot([
-            item(5, 'diamond_helmet'),
-            item(36, 'netherite_sword', 1, { attackDamage: 8 }),
-            item(9, 'diamond_sword', 1, { attackDamage: 7 }),
-            item(10, 'iron_sword', 1, { attackDamage: 6 }),
-            item(11, 'bow'),
-            item(12, 'wooden_sword', 1, { attackDamage: 4 }),
-            item(13, 'cooked_beef', 16),
-            item(14, 'bread', 16),
-            item(15, 'apple', 16),
-            item(16, 'cookie', 16),
-            item(17, 'torch', 64),
-            item(18, 'torch', 64),
-            item(19, 'soul_torch', 64),
-            item(20, 'torch', 16),
-            item(21, 'iron_chestplate'),
-            item(22, 'cobblestone', 64),
-            item(23, 'crossbow'),
-            item(24, 'arrow', 64),
-            item(25, 'spectral_arrow', 16)
+            item(5, 'leather_helmet'),
+            item(6, 'leather_chestplate'),
+            item(7, 'leather_leggings'),
+            item(8, 'leather_boots'),
+            item(45, 'shield'),
+            item(36, 'wooden_sword', 1, { attackDamage: 4 }),
+            item(9, 'netherite_helmet'),
+            item(10, 'diamond_helmet'),
+            item(11, 'netherite_chestplate'),
+            item(12, 'iron_chestplate'),
+            item(13, 'diamond_leggings'),
+            item(14, 'iron_leggings'),
+            item(15, 'diamond_boots'),
+            item(16, 'golden_boots'),
+            item(17, 'shield'),
+            item(18, 'shield'),
+            item(19, 'netherite_sword', 1, { attackDamage: 8 }),
+            item(20, 'diamond_sword', 1, { attackDamage: 7 }),
+            item(21, 'cooked_beef', 16),
+            item(22, 'bread', 16),
+            item(23, 'apple', 16),
+            item(24, 'torch', 64),
+            item(25, 'soul_torch', 64),
+            item(26, 'torch', 16),
+            item(27, 'bow'),
+            item(28, 'crossbow'),
+            item(29, 'arrow', 64),
+            item(30, 'cobblestone', 64)
         ], 36);
 
-        const deposit = listChestDepositStacks(bot, {
-            keep_weapon_stacks: 3,
-            keep_food_stacks: 3,
-            keep_torch_stacks: 3
-        });
+        const deposit = listChestDepositStacks(bot);
         const slots = deposit.map((stack) => stack.slot);
 
-        assert.equal(slots.includes(5), false, 'worn armor stays equipped');
-        assert.equal(slots.includes(36), false, 'held weapon stays equipped');
-        assert.deepEqual([9, 10, 12].filter((slot) => slots.includes(slot)), []);
-        assert.equal(slots.includes(11), true, 'bow is deposited');
-        assert.equal(slots.includes(23), true, 'crossbow is deposited');
-        assert.equal(slots.includes(24), true, 'arrows are deposited');
-        assert.equal(slots.includes(25), true, 'special arrows are deposited');
-        assert.equal(slots.includes(16), true, 'fourth food stack is deposited');
-        assert.equal(slots.includes(20), true, 'fourth torch stack is deposited');
-        assert.equal(slots.includes(21), true, 'unworn spare armor is deposited');
-        assert.equal(slots.includes(22), true, 'ordinary blocks are deposited');
+        for (const slot of [5, 6, 7, 8, 45, 36]) {
+            assert.equal(slots.includes(slot), false, `equipped slot ${slot} is retained`);
+        }
+        for (const slot of [9, 11, 13, 15, 17, 19, 21, 22, 24, 25]) {
+            assert.equal(slots.includes(slot), false, `best retained slot ${slot} stays`);
+        }
+        for (const slot of [10, 12, 14, 16, 18, 20, 23, 26, 27, 28, 29, 30]) {
+            assert.equal(slots.includes(slot), true, `surplus slot ${slot} is deposited`);
+        }
+    });
+
+    it('keeps the best two items when a category is not equipped', () => {
+        const bot = makeRetentionBot([
+            item(9, 'iron_helmet'),
+            item(10, 'netherite_helmet'),
+            item(11, 'diamond_helmet'),
+            item(12, 'wooden_sword', 1, { attackDamage: 4 }),
+            item(13, 'netherite_sword', 1, { attackDamage: 8 }),
+            item(14, 'diamond_sword', 1, { attackDamage: 7 }),
+            item(15, 'shield'),
+            item(16, 'shield'),
+            item(17, 'shield')
+        ]);
+
+        assert.deepEqual(
+            listChestDepositStacks(bot).map((stack) => stack.slot),
+            [9, 12, 17]
+        );
+    });
+
+    it('always keeps equipped items while respecting equipment and weapon limits', () => {
+        const expectedDeposits = new Map([
+            [0, [9, 10, 11, 12, 13, 14]],
+            [1, [9, 10, 11, 12, 13, 14]],
+            [3, [11, 14]]
+        ]);
+
+        for (const [limit, expected] of expectedDeposits) {
+            const bot = makeRetentionBot([
+                item(45, 'shield'),
+                item(9, 'shield'),
+                item(10, 'shield'),
+                item(11, 'shield'),
+                item(36, 'wooden_sword', 1, { attackDamage: 4 }),
+                item(12, 'netherite_sword', 1, { attackDamage: 8 }),
+                item(13, 'diamond_sword', 1, { attackDamage: 7 }),
+                item(14, 'iron_sword', 1, { attackDamage: 6 })
+            ], 36);
+            const deposits = listChestDepositStacks(bot, {
+                keep_equipment_sets: limit,
+                keep_weapon_stacks: limit
+            }).map((stack) => stack.slot);
+
+            assert.deepEqual(deposits, expected, `limit=${limit}`);
+            assert.equal(deposits.includes(45), false, `equipped shield stays at limit=${limit}`);
+            assert.equal(deposits.includes(36), false, `held weapon stays at limit=${limit}`);
+        }
     });
 
     it('deposits a selected bow because ranged gear is not equipment', () => {

@@ -6,10 +6,10 @@
 import { UNSAFE_OR_SPECIAL_FOODS } from '../../host/autoEat.js';
 
 export const DEFAULT_RETENTION = {
-    keep_torch_stacks: 3,
-    keep_food_stacks: 3,
-    keep_equipment_sets: 3,
-    keep_weapon_stacks: 3
+    keep_torch_stacks: 2,
+    keep_food_stacks: 2,
+    keep_equipment_sets: 2,
+    keep_weapon_stacks: 2
 };
 
 const TIER_SCORE = {
@@ -141,21 +141,13 @@ const COMMON_STACK_RETENTION_RULES = Object.freeze([
 ]);
 
 /**
- * Chest retention is intentionally data-driven. Adding or removing a retained
- * inventory category should only require editing this list and its config key.
+ * @param {Partial<typeof DEFAULT_RETENTION>} policy
+ * @param {keyof typeof DEFAULT_RETENTION} key
  */
-export const CHEST_RETENTION_RULES = Object.freeze([
-    ...COMMON_STACK_RETENTION_RULES,
-    {
-        id: 'melee_weapon',
-        limitKey: 'keep_weapon_stacks',
-        matches: (stack, context) => (
-            equipmentGroup(stack.name) === 'weapon'
-            && !context.keepSlots.has(stack.slot)
-        ),
-        compare: (a, b) => equipmentScore(b) - equipmentScore(a)
-    }
-]);
+function retentionLimit(policy, key) {
+    const configured = policy[key] ?? DEFAULT_RETENTION[key] ?? 0;
+    return Math.max(0, Math.trunc(Number(configured) || 0));
+}
 
 /**
  * @param {Array<{ slot: number }>} stacks
@@ -169,13 +161,34 @@ export const CHEST_RETENTION_RULES = Object.freeze([
  */
 function applyRetentionRules(stacks, policy, context, rules) {
     for (const rule of rules) {
-        const configured = policy[rule.limitKey] ?? DEFAULT_RETENTION[rule.limitKey] ?? 0;
-        const keepCount = Math.max(0, Math.trunc(Number(configured) || 0));
+        const keepCount = retentionLimit(policy, rule.limitKey);
         keepTopStacks(
             stacks.filter((stack) => rule.matches(stack, context)),
             keepCount,
             (a, b) => rule.compare(a, b, context),
             context.keepSlots
+        );
+    }
+}
+
+/**
+ * Keep equipped items plus the best spares up to each category's total limit.
+ * @param {Array<{ slot: number, name: string }>} stacks
+ * @param {Partial<typeof DEFAULT_RETENTION>} policy
+ * @param {Set<number>} equippedSlots
+ * @param {Set<number>} keepSlots
+ */
+function applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots) {
+    for (const group of EQUIPMENT_GROUPS) {
+        const groupStacks = stacks.filter((stack) => equipmentGroup(stack.name) === group);
+        const equippedCount = groupStacks.filter((stack) => equippedSlots.has(stack.slot)).length;
+        const limitKey = group === 'weapon' ? 'keep_weapon_stacks' : 'keep_equipment_sets';
+        const spareCount = Math.max(0, retentionLimit(policy, limitKey) - equippedCount);
+        keepTopStacks(
+            groupStacks.filter((stack) => !equippedSlots.has(stack.slot)),
+            spareCount,
+            (a, b) => equipmentScore(b) - equipmentScore(a),
+            keepSlots
         );
     }
 }
@@ -246,11 +259,27 @@ export function equippedItemSlots(bot) {
 }
 
 /**
+ * Shared retention policy for chest deposits and ordinary surplus transfers.
+ * @param {import('mineflayer').Bot} bot
+ * @param {ReturnType<typeof listOccupiedStacks>} stacks
+ * @param {Partial<typeof DEFAULT_RETENTION>} policy
+ * @param {{ foodsByName?: object, bannedFood?: string[] }} options
+ */
+function retainedItemSlots(bot, stacks, policy, options) {
+    const equippedSlots = equippedItemSlots(bot);
+    const keepSlots = new Set(equippedSlots);
+    const context = createRetentionContext(bot, options, keepSlots);
+    applyRetentionRules(stacks, policy, context, COMMON_STACK_RETENTION_RULES);
+    applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots);
+    return keepSlots;
+}
+
+/**
  * Inventory stacks to put in an owner-placed handoff chest.
  *
  * Keep:
- * - currently equipped armor / shield / weapon
- * - configured spare melee weapon, food, and torch stacks
+ * - configured total armor / shield / melee weapon counts, including equipped items
+ * - configured food and torch stack counts
  * Everything else is deposited.
  *
  * @param {import('mineflayer').Bot} bot
@@ -259,9 +288,7 @@ export function equippedItemSlots(bot) {
  */
 export function listChestDepositStacks(bot, policy = {}, options = {}) {
     const stacks = listOccupiedStacks(bot);
-    const keepSlots = equippedItemSlots(bot);
-    const context = createRetentionContext(bot, options, keepSlots);
-    applyRetentionRules(stacks, policy, context, CHEST_RETENTION_RULES);
+    const keepSlots = retainedItemSlots(bot, stacks, policy, options);
 
     return stacks
         .filter((s) => !keepSlots.has(s.slot))
@@ -283,28 +310,8 @@ export function listChestDepositStacks(bot, policy = {}, options = {}) {
  * @returns {Array<{ slot: number, type: number, count: number, name: string }>}
  */
 export function listGiveableStacks(bot, policy = {}, options = {}) {
-    const keepEquip = policy.keep_equipment_sets ?? DEFAULT_RETENTION.keep_equipment_sets;
-
     const stacks = listOccupiedStacks(bot);
-    /** @type {Set<number>} */
-    const keepSlots = new Set();
-    const context = createRetentionContext(bot, options, keepSlots);
-    applyRetentionRules(stacks, policy, context, COMMON_STACK_RETENTION_RULES);
-
-    /** @type {Record<string, typeof stacks>} */
-    const byGroup = Object.fromEntries(EQUIPMENT_GROUPS.map((group) => [group, []]));
-    for (const stack of stacks) {
-        const group = equipmentGroup(stack.name);
-        if (group) byGroup[group].push(stack);
-    }
-    for (const group of EQUIPMENT_GROUPS) {
-        keepTopStacks(
-            byGroup[group],
-            keepEquip,
-            (a, b) => equipmentScore(b) - equipmentScore(a),
-            keepSlots
-        );
-    }
+    const keepSlots = retainedItemSlots(bot, stacks, policy, options);
 
     return stacks
         .filter((s) => !keepSlots.has(s.slot))

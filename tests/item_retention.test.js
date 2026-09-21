@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
+    DEFAULT_RETENTION,
     listGiveableStacks,
     equipmentGroup,
     equipmentScore,
@@ -29,18 +30,31 @@ function makeItem(slot, name, count = 1, extras = {}) {
     };
 }
 
-function makeBot(items) {
+function makeBot(items, heldSlot = null) {
     const slots = [];
     for (const item of items) {
         slots[item.slot] = item;
     }
     return {
         inventory: { slots },
-        registry: { foodsByName: FOODS_BY_NAME }
+        registry: { foodsByName: FOODS_BY_NAME },
+        heldItem: heldSlot == null ? null : slots[heldSlot],
+        getEquipmentDestSlot(destination) {
+            return { head: 5, torso: 6, legs: 7, feet: 8, 'off-hand': 45 }[destination];
+        }
     };
 }
 
 describe('itemRetention helpers', () => {
+    it('defaults every retention category to two', () => {
+        assert.deepEqual(DEFAULT_RETENTION, {
+            keep_torch_stacks: 2,
+            keep_food_stacks: 2,
+            keep_equipment_sets: 2,
+            keep_weapon_stacks: 2
+        });
+    });
+
     it('classifies torches and keepable food', () => {
         assert.equal(isTorch('torch'), true);
         assert.equal(isTorch('soul_torch'), true);
@@ -91,7 +105,7 @@ describe('listGiveableStacks', () => {
         assert.ok(giveable.some((s) => s.name === 'cobblestone'));
     });
 
-    it('keeps the 3 best food stacks', () => {
+    it('keeps the two best food stacks', () => {
         const bot = makeBot([
             makeItem(9, 'cooked_beef', 16),
             makeItem(10, 'bread', 16),
@@ -101,28 +115,32 @@ describe('listGiveableStacks', () => {
         ]);
         const giveable = listGiveableStacks(bot);
         const foodGiven = giveable.filter((s) => FOODS_BY_NAME[s.name]);
-        assert.deepEqual(foodGiven.map((s) => s.name), ['cookie']);
+        assert.deepEqual(foodGiven.map((s) => s.name), ['apple', 'cookie']);
         assert.ok(giveable.some((s) => s.name === 'dirt'));
     });
 
-    it('keeps top 3 equipment sets including currently equipped slots', () => {
+    it('keeps equipped items and only the best spare in each equipment category', () => {
         const bot = makeBot([
-            makeItem(5, 'netherite_sword', 1, { attackDamage: 8 }),
-            makeItem(6, 'diamond_sword', 1, { attackDamage: 7 }),
-            makeItem(7, 'iron_sword', 1, { attackDamage: 6 }),
-            makeItem(8, 'wooden_sword', 1, { attackDamage: 4 }),
-            makeItem(36, 'diamond_helmet', 1),
-            makeItem(37, 'iron_helmet', 1),
-            makeItem(38, 'golden_helmet', 1),
-            makeItem(39, 'leather_helmet', 1),
+            makeItem(5, 'leather_helmet'),
+            makeItem(9, 'netherite_helmet'),
+            makeItem(10, 'diamond_helmet'),
             makeItem(45, 'shield', 1),
-            makeItem(9, 'shield', 1),
-            makeItem(10, 'shield', 1),
-            makeItem(11, 'shield', 1)
-        ]);
+            makeItem(11, 'shield', 1),
+            makeItem(12, 'shield', 1),
+            makeItem(36, 'wooden_sword', 1, { attackDamage: 4 }),
+            makeItem(13, 'netherite_sword', 1, { attackDamage: 8 }),
+            makeItem(14, 'diamond_sword', 1, { attackDamage: 7 })
+        ], 36);
         const giveable = listGiveableStacks(bot);
-        const names = giveable.map((s) => s.name).sort();
-        assert.deepEqual(names, ['leather_helmet', 'shield', 'wooden_sword']);
+        const slots = giveable.map((s) => s.slot);
+
+        assert.equal(slots.includes(5), false, 'equipped helmet is always retained');
+        assert.equal(slots.includes(45), false, 'equipped shield is always retained');
+        assert.equal(slots.includes(36), false, 'held weapon is always retained');
+        assert.equal(slots.includes(9), false, 'best spare helmet is retained');
+        assert.equal(slots.includes(11), false, 'one spare shield is retained');
+        assert.equal(slots.includes(13), false, 'best spare weapon is retained');
+        assert.deepEqual([10, 12, 14].filter((slot) => slots.includes(slot)), [10, 12, 14]);
     });
 
     it('gives banned / special foods away as surplus', () => {
