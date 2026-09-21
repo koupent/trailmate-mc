@@ -175,6 +175,7 @@ export function generateArena(seed: number, kind?: ArenaKind): SimulationState {
     shots: 0,
     projectiles: [],
     damageTaken: 0,
+    lastDamageAt: 0,
     botDead: false,
     ended: false,
     outcome: 'ongoing',

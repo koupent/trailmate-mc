@@ -28,7 +28,7 @@ describe('遠距離殴打中の偽ノックバック', () => {
       y: 1,
       z: 0.2
     }];
-    state.enemyAiEnabled = false;
+    state.enemyAi.enabled = false;
 
     let attackTicks = 0;
     let maxAttackJump = 0;

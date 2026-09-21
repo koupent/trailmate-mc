@@ -10,10 +10,11 @@
 import {
   hasVoxelLineOfSight,
   standingY,
-  stepEntity
+  stepEntity,
+  type Vec3
 } from './voxel.js';
 
-export type PhysicsPoint = { x: number; y?: number; z: number };
+export type PhysicsPoint = Vec3;
 
 export type PhysicsEnemy = PhysicsPoint & {
   id: number;

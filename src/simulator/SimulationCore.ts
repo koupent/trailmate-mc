@@ -680,7 +680,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
   if (!primaryFromFocus) {
     return makeDecision('follow', null, null, null, null, 'stay', null);
   }
-  let primary = primaryFromFocus;
+  let primary: SimEnemy = primaryFromFocus;
 
   const threatPositions = threats.map((enemy) => ({
     x: enemy.x,
@@ -776,7 +776,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
     ) > 0.9
   );
   const stackIncomplete = threats.length >= 2
-    && Boolean(arc)
+    && arc != null
     && selection.chosen.spanRad + 0.12 < arc.spanRad;
   state.arcNarrowLatched = updateArcNarrowLatchByImprovement({
     latched: Boolean(state.arcNarrowLatched),
@@ -809,7 +809,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
     ? umbraAnchor(rangedThreat, meleeAlly, 1.55)
     : null;
   /** 矢が他敵／壁に吸われるなら肉壁／壁影中。 */
-  const inRangedCover = Boolean(rangedThreat) && (
+  const inRangedCover = rangedThreat != null && (
     (selection.rangedExposedCount ?? 0) === 0
     || resolveRangedImpact(rangedThreat, state.bot, state.enemies, blocks).hitKind !== 'bot'
   );
@@ -1026,7 +1026,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
       mode: dodge.phase === 'dodge' ? 'dodge' : 'advance'
     })
     : null;
-  const rangedLosExposed = Boolean(rangedThreat)
+  const rangedLosExposed = rangedThreat != null
     && resolveRangedImpact(rangedThreat, state.bot, state.enemies, blocks).hitKind === 'bot';
   const rangedExposedCount = (selection.rangedExposedCount ?? 0)
     + (rangedLosExposed && (selection.rangedExposedCount ?? 0) === 0 ? 1 : 0);
@@ -1230,7 +1230,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
       mode: moveKind === 'dodge' ? 'dodge' : 'advance'
     });
   })();
-  let destination: SimPoint | null = null;
+  let destination = null as SimPoint | null;
   let movement: SimulationDecision['movement'] = 'stay';
   let directFlee = false;
   let preciseStep = false;
@@ -1530,7 +1530,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
       }
       setStraightDestination(approach);
       if (!directFlee) {
-        movement = moveKind === 'dodge' ? 'dodge' : 'advance';
+        movement = 'advance';
       }
     }
     if (forceCommit && !directFlee) {
@@ -1612,7 +1612,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
           const slide = stepEntity(
             blocks,
             state.bot,
-            { x: detour.x, y: standingY(blocks, detour.x, detour.z, state.bot.y + 2), z: detour.z },
+            { x: detour.x, z: detour.z },
             stepSpeed
           );
           state.bot = { ...state.bot, ...slide };
