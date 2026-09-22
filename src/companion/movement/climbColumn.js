@@ -246,11 +246,13 @@ export class ColumnClimber {
      */
     _tickTopOut(ctx, position, now) {
         const bot = ctx.bot;
-        const aboveColumn = position.y >= this._columnTopY;
+        // Landing is the only proof the wall was cleared. Merely floating above
+        // the last climbable cell also happens when the column breaks halfway
+        // and the bot is left pinned against a wall it cannot climb.
+        const landedOnTop = position.y >= this._columnTopY
+            && bot?.entity?.onGround === true;
 
-        if (aboveColumn && bot?.entity?.onGround === true) {
-            return this._release(ctx, 'topped-out');
-        }
+        if (landedOnTop) return this._release(ctx, 'topped-out');
 
         if (now < this._topOutUntil) {
             pressIntoWall(bot, this._push);
@@ -269,7 +271,7 @@ export class ColumnClimber {
             return true;
         }
 
-        return this._release(ctx, aboveColumn ? 'topped-out' : 'top-out-failed');
+        return this._release(ctx, 'top-out-failed');
     }
 
     /**

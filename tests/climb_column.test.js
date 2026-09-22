@@ -346,6 +346,41 @@ describe('ColumnClimber abort conditions', () => {
         assert.equal(ctx.bot.getControlState('forward'), false);
     });
 
+    it('treats hanging above a broken column as failure, not as topping out', () => {
+        // Vines stop at y=66 but the wall carries on, so the push pins the bot
+        // against it: above the last vine, yet never landing anywhere.
+        const brokenWall = {
+            ...VINE_WALL,
+            '1,67,0': 'stone',
+            '1,68,0': 'stone',
+            '1,69,0': 'stone'
+        };
+        const ctx = makeClimbCtx(brokenWall, new Vec3(0.5, 64, 0.5), new Vec3(2.5, 70, 0.5));
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read, retryCooldownMs: 3000 });
+
+        climber.tick(ctx);
+        clock.now += 250;
+        ctx.bot.entity.position = new Vec3(0.7, 67.05, 0.5);
+        assert.equal(climber.tick(ctx), true);
+        assert.equal(climber.phase, 'topping');
+
+        // Still airborne when the push expires: the wall was never cleared.
+        clock.now += 1000;
+        assert.equal(climber.tick(ctx), false);
+        assert.equal(ctx.bot.getControlState('forward'), false);
+
+        // Without the cooldown this restarts the same doomed climb forever.
+        clock.now += 250;
+        ctx.bot.entity.position = new Vec3(0.5, 64, 0.5);
+        ctx.bot.entity.onGround = true;
+        assert.equal(climber.tick(ctx), false, 'the failed wall must cool down');
+        assert.equal(ctx.movement.stops, 1);
+
+        clock.now += 3000;
+        assert.equal(climber.tick(ctx), true, 'and be retried once the cooldown ends');
+    });
+
     it('hands the wall back to ordinary follow for a while after a failure', () => {
         const ctx = makeClimbCtx(VINE_WALL, new Vec3(0.5, 64, 0.5), new Vec3(1.5, 67, 0.5));
         const { clock, read } = makeClock();
