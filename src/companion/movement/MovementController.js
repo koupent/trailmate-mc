@@ -7,7 +7,6 @@ import {
     enforceSafeMovements
 } from '../blockProtection.js';
 import { hasLineOfSightFrom } from '../../world/lineOfSight.js';
-import { analyzePassageRoute } from './passageRoute.js';
 
 /** Climb goals may block Follow only briefly. */
 const DEFAULT_CLIMB_HOLD_MS = 2000;
@@ -208,14 +207,11 @@ export class MovementController {
     }
 
     _handlePathUpdate(result) {
-        if (result?.status === 'success' && Array.isArray(result.path)) {
-            const passageRoute = analyzePassageRoute(this.bot, result.path);
-            if (!passageRoute.valid) {
-                result.path.length = 0;
-                this._markActiveRouteFailed();
-                return;
-            }
-        }
+        // A route is never rejected for what its doorways look like. Clearing
+        // the path here left the passage stripped of its pathfinder door action
+        // and unclaimed by anyone, which is a wall; DoorTracker now takes over
+        // every passage on the route and derives its own stand point when the
+        // geometry is unreadable.
 
         if (this._goalRole === 'follow' || this._goalRole === 'follow-fallback') {
             if (result.status === 'partial') {

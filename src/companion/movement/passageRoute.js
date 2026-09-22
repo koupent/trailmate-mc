@@ -4,10 +4,15 @@ import { isDoorPassableName } from '../blockProtection.js';
 /** A route point must be clearly off the passage plane to establish a side. */
 const SIDE_CLEARANCE = 0.3;
 /** Doorways are one block wide, with a little tolerance for path centering. */
-const CORRIDOR_HALF_WIDTH = 1.1;
-/** Route points around a passage must remain close enough to describe that crossing. */
-const CROSSING_NEIGHBOR_DISTANCE = 2.5;
-const CROSSING_VERTICAL_TOLERANCE = 2.5;
+export const CORRIDOR_HALF_WIDTH = 1.1;
+/** Close enough to a doorway to stand in front of it, or to have arrived at it. */
+export const APPROACH_DISTANCE = 2.25;
+/** Clear of a doorway: far enough that the bot is no longer standing in it. */
+export const CLEAR_DISTANCE = 1.35;
+/** A route point only describes a passage while it stays this near the doorway. */
+const NEIGHBOR_DISTANCE = 2.5;
+/** Same walkable level, with room for the two blocks of a door. */
+const VERTICAL_TOLERANCE = 2.5;
 
 /** @param {{ name?: string }|null|undefined} block */
 export function isRoutePassage(block) {
@@ -55,159 +60,94 @@ export function passageSide(pos, passagePos, facing) {
 }
 
 /**
- * Validate every pathfinder `useOne` action as a real passage crossing.
+ * @typedef {{
+ *   key: string,
+ *   passagePos: { x:number, y:number, z:number },
+ *   facing?: string,
+ *   approachSide: -1|1|null,
+ *   approachPoint: { x:number, y:number, z:number }|null,
+ *   onPath: boolean
+ * }} RoutePassagePlan
+ */
+
+/**
+ * Every passage the pathfinder plans to operate on this route.
+ *
+ * A `useOne` action is the pathfinder saying "this route only works if that
+ * door opens", which is all the evidence needed to take the passage over. The
+ * geometry around it is read for one thing only: where to stand while
+ * activating. Failing to read it never rejects the passage, because a passage
+ * nobody handles is a wall — the pathfinder's own action is stripped either way.
+ *
  * @param {import('mineflayer').Bot} bot
  * @param {Array<any>} path
- * @param {{ x:number,y:number,z:number }} [start]
- * @returns {{ valid: boolean, passages: Map<string, RoutePassagePlan>, invalidKey: string|null }}
+ * @param {{ x:number, y:number, z:number }} [start]
+ * @returns {Map<string, RoutePassagePlan>}
  */
 export function analyzePassageRoute(bot, path, start = bot?.entity?.position) {
     /** @type {Map<string, RoutePassagePlan>} */
     const passages = new Map();
-    if (!Array.isArray(path) || !start) {
-        return { valid: false, passages, invalidKey: null };
-    }
-    const routePoints = [start, ...path];
+    if (!Array.isArray(path)) return passages;
+
+    const hasStart = isFinitePoint(start);
+    const points = hasStart ? [start, ...path] : [...path];
+    const nodeOffset = hasStart ? 1 : 0;
 
     for (let nodeIndex = 0; nodeIndex < path.length; nodeIndex++) {
-        const node = path[nodeIndex];
-        for (const action of node?.toPlace || []) {
+        for (const action of path[nodeIndex]?.toPlace || []) {
             if (action?.useOne !== true) continue;
             const block = blockAt(bot, action);
-            if (!isRoutePassage(block)) {
-                return { valid: false, passages, invalidKey: passagePositionKey(action) };
-            }
+            // A door action on anything else is not a passage to take over.
+            if (!isRoutePassage(block)) continue;
 
             const passagePos = normalizePassagePosition(block);
             const key = passagePositionKey(passagePos);
-            const crossing = findPassageCrossing(
-                routePoints,
-                passagePos,
-                block._properties?.facing,
-                nodeIndex + 1
-            );
-            if (!crossing) return { valid: false, passages, invalidKey: key };
-
-            // Only a second crossing through this doorway makes the action
-            // pointless. Comparing the route endpoint against the doorway's
-            // infinite plane rejects valid routes around large fenced areas:
-            // the path can cross that plane elsewhere without coming back
-            // through the doorway.
-            if (hasLaterPassageRecrossing(
-                routePoints,
-                crossing,
-                passagePos,
-                block._properties?.facing
-            )) {
-                return { valid: false, passages, invalidKey: key };
-            }
-
+            if (passages.has(key)) continue;
+            const facing = block._properties?.facing;
             passages.set(key, {
                 key,
                 passagePos,
-                facing: block._properties?.facing,
-                approachSide: crossing.approachSide,
-                exitSide: crossing.exitSide,
-                approachPoint: crossing.approachPoint,
-                exitPoint: crossing.exitPoint
+                facing,
+                // A door action sits on the very node that steps into the
+                // doorway, so the route normally reports its own progress past
+                // it. Path shortcuts can drop that node; then nothing can, and
+                // the passage stays needed for as long as this route lives.
+                onPath: routeEntersPassage(path, passagePos),
+                ...approachFromRoute(points, passagePos, facing, nodeIndex + nodeOffset)
             });
         }
     }
 
-    return { valid: true, passages, invalidKey: null };
+    return passages;
 }
 
 /**
- * Determine whether a route actually crosses a specific passage around its
- * action node.
- * @param {Array<any>} points Bot start followed by all path nodes
- * @param {{ x:number,y:number,z:number }} passagePos
+ * The last place on the route before the doorway that is squarely on one side
+ * of it. A route the bot is already standing in the middle of can fail to
+ * provide one, so the side alone is reported when no point is close enough to
+ * stand on, and the caller derives a stand point from the passage itself.
+ *
+ * @param {Array<any>} points
+ * @param {{ x:number, y:number, z:number }} passagePos
  * @param {string|undefined} facing
- * @param {number} actionPointIndex Index within `points`
- * @returns {{
- *   approachSide:-1|1,
- *   exitSide:-1|1,
- *   afterIndex:number,
- *   approachPoint:{x:number,y:number,z:number},
- *   exitPoint:{x:number,y:number,z:number}
- * }|null}
+ * @param {number} actionIndex Index of the node carrying the door action
+ * @returns {{ approachSide: -1|1|null, approachPoint: {x:number,y:number,z:number}|null }}
  */
-function findPassageCrossing(
-    points,
-    passagePos,
-    facing,
-    actionPointIndex
-) {
-    const before = findSidePoint(points, passagePos, facing, actionPointIndex - 1, -1);
-    const after = findSidePoint(points, passagePos, facing, actionPointIndex + 1, 1);
-    return crossingFromPoints(points, before, after, passagePos, facing);
-}
-
-/**
- * @typedef {{
- *   key:string,
- *   passagePos:{x:number,y:number,z:number},
- *   facing?:string,
- *   approachSide:-1|1,
- *   exitSide:-1|1,
- *   approachPoint:{x:number,y:number,z:number},
- *   exitPoint:{x:number,y:number,z:number}
- * }} RoutePassagePlan
- */
-
-function blockAt(bot, pos) {
-    if (typeof bot?.blockAt !== 'function') return null;
-    return bot.blockAt(new Vec3(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z)));
-}
-
-function findSidePoint(points, passagePos, facing, startIndex, step) {
-    for (let i = startIndex; i >= 0 && i < points.length; i += step) {
-        const point = points[i];
-        if (!isFinitePoint(point)) continue;
+function approachFromRoute(points, passagePos, facing, actionIndex) {
+    for (let i = Math.min(actionIndex - 1, points.length - 1); i >= 0; i--) {
+        if (!isFinitePoint(points[i])) continue;
+        const point = routeStandPoint(points[i]);
         const planeDistance = passagePlaneDistance(point, passagePos, facing);
         if (Math.abs(planeDistance) < SIDE_CLEARANCE) continue;
-        return {
-            point,
-            side: /** @type {-1|1} */ (Math.sign(planeDistance)),
-            index: i
-        };
-    }
-    return null;
-}
 
-function crossingFromPoints(points, before, after, passagePos, facing) {
-    if (!before || !after || before.side === after.side) return null;
-    if (!isNearPassage(before.point, passagePos, facing)
-        || !isNearPassage(after.point, passagePos, facing)) {
-        return null;
+        const approachSide = /** @type {-1|1} */ (Math.sign(planeDistance));
+        return isNearPassage(point, passagePos, facing)
+            // A* already proved this point reachable, so prefer it over anything
+            // derived from the doorway.
+            ? { approachSide, approachPoint: point }
+            : { approachSide, approachPoint: null };
     }
-    return {
-        approachSide: before.side,
-        exitSide: after.side,
-        afterIndex: after.index,
-        // Both stand points come from the validated route, so passage_transit
-        // walks to positions A* already proved reachable.
-        approachPoint: routeStandPoint(before.point),
-        exitPoint: routeStandPoint(
-            lastCorridorPoint(points, after, passagePos, facing)
-        )
-    };
-}
-
-/**
- * Farthest consecutive route point that still describes this crossing on the
- * exit side. Stopping at the first one can leave the bot inside the door swing.
- */
-function lastCorridorPoint(points, after, passagePos, facing) {
-    let farthest = after.point;
-    for (let i = after.index + 1; i < points.length; i++) {
-        const point = points[i];
-        if (!isFinitePoint(point)) continue;
-        if (clearSide(point, passagePos, facing) !== after.side) break;
-        if (!isNearPassage(point, passagePos, facing)) break;
-        farthest = point;
-    }
-    return farthest;
+    return { approachSide: null, approachPoint: null };
 }
 
 /**
@@ -230,30 +170,45 @@ export function passageCenter(passagePos) {
 }
 
 /**
- * Reject only a later return through the same physical doorway corridor. A
- * route crossing the doorway's mathematical plane somewhere else is a normal
- * part of a wide detour and must remain valid.
+ * Where to stand to reach a passage from one of its sides.
+ * @param {{ x:number, y:number, z:number }} passagePos
+ * @param {string|undefined} facing
+ * @param {-1|1} side
+ * @param {number} distance
  */
-function hasLaterPassageRecrossing(points, crossing, passagePos, facing) {
-    let previous = {
-        point: points[crossing.afterIndex],
-        side: crossing.exitSide
-    };
+export function passageStandPoint(passagePos, facing, side, distance) {
+    const center = passageCenter(passagePos);
+    const step = side * distance;
+    return facing === 'east' || facing === 'west'
+        ? { x: center.x + step, y: center.y, z: center.z }
+        : { x: center.x, y: center.y, z: center.z + step };
+}
 
-    for (let i = crossing.afterIndex + 1; i < points.length; i++) {
-        const point = points[i];
-        if (!isFinitePoint(point)) continue;
-        const side = clearSide(point, passagePos, facing);
-        if (side === 0) continue;
-
-        if (side !== previous.side
-            && isNearPassage(previous.point, passagePos, facing)
-            && isNearPassage(point, passagePos, facing)) {
-            return true;
-        }
-        previous = { point, side };
+/**
+ * Whether a route still walks through a specific passage.
+ *
+ * mineflayer-pathfinder shifts each node off the emitted path array as the bot
+ * reaches it, so the array a `path_update` handed over keeps describing what is
+ * still ahead. An open passage carries no door action at all, which makes this
+ * the only evidence that the bot has yet to go through one.
+ *
+ * @param {Array<any>} path
+ * @param {{ x:number, y:number, z:number }} passagePos
+ */
+export function routeEntersPassage(path, passagePos) {
+    if (!Array.isArray(path) || !passagePos) return false;
+    for (const node of path) {
+        if (!isFinitePoint(node)) continue;
+        if (Math.floor(node.x) !== passagePos.x || Math.floor(node.z) !== passagePos.z) continue;
+        // Either half of a two-block door puts the bot in the same doorway.
+        if (Math.abs(Math.floor(node.y) - passagePos.y) <= 1) return true;
     }
     return false;
+}
+
+function blockAt(bot, pos) {
+    if (typeof bot?.blockAt !== 'function') return null;
+    return bot.blockAt(new Vec3(Math.floor(pos.x), Math.floor(pos.y), Math.floor(pos.z)));
 }
 
 function isNearPassage(point, passagePos, facing) {
@@ -263,20 +218,13 @@ function isNearPassage(point, passagePos, facing) {
     const lateralDistance = facing === 'east' || facing === 'west'
         ? Math.abs(point.z - cz)
         : Math.abs(point.x - cx);
-    return normalDistance <= CROSSING_NEIGHBOR_DISTANCE
+    return normalDistance <= NEIGHBOR_DISTANCE
         && lateralDistance <= CORRIDOR_HALF_WIDTH
-        && Math.abs(point.y - passagePos.y) <= CROSSING_VERTICAL_TOLERANCE;
+        && Math.abs(point.y - passagePos.y) <= VERTICAL_TOLERANCE;
 }
 
 function isFinitePoint(point) {
     return Number.isFinite(point?.x)
         && Number.isFinite(point?.y)
         && Number.isFinite(point?.z);
-}
-
-function clearSide(point, passagePos, facing) {
-    if (!isFinitePoint(point)) return 0;
-    const planeDistance = passagePlaneDistance(point, passagePos, facing);
-    if (Math.abs(planeDistance) < SIDE_CLEARANCE) return 0;
-    return /** @type {-1|1} */ (Math.sign(planeDistance));
 }

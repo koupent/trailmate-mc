@@ -8,27 +8,20 @@
  * that state.
  */
 
-import { safetyDutyPending } from './transitions.js';
-
 const DEFAULT_PERIOD_MS = 250;
 
-/** Mirror DoorTracker transaction state onto the FSM blackboard. */
+/**
+ * Mirror the DoorTracker job onto the FSM blackboard.
+ *
+ * Nothing is stopped here. The long normal action observes the shared
+ * `shouldYieldNormalAction` signal and hands control back on its own, and
+ * `passage_transit` then issues whatever goal the job needs. Stopping movement
+ * on every one of these ticks reset the pathfinder four times a second while
+ * the bot was still walking somewhere perfectly sensible.
+ */
 export function syncPassageTransit(ctx, targets) {
     const pending = Boolean(ctx?.doors?.passagePending);
     if (targets) targets._passagePending = pending;
-
-    if (!pending || targets?.activeId === 'combat' || targets?.activeId === 'passage_transit'
-        || ctx?.hazardEscape?.active
-        || (targets && safetyDutyPending(targets))) {
-        return pending;
-    }
-
-    // Acquire the transaction before the stop: stopping resets the pathfinder,
-    // and only a candidate the FSM has not taken yet may be dropped there.
-    ctx?.doors?.claimPassage?.();
-    // Stop ordinary movement immediately; the active async action observes the
-    // shared shouldYieldNormalAction signal and returns control to the FSM.
-    ctx?.movement?.stop?.();
     return pending;
 }
 

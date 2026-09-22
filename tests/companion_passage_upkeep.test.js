@@ -121,7 +121,8 @@ describe('CompanionOrchestrator passage upkeep', () => {
                 hasGoal: false,
                 isBlocked: false,
                 isUnreachable: false,
-                stop() {},
+                stops: 0,
+                stop() { this.stops += 1; },
                 goToward() {}
             },
             deathRecovery: { active: false }
@@ -167,20 +168,19 @@ describe('CompanionOrchestrator passage upkeep', () => {
             assert.equal(manager.getActiveFsmId(), 'passage_transit');
             assert.equal(world.activations.length, 0, 'detection must not close outside the FSM state');
             assert.equal(world.bot.entity.position.z, -2, 'normal movement must yield within reach');
+            // Upkeep only mirrors the job onto the blackboard. Stopping normal
+            // movement here reset the pathfinder on every one of these ticks.
+            assert.equal(ctx.movement.stops, 0);
 
             await manager.tick();
             assert.equal(world.activations.length, 1);
+            assert.equal(ctx.movement.stops, 1, 'the state stops once, to activate');
             assert.equal(manager.getActiveFsmId(), 'passage_transit');
             assert.equal(resumed, false);
 
-            // The first close request is not reflected by the server.
+            // The first close request is not reflected by the server; the retry
+            // happens as soon as the confirmation window is over.
             world.advance(1201);
-            await manager.tick();
-            assert.equal(world.activations.length, 1);
-            assert.equal(resumed, false);
-
-            // Retry succeeds, but normal work still waits for world-state confirmation.
-            world.advance(600);
             await manager.tick();
             assert.equal(world.activations.length, 2);
             assert.equal(resumed, false);
