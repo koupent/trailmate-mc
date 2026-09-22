@@ -1,7 +1,7 @@
 /**
  * The item picker: which items the companion keeps, and how many.
  *
- * Two rules shape this file.
+ * Three rules shape this file.
  *
  * The edits live in `state.retention`, never in the DOM. Switching tabs throws
  * the panel away and redraws it from that object, so a number typed on the
@@ -10,7 +10,14 @@
  * Nothing redraws on a timer. The status panel next door is replaced wholesale
  * every two seconds, which would eat a half-typed number; this zone reloads
  * only when it is opened with no unsaved edits, exactly like `#settings-form`.
+ *
+ * Markup is only built when the *structure* changes — a different category, a
+ * different set of items. Ticking a box changes no structure, so the row is
+ * written back one property at a time and the row someone is looking at stays
+ * exactly where it is, with the keyboard focus still on it.
  */
+
+import { syncHtml, syncProp, syncText } from './domSync.js';
 
 const ZONE_ID = 'retention-zone';
 const tabsEl = document.getElementById('retention-tabs');
@@ -44,8 +51,8 @@ function escapeHtml(value) {
 
 function setMsg(text, kind = '') {
   if (!msgEl) return;
-  msgEl.textContent = text || '';
-  msgEl.className = `msg ${kind}`.trim();
+  syncText(msgEl, text || '');
+  syncProp(msgEl, 'className', `msg ${kind}`.trim());
 }
 
 async function api(path, options = {}) {
@@ -112,56 +119,57 @@ function syncActions() {
 
 function renderTabs() {
   if (!tabsEl) return;
-  tabsEl.innerHTML = (state.catalog?.categories || [])
-    .map((category) => {
-      const active = category.id === state.activeCategory;
-      return `<button type="button" class="tab${active ? ' is-active' : ''}"
-        role="tab" aria-selected="${active ? 'true' : 'false'}"
-        data-retention-tab="${escapeHtml(category.id)}">${escapeHtml(category.label)}</button>`;
-    })
-    .join('');
+  const categories = state.catalog?.categories || [];
+  // どれが選ばれているかは markup に含めない。選択の移動で作り直さないため。
+  syncHtml(
+    tabsEl,
+    categories
+      .map(
+        (category) => `<button type="button" class="tab" role="tab" aria-selected="false"
+        data-retention-tab="${escapeHtml(category.id)}">${escapeHtml(category.label)}</button>`
+      )
+      .join('')
+  );
+  tabsEl.querySelectorAll('[data-retention-tab]').forEach((button) => {
+    const active = button.getAttribute('data-retention-tab') === state.activeCategory;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
 }
 
+/**
+ * 行の骨格だけ。checked / value / disabled は書かない——ここに書くと、
+ * チェック1つで markup が変わり、パネルごと作り直すことになる。
+ * 値は描いた後に syncItemRow が入れる。
+ */
 function renderItemRow(category, item) {
-  const entry = entryFor(category.id);
-  const configured = entry.items[item.name];
-  const kept = configured !== 0;
-  const limit = kept && configured != null ? configured : '';
   const detail = item.foodPoints != null ? `満腹度 ${item.foodPoints}` : '';
-  return `<li class="retention-item${kept ? '' : ' is-off'}">
+  const name = escapeHtml(item.name);
+  return `<li class="retention-item" data-retention-row="${name}">
     <label class="retention-item-name">
-      <input type="checkbox" data-retention-keep="${escapeHtml(item.name)}" ${kept ? 'checked' : ''} />
+      <input type="checkbox" data-retention-keep="${name}" />
       <span>${escapeHtml(item.label || item.name)}</span>
     </label>
     <span class="retention-item-detail muted">${escapeHtml(detail)}</span>
     <label class="retention-item-limit">
       上限
       <input type="number" inputmode="numeric" min="0" max="${category.limit.max}"
-        placeholder="なし" value="${escapeHtml(limit)}"
-        data-retention-item-limit="${escapeHtml(item.name)}" ${kept ? '' : 'disabled'} />
+        placeholder="なし" data-retention-item-limit="${name}" />
     </label>
   </li>`;
 }
 
-function renderPanel() {
-  if (!panelsEl) return;
-  const category = categoryById(state.activeCategory);
-  if (!category) {
-    panelsEl.innerHTML = '<div class="muted">カテゴリがありません</div>';
-    return;
-  }
-  const entry = entryFor(category.id);
+function panelHtml(category) {
   const floorNote = category.limit.min > 0
     ? `（最小 ${category.limit.min}。${category.limit.min} なら装備中の分だけを残します）`
     : '（0 で一切残さない）';
 
-  panelsEl.innerHTML = `
+  return `
     <div class="retention-total">
       <label>
         ${escapeHtml(category.label)}は合計
         <input type="number" inputmode="numeric" id="retention-category-limit"
-          min="${category.limit.min}" max="${category.limit.max}"
-          value="${escapeHtml(entry.limit)}" />
+          min="${category.limit.min}" max="${category.limit.max}" />
         個まで
       </label>
       <span class="muted">${escapeHtml(floorNote)}</span>
@@ -173,6 +181,41 @@ function renderPanel() {
       ${category.items.map((item) => renderItemRow(category, item)).join('')}
     </ul>
   `;
+}
+
+/** 行1つを state から書き戻す。作り直さないので、位置もフォーカスも動かない。 */
+function syncItemRow(row, categoryId, name) {
+  const configured = entryFor(categoryId).items[name];
+  const kept = configured !== 0;
+  row.classList.toggle('is-off', !kept);
+  syncProp(row.querySelector('[data-retention-keep]'), 'checked', kept);
+  const limitInput = row.querySelector('[data-retention-item-limit]');
+  syncProp(limitInput, 'disabled', !kept);
+  syncProp(limitInput, 'value', kept && configured != null ? String(configured) : '');
+}
+
+function syncPanelValues(category) {
+  const entry = entryFor(category.id);
+  syncProp(
+    panelsEl.querySelector('#retention-category-limit'),
+    'value',
+    entry.limit === '' ? '' : String(entry.limit)
+  );
+  panelsEl.querySelectorAll('[data-retention-row]').forEach((row) => {
+    syncItemRow(row, category.id, row.getAttribute('data-retention-row'));
+  });
+}
+
+function renderPanel() {
+  if (!panelsEl) return;
+  const category = categoryById(state.activeCategory);
+  if (!category) {
+    syncHtml(panelsEl, '<div class="muted">カテゴリがありません</div>');
+    return;
+  }
+  // 同じカテゴリを描き直しても markup は同じ。作り直さず、値だけ書き戻す。
+  syncHtml(panelsEl, panelHtml(category));
+  syncPanelValues(category);
 }
 
 function render() {
@@ -191,12 +234,9 @@ async function loadRetention({ force = false } = {}) {
     if (!data.catalog) {
       state.catalog = null;
       state.loaded = false;
-      if (panelsEl) {
-        panelsEl.innerHTML = `<div class="muted">${escapeHtml(
-          data.message || 'アイテム一覧を取得できませんでした。'
-        )}</div>`;
-      }
-      if (tabsEl) tabsEl.innerHTML = '';
+      const message = data.message || 'アイテム一覧を取得できませんでした。';
+      syncHtml(panelsEl, `<div class="muted">${escapeHtml(message)}</div>`);
+      syncHtml(tabsEl, '');
       syncActions();
       return;
     }
@@ -209,7 +249,7 @@ async function loadRetention({ force = false } = {}) {
     render();
   } catch (error) {
     state.loaded = false;
-    if (panelsEl) panelsEl.innerHTML = `<div class="msg err">${escapeHtml(error.message)}</div>`;
+    syncHtml(panelsEl, `<div class="msg err">${escapeHtml(error.message)}</div>`);
     syncActions();
   } finally {
     state.loading = false;
@@ -268,7 +308,9 @@ panelsEl?.addEventListener('change', (event) => {
   const keepName = target.getAttribute?.('data-retention-keep');
   if (keepName) {
     setItemKept(state.activeCategory, keepName, target.checked);
-    renderPanel();
+    // 変わったのはこの行だけ。パネルごと作り直すと、外した行が視界から消える。
+    const row = target.closest('[data-retention-row]');
+    if (row) syncItemRow(row, state.activeCategory, keepName);
     return;
   }
   const limitName = target.getAttribute?.('data-retention-item-limit');

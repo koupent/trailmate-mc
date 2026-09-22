@@ -1,4 +1,5 @@
 import { createLogFollowState } from './logFollow.js';
+import { syncHtml, syncProp, syncText, syncTextKeepingScroll } from './domSync.js';
 
 /* ===== helpers ===== */
 const POLL_INTERVAL_MS = 2000;
@@ -17,8 +18,8 @@ async function api(path, options = {}) {
 }
 
 function setMsg(el, text, kind = '') {
-  el.textContent = text || '';
-  el.className = `msg ${kind}`.trim();
+  syncText(el, text || '');
+  syncProp(el, 'className', `msg ${kind}`.trim());
 }
 
 function fmt(value) {
@@ -87,7 +88,6 @@ let backendReady = false;
 /** ViaProxy 込みでスポーンしてよいか。 */
 let spawnReady = false;
 let lastBackendMessage = '';
-let lastMsLoginRenderKey = '';
 let lastMsLoginUrl = '';
 let lastMsLoginCode = '';
 
@@ -101,20 +101,19 @@ function applyMode(isReady, settings = {}) {
   shellApp.classList.toggle('shell-hidden', !readyToSpawn);
 
   panelSetup.hidden = false;
-  if (readyToSpawn) {
-    settingsSlot.appendChild(panelSetup);
-    // ウィザード完了直後だけ運用タブへ戻す（設定タブ閲覧中は維持）
-    if (!wasReady) showTab('operate');
-  } else {
-    wizardSlot.appendChild(panelSetup);
-  }
+  // 同じスロットへの appendChild でもノードは差し替わる（入力中のフォーカスが飛ぶ）。
+  const slot = readyToSpawn ? settingsSlot : wizardSlot;
+  if (panelSetup.parentElement !== slot) slot.appendChild(panelSetup);
+  // ウィザード完了直後だけ運用タブへ戻す（設定タブ閲覧中は維持）
+  if (readyToSpawn && !wasReady) showTab('operate');
 
   updateAccountStepVisibility(settings.authMethod === 'NONE');
 }
 
 function showTab(tabId) {
   currentTab = tabId;
-  document.querySelectorAll('.tab').forEach((button) => {
+  // `.tab` だけだと保持ピッカーのサブタブまで掴んで、選択表示を消してしまう。
+  document.querySelectorAll('.tab[data-tab]').forEach((button) => {
     const active = button.getAttribute('data-tab') === tabId;
     button.classList.toggle('is-active', active);
     button.setAttribute('aria-selected', active ? 'true' : 'false');
@@ -147,7 +146,7 @@ function renderSetup(setup, settings = {}) {
   applyMode(isReady, settings);
 
   if (!setup || isReady) {
-    setupChecklist.innerHTML = '';
+    syncHtml(setupChecklist, '');
   } else {
     const items = (setup.steps || [])
       .map((step) => {
@@ -156,7 +155,10 @@ function renderSetup(setup, settings = {}) {
         return `<li class="${cls}">[${mark}] ${escapeHtml(step.label)}</li>`;
       })
       .join('');
-    setupChecklist.innerHTML = `<strong class="ng">セットアップを完了してください</strong><ul>${items}</ul>`;
+    syncHtml(
+      setupChecklist,
+      `<strong class="ng">セットアップを完了してください</strong><ul>${items}</ul>`
+    );
   }
 
   const serverOk = setup?.steps?.find((s) => s.id === 'server')?.ok;
@@ -181,32 +183,36 @@ function syncSpawnControls(setup = null) {
   if (!setupReady) {
     const blockers = setup?.blockers || [];
     spawnBlockReason.classList.remove('hidden');
-    spawnBlockReason.textContent =
+    syncText(
+      spawnBlockReason,
       blockers.length > 0
         ? `スポーンできません: ${blockers.join(' / ')}`
-        : 'スポーンできません: セットアップが未完了です';
+        : 'スポーンできません: セットアップが未完了です'
+    );
     return;
   }
 
   if (!backendReady || !spawnReady) {
     spawnBlockReason.classList.remove('hidden');
-    spawnBlockReason.textContent =
-      lastBackendMessage || 'スポーンの前提条件がまだ揃っていません。下の診断を確認してください。';
+    syncText(
+      spawnBlockReason,
+      lastBackendMessage || 'スポーンの前提条件がまだ揃っていません。下の診断を確認してください。'
+    );
     return;
   }
 
   spawnBlockReason.classList.add('hidden');
-  spawnBlockReason.textContent = '';
+  syncText(spawnBlockReason, '');
 }
 
 function renderSpawnDiagnostics(diagnostics) {
   if (!spawnDiagnosticsEl) return;
   const steps = Array.isArray(diagnostics?.steps) ? diagnostics.steps : [];
   if (!steps.length) {
-    spawnDiagnosticsEl.innerHTML = '';
+    syncHtml(spawnDiagnosticsEl, '');
     return;
   }
-  spawnDiagnosticsEl.innerHTML = steps
+  const html = steps
     .map((step) => {
       const state = step.state === 'ok' ? 'ok' : step.state === 'starting' ? 'starting' : 'error';
       const mark = state === 'ok' ? '✓' : state === 'starting' ? '…' : '✗';
@@ -217,6 +223,7 @@ function renderSpawnDiagnostics(diagnostics) {
       </li>`;
     })
     .join('');
+  syncHtml(spawnDiagnosticsEl, html);
 }
 
 function updateAccountStepVisibility(offline) {
@@ -235,32 +242,29 @@ function updateAccountStepVisibility(offline) {
 function renderBotDisplayName(account, authMethod) {
   if (!botDisplayName) return;
   if (authMethod === 'NONE') {
-    botDisplayName.textContent = '';
-    botDisplayName.className = 'msg';
+    setMsg(botDisplayName, '');
     return;
   }
   if (account?.registered && account.name) {
-    botDisplayName.textContent = account.name;
-    botDisplayName.className = 'msg ok';
+    setMsg(botDisplayName, account.name, 'ok');
     return;
   }
-  botDisplayName.textContent = '未登録（設定の Microsoft ログインを完了してください）';
-  botDisplayName.className = 'msg err';
+  setMsg(botDisplayName, '未登録（設定の Microsoft ログインを完了してください）', 'err');
 }
 
 function renderRegisteredAccount(account) {
   if (!account) {
-    msAccountStatus.textContent = '登録状態不明';
-    msAccountStatus.className = 'msg';
+    setMsg(msAccountStatus, '登録状態不明');
     return;
   }
   if (account.registered && account.name) {
-    msAccountStatus.textContent = `登録済み: ${account.name}（${account.count}件）`;
-    msAccountStatus.className = 'msg ok';
+    setMsg(msAccountStatus, `登録済み: ${account.name}（${account.count}件）`, 'ok');
   } else {
-    msAccountStatus.textContent =
-      '未登録です。新しい PC では「ログイン開始」が必須です（saves.json のコピーは不要・非推奨）。';
-    msAccountStatus.className = 'msg err';
+    setMsg(
+      msAccountStatus,
+      '未登録です。新しい PC では「ログイン開始」が必須です（saves.json のコピーは不要・非推奨）。',
+      'err'
+    );
   }
 }
 
@@ -392,15 +396,18 @@ function renderStatus(status) {
       status?.backendMessage ||
       status?.error ||
       'ボット側の準備中です。コンテナ起動が終わるまでお待ちください。';
-    statusPanel.innerHTML = `
+    syncHtml(
+      statusPanel,
+      `
       <div><span class="pill off">準備中</span></div>
       <div class="muted">${escapeHtml(message)}</div>
-    `;
+    `
+    );
     return;
   }
 
   if (status.error && status.spawned == null) {
-    statusPanel.innerHTML = `<div class="msg err">${escapeHtml(status.error)}</div>`;
+    syncHtml(statusPanel, `<div class="msg err">${escapeHtml(status.error)}</div>`);
     return;
   }
 
@@ -418,12 +425,15 @@ function renderStatus(status) {
       status.lastError && status.spawnReady !== false
         ? `<div class="msg err">前回のエラー: ${escapeHtml(status.lastError)}</div>`
         : '';
-    statusPanel.innerHTML = `
+    syncHtml(
+      statusPanel,
+      `
       <div><span class="pill off">未スポーン</span> ${escapeHtml(status.botName || '')}</div>
       <div class="muted">${status.spawning ? '接続処理中…' : 'ワールドには出ていません。時間は進みません。'}</div>
       ${preparingNote}
       ${err}
-    `;
+    `
+    );
     return;
   }
 
@@ -441,7 +451,9 @@ function renderStatus(status) {
         .join('')}</ul>`
     : '<div class="muted">持ち物なし</div>';
 
-  statusPanel.innerHTML = `
+  syncHtml(
+    statusPanel,
+    `
     <div><span class="pill on">スポーン中</span> ${escapeHtml(status.username || status.botName || '')}</div>
     <div>HP: ${fmt(status.health)} / 空腹: ${fmt(status.food)}</div>
     <div>座標: ${escapeHtml(pos)}</div>
@@ -450,7 +462,8 @@ function renderStatus(status) {
     <div>希望モード: <strong>${escapeHtml(status.preferredMode || '-')}</strong></div>
     <div>動作中 FSM: <strong>${escapeHtml(status.activeFsm || '-')}</strong></div>
     <div>持ち物:${inv}</div>
-  `;
+  `
+  );
 }
 
 async function refreshStatus() {
@@ -478,6 +491,7 @@ async function refreshStatus() {
 
 /* ===== microsoft login ===== */
 const COPY_FEEDBACK_MS = 1200;
+const COPY_LABELS = { url: 'URL をコピー', code: 'コードをコピー' };
 
 msLoginBtn.addEventListener('click', async () => {
   msLoginBtn.disabled = true;
@@ -503,26 +517,33 @@ msCancelBtn.addEventListener('click', async () => {
   }
 });
 
-function msLoginRenderKey(state) {
-  return [
-    state.url || '',
-    state.code || '',
-    state.active ? '1' : '0',
-    state.done ? '1' : '0',
-    state.success ? '1' : '0',
-    state.accountName || '',
-    state.error || '',
-    state.output ? state.output.slice(-80) : ''
-  ].join('|');
+/**
+ * コピー直後だけ変わる見た目。パネルは作り直されうるので、状態は DOM ではなく
+ * ここが持ち、描き直しのたびに貼り直す。
+ */
+let copiedKind = null;
+let copiedTimer = null;
+
+function applyCopyFeedback() {
+  msLoginPanel.querySelectorAll('[data-copy]').forEach((button) => {
+    const kind = button.getAttribute('data-copy');
+    syncProp(
+      button,
+      'textContent',
+      kind === copiedKind ? 'コピー済み' : COPY_LABELS[kind] || 'コピー'
+    );
+  });
 }
 
-async function copyText(text, button) {
+async function copyText(text, kind) {
   try {
     await navigator.clipboard.writeText(text);
-    const previous = button.textContent;
-    button.textContent = 'コピー済み';
-    setTimeout(() => {
-      button.textContent = previous;
+    copiedKind = kind;
+    applyCopyFeedback();
+    clearTimeout(copiedTimer);
+    copiedTimer = setTimeout(() => {
+      copiedKind = null;
+      applyCopyFeedback();
     }, COPY_FEEDBACK_MS);
   } catch {
     setMsg(msLoginMsg, 'コピーに失敗しました。リンクを手動で選択してください', 'err');
@@ -539,9 +560,6 @@ function msLoginStepHtml(label, bodyHtml) {
 }
 
 function renderMsLoginPanel(state) {
-  const key = msLoginRenderKey(state);
-  if (key === lastMsLoginRenderKey) return;
-  lastMsLoginRenderKey = key;
   lastMsLoginUrl = state.url || '';
   lastMsLoginCode = state.code || '';
 
@@ -554,7 +572,7 @@ function renderMsLoginPanel(state) {
         '1. この URL を開く',
         `<div class="row">
           <a class="ms-login-link" href="${safeUrl}" target="_blank" rel="noopener noreferrer">${safeUrl}</a>
-          <button type="button" data-copy="url">URL をコピー</button>
+          <button type="button" data-copy="url">${COPY_LABELS.url}</button>
         </div>`
       )
     );
@@ -567,7 +585,7 @@ function renderMsLoginPanel(state) {
         '2. コード（自動入力されないとき）',
         `<div class="row">
           <code class="ms-login-code">${safeCode}</code>
-          <button type="button" data-copy="code">コードをコピー</button>
+          <button type="button" data-copy="code">${COPY_LABELS.code}</button>
         </div>`
       )
     );
@@ -601,7 +619,9 @@ function renderMsLoginPanel(state) {
     parts.push(`<div class="ms-login-note">${escapeHtml(state.output.slice(-500))}</div>`);
   }
 
-  msLoginPanel.innerHTML = parts.join('') || '<div class="ms-login-note"></div>';
+  syncHtml(msLoginPanel, parts.join('') || '<div class="ms-login-note"></div>');
+  // 作り直された直後でも、1.2 秒のコピー表示はここで貼り直される。
+  applyCopyFeedback();
 }
 
 msLoginPanel.addEventListener('click', (event) => {
@@ -610,7 +630,7 @@ msLoginPanel.addEventListener('click', (event) => {
   const kind = button.getAttribute('data-copy');
   const text = kind === 'code' ? lastMsLoginCode : lastMsLoginUrl;
   if (!text) return;
-  void copyText(text, button);
+  void copyText(text, kind);
 });
 
 async function refreshMsLogin() {
@@ -628,17 +648,27 @@ async function refreshMsLogin() {
 
     renderMsLoginPanel(state);
   } catch (error) {
-    lastMsLoginRenderKey = '';
-    msLoginPanel.textContent = error.message;
+    syncText(msLoginPanel, error.message);
   }
 }
 
 /* ===== update ===== */
 let updatePollTimer = null;
+/** 更新1回につき1度だけ自動で開く。手で閉じたぶんを開き直さないための印。 */
+let updateLogsAutoOpened = false;
+
+/** @returns {boolean} この呼び出しで開いたか（開いた直後だけ末尾へ寄せたい） */
+function autoOpenUpdateLogs() {
+  if (!updateLogsDetails || updateLogsAutoOpened) return false;
+  updateLogsAutoOpened = true;
+  if (updateLogsDetails.open) return false;
+  updateLogsDetails.open = true;
+  return true;
+}
 
 function renderUpdateStatus(status) {
   if (!status) {
-    updatePanel.textContent = '更新情報を取得できません';
+    syncText(updatePanel, '更新情報を取得できません');
     updateApplyBtn.hidden = true;
     updateApplyBtn.disabled = true;
     updateZone.classList.remove('is-alert', 'is-busy');
@@ -677,25 +707,34 @@ function renderUpdateStatus(status) {
     : '';
 
   if (needsAttention) {
-    updatePanel.innerHTML = `
+    syncHtml(
+      updatePanel,
+      `
       ${badge}
       <span>現在 <strong>${current}</strong></span>
       <span>最新 <strong>${latest}</strong>${link}</span>
       ${err}
-    `;
+    `
+    );
   } else {
-    updatePanel.innerHTML = `
+    syncHtml(
+      updatePanel,
+      `
       ${badge}
       <span>${current}</span>
       ${err}
-    `;
+    `
+    );
   }
 
   updateApplyBtn.hidden = !needsAttention;
   updateApplyBtn.disabled = updating || !available;
   if (updating) {
     setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
-    if (updateLogsDetails) updateLogsDetails.open = true;
+    autoOpenUpdateLogs();
+  } else {
+    // 次の更新まで巻き戻す。1回の更新中は開き直さない。
+    updateLogsAutoOpened = false;
   }
 }
 
@@ -710,14 +749,13 @@ async function refreshUpdateStatus() {
       stopUpdateLogPolling();
     }
   } catch (error) {
-    updatePanel.innerHTML = `<div class="msg err">${escapeHtml(error.message)}</div>`;
+    syncHtml(updatePanel, `<div class="msg err">${escapeHtml(error.message)}</div>`);
     updateApplyBtn.disabled = true;
   }
 }
 
-/** 最下部追従。details を先に開き、レイアウト後に pin する。 */
-function setLogTextFollowBottom(el, text, { forceBottom = false, openDetails = false } = {}) {
-  if (openDetails && updateLogsDetails) updateLogsDetails.open = true;
+/** 最下部追従。details の開閉は呼び出し側が先に決める。 */
+function setLogTextFollowBottom(el, text, { forceBottom = false } = {}) {
   if (forceBottom) updateLogFollow.forceStick();
   return updateLogFollow.setText(el, text, {
     forceBottom,
@@ -734,12 +772,9 @@ if (updateLogsEl) {
 async function refreshUpdateLogs() {
   try {
     const data = await api('/api/update/logs');
-    const openDetails = Boolean(data.updating);
-    setLogTextFollowBottom(updateLogsEl, data.log || '(ログなし)', {
-      // 更新中の初回展開では必ず末尾へ。以降は sticky 状態に従う。
-      forceBottom: openDetails && !(updateLogsDetails && updateLogsDetails.open),
-      openDetails
-    });
+    // 更新中の初回展開では必ず末尾へ。以降は sticky 状態に従う。
+    const justOpened = data.updating ? autoOpenUpdateLogs() : false;
+    setLogTextFollowBottom(updateLogsEl, data.log || '(ログなし)', { forceBottom: justOpened });
     if (data.updating) {
       setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）');
     } else if (data.ok) {
@@ -752,7 +787,8 @@ async function refreshUpdateLogs() {
       await refreshUpdateStatus();
     }
   } catch (error) {
-    setLogTextFollowBottom(updateLogsEl, error.message, { forceBottom: true, openDetails: true });
+    autoOpenUpdateLogs();
+    setLogTextFollowBottom(updateLogsEl, error.message, { forceBottom: true });
   }
 }
 
@@ -820,10 +856,10 @@ updateApplyBtn.addEventListener('click', async () => {
     });
     if (!result.ok) throw new Error(result.error || '更新を開始できませんでした');
     setMsg(updateMsg, '更新を実行中…（完了後に再読み込みしてください）', 'ok');
-    setLogTextFollowBottom(updateLogsEl, result.log || '(ログなし)', {
-      forceBottom: true,
-      openDetails: true
-    });
+    // ここからが新しい更新。自分で押した操作なので、1度だけ開いてよい。
+    updateLogsAutoOpened = false;
+    autoOpenUpdateLogs();
+    setLogTextFollowBottom(updateLogsEl, result.log || '(ログなし)', { forceBottom: true });
     startUpdateLogPolling();
   } catch (error) {
     setMsg(updateMsg, error.message, 'err');
@@ -836,16 +872,16 @@ function updateLogButtons() {
   document.querySelectorAll('[data-log]').forEach((button) => {
     button.classList.toggle('is-active', button.getAttribute('data-log') === currentLogService);
   });
-  logsServiceLabel.textContent = `表示中: ${currentLogService}`;
+  syncText(logsServiceLabel, `表示中: ${currentLogService}`);
 }
 
 async function refreshLogs() {
   try {
     const data = await api(`/api/logs?service=${encodeURIComponent(currentLogService)}&tail=50`);
-    logsEl.textContent = data.logs || '(empty)';
+    syncTextKeepingScroll(logsEl, data.logs || '(empty)');
     updateLogButtons();
   } catch (error) {
-    logsEl.textContent = error.message;
+    syncTextKeepingScroll(logsEl, error.message);
   }
 }
 
