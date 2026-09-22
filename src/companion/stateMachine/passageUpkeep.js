@@ -3,8 +3,9 @@
  *
  * Duty runs (loot pickup, death recovery) await for seconds inside a single
  * orchestrator tick, and the DoorTracker tick in prepareCompanionWorldTick
- * never runs meanwhile. Detection requests the passage_cleanup FSM state and
- * asks interruptible normal work to yield; closing is owned by that state.
+ * never runs meanwhile. Detection requests the passage_transit FSM state and
+ * asks interruptible normal work to yield; every door operation is owned by
+ * that state.
  */
 
 import { safetyDutyPending } from './transitions.js';
@@ -12,16 +13,19 @@ import { safetyDutyPending } from './transitions.js';
 const DEFAULT_PERIOD_MS = 250;
 
 /** Mirror DoorTracker transaction state onto the FSM blackboard. */
-export function syncPassageCleanup(ctx, targets) {
-    const pending = Boolean(ctx?.doors?.cleanupPending);
+export function syncPassageTransit(ctx, targets) {
+    const pending = Boolean(ctx?.doors?.passagePending);
     if (targets) targets._passagePending = pending;
 
-    if (!pending || targets?.activeId === 'combat' || targets?.activeId === 'passage_cleanup'
+    if (!pending || targets?.activeId === 'combat' || targets?.activeId === 'passage_transit'
         || ctx?.hazardEscape?.active
         || (targets && safetyDutyPending(targets))) {
         return pending;
     }
 
+    // Acquire the transaction before the stop: stopping resets the pathfinder,
+    // and only a candidate the FSM has not taken yet may be dropped there.
+    ctx?.doors?.claimPassage?.();
     // Stop ordinary movement immediately; the active async action observes the
     // shared shouldYieldNormalAction signal and returns control to the FSM.
     ctx?.movement?.stop?.();
@@ -45,8 +49,8 @@ export function startPassageUpkeep(ctx, targets, periodMs) {
         if (running || targets?.paused) return;
         running = true;
         Promise.resolve()
-            .then(() => doors.tick({ allowClose: false }))
-            .then(() => syncPassageCleanup(ctx, targets))
+            .then(() => doors.tick())
+            .then(() => syncPassageTransit(ctx, targets))
             .catch((err) => {
                 console.error('[companion] passage upkeep error:', err);
             })

@@ -3,6 +3,7 @@ import {
     analyzePassageRoute,
     isRoutePassage,
     normalizePassagePosition,
+    passageCenter,
     passagePositionKey,
     passageSide
 } from './passageRoute.js';
@@ -20,27 +21,46 @@ const SWING_MATCH_MS = 1500;
 const TRACK_TTL_MS = 45000;
 /** Record which side the bot approached from once this close. */
 const APPROACH_DISTANCE = 2.25;
-/** Require this clearance past the door before closing. */
+/** Require this clearance past the passage before closing it. */
 const CLEAR_DISTANCE = 1.35;
 /** Maximum sideways offset for a passage to lie between bot and owner. */
 const PASSAGE_CORRIDOR_HALF_WIDTH = 1.1;
-/**
- * Block state can lag behind our own activation, so a door we just toggled may
- * still read as closed. Never touch the same door again inside this window.
- */
-const REOPEN_GUARD_MS = 2500;
 /** Allow the server time to publish the open state after our activation. */
 const OPEN_CONFIRM_MS = 2500;
 /** Allow the server time to publish the closed state after our activation. */
 const CLOSE_CONFIRM_MS = 1200;
-/** Back off briefly before retrying a failed or unconfirmed close. */
-const CLOSE_RETRY_MS = 600;
-/** Give an active cleanup a bounded window before normal behavior resumes. */
-const CLEANUP_TIMEOUT_MS = 15000;
-/** Keep approach checks on the same walkable level as the authorized route. */
-const APPROACH_VERTICAL_TOLERANCE = 2.5;
+/** Back off briefly before retrying an unconfirmed open or close. */
+const OPERATION_RETRY_MS = 600;
+/** Give an active transaction a bounded window before normal behavior resumes. */
+export const PASSAGE_TIMEOUT_MS = 15000;
+/** Horizontal distance at which the passage can be activated. */
+const PASSAGE_OPERATE_REACH = 3.5;
+/** Keep activation on the same walkable level as the passage. */
+const PASSAGE_VERTICAL_REACH = 2.5;
+/** GoalNear tolerance used when walking to the route's pre-passage point. */
+const APPROACH_GOAL_RANGE = 1;
+/** GoalNear tolerance used when returning into activation range to close. */
+const CLOSE_GOAL_RANGE = 2.5;
+/** Stand this far from the passage when the route gives no usable point. */
+const PASSAGE_STAND_DISTANCE = 2.5;
+/** A route point only replaces the computed crossing target beyond this range. */
+const CROSS_POINT_MIN_CLEARANCE = 1.65;
+/** After a failure, leave the same passage alone for this long. */
+export const PASSAGE_RETRY_COOLDOWN_MS = 5000;
+
 /**
- * Wooden doors and fence gates the companion may close after passing through.
+ * Ordered stages of one passage transaction. The FSM owns a transaction from
+ * the moment it is requested until the block state confirms the final close.
+ * @typedef {'approach'|'crossing'|'closing'} PassageStage
+ */
+export const PASSAGE_STAGE = /** @type {const} */ ({
+    approach: 'approach',
+    crossing: 'crossing',
+    closing: 'closing'
+});
+
+/**
+ * Wooden doors and fence gates the companion may operate.
  * Iron doors and trapdoors are excluded.
  * @param {{ name?: string }|null|undefined} block
  * @returns {boolean}
@@ -164,9 +184,83 @@ export function isClosedToOpen(oldBlock, newBlock) {
 }
 
 /**
- * Closes wooden doors / fence gates after the bot passes through.
- * Owner opens: swing + look + closed-to-open, or closed-to-open while the owner
- * is near the passage. Bot opens through an authorized pathfinder route.
+ * Where the bot must stand to reach the passage from the approach side.
+ * @param {PassageTransaction} transaction
+ */
+function passageApproachTarget(transaction) {
+    if (transaction.approachPoint) return { ...transaction.approachPoint };
+    return offsetFromPassage(transaction, transaction.approachSide, PASSAGE_STAND_DISTANCE);
+}
+
+/**
+ * Where the bot must stand so the crossing is complete and closing is safe.
+ * @param {PassageTransaction} transaction
+ */
+function passageCrossTarget(transaction) {
+    const exit = transaction.exitPoint;
+    if (exit) {
+        const center = passageCenter(transaction.passagePos);
+        const clearance = Math.hypot(exit.x - center.x, exit.z - center.z);
+        if (clearance >= CROSS_POINT_MIN_CLEARANCE) return { ...exit };
+    }
+    const target = offsetFromPassage(
+        transaction,
+        transaction.exitSide,
+        PASSAGE_STAND_DISTANCE
+    );
+    if (exit) target.y = exit.y;
+    return target;
+}
+
+/**
+ * @param {PassageTransaction} transaction
+ * @param {-1|0|1|null} side
+ * @param {number} distance
+ */
+function offsetFromPassage(transaction, side, distance) {
+    const center = passageCenter(transaction.passagePos);
+    const step = (side ?? 1) * distance;
+    return transaction.facing === 'east' || transaction.facing === 'west'
+        ? { x: center.x + step, y: center.y, z: center.z }
+        : { x: center.x, y: center.y, z: center.z + step };
+}
+
+/**
+ * @typedef {{
+ *   key: string,
+ *   passagePos: { x: number, y: number, z: number },
+ *   facing?: string,
+ *   approachSide: -1|0|1|null,
+ *   exitSide: -1|1|null,
+ *   approachPoint: { x: number, y: number, z: number }|null,
+ *   exitPoint: { x: number, y: number, z: number }|null,
+ *   stage: PassageStage,
+ *   source: 'route'|'tracked',
+ *   claimed: boolean,
+ *   createdAt: number,
+ *   activeSince: number|null,
+ *   activeMs: number,
+ *   openRequestedAt: number|null,
+ *   closeRequestedAt: number|null,
+ *   retryAt: number
+ * }} PassageTransaction
+ */
+
+/**
+ * @typedef {{
+ *   action: 'move'|'open'|'close'|'hold'|'done'|'fail',
+ *   target?: { x: number, y: number, z: number },
+ *   range?: number,
+ *   reason?: string
+ * }} PassageStep
+ */
+
+/**
+ * Detects passages, owns their transaction state, and confirms block state.
+ *
+ * It never operates a door on its own: opening and closing are executed by the
+ * `passage_transit` FSM state through `openPassage()` / `closePassage()`, so no
+ * door handling ever runs beside a normal behavior.
  */
 export class DoorTracker {
     /**
@@ -189,26 +283,21 @@ export class DoorTracker {
          *   facing?: string,
          *   approachSide: -1|0|1|null,
          *   openedAt: number,
-         *   openObserved: boolean,
-         *   closeRequestedAt: number|null,
-         *   retryCloseAt: number,
-         *   cleanupReadyAt: number|null,
-         *   cleanupActiveSince: number|null,
-         *   cleanupActiveMs: number
+         *   openObserved: boolean
          * }[]} */
         this._tracked = [];
-        this._closing = false;
-        this._opening = false;
-        /** @type {Map<string, number>} door key -> last activation time */
-        this._recentOpens = new Map();
+        /** @type {PassageTransaction|null} The single passage under FSM control. */
+        this._transaction = null;
+        /** @type {Map<string, number>} passage key -> time a new transaction may start */
+        this._cooldown = new Map();
+        /** True only while this tracker itself is activating a passage. */
+        this._operating = false;
         this._lastOwnerSwingAt = 0;
-        /** @type {Map<string, import('./passageRoute.js').RoutePassagePlan>} */
-        this._authorizedPathPassages = new Map();
 
         this._onSwing = (entity) => this._handleSwing(entity);
         this._onBlockUpdate = (oldBlock, newBlock) => this._handleBlockUpdate(oldBlock, newBlock);
         this._onPathUpdate = (result) => this._handlePathUpdate(result);
-        this._onPathInvalidated = () => this._clearPathAuthorization();
+        this._onPathInvalidated = () => this._dropUnclaimedRoutePassage();
         this._originalActivateBlock = typeof bot.activateBlock === 'function'
             ? bot.activateBlock.bind(bot)
             : null;
@@ -236,6 +325,7 @@ export class DoorTracker {
         }
         this._pending = [];
         this._tracked = [];
+        this._transaction = null;
     }
 
     /** @returns {number} */
@@ -243,49 +333,69 @@ export class DoorTracker {
         return this._tracked.length;
     }
 
-    /** True after a tracked passage has been crossed and still needs closing. */
-    get cleanupPending() {
-        return this._tracked.some((tracked) => tracked.cleanupReadyAt != null);
+    /** True while a passage transaction needs the FSM to own movement. */
+    get passagePending() {
+        return this._transaction != null;
     }
 
-    /** Passage currently blocking normal movement, if any. */
-    get cleanupTarget() {
-        const tracked = this._tracked.find((entry) => entry.cleanupReadyAt != null);
-        if (!tracked) return null;
+    /** Read-only view of the transaction for the FSM and diagnostics. */
+    get passageTransaction() {
+        const transaction = this._transaction;
+        if (!transaction) return null;
         return {
-            key: tracked.key,
-            doorPos: tracked.doorPos
+            key: transaction.key,
+            passagePos: { ...transaction.passagePos },
+            facing: transaction.facing,
+            stage: transaction.stage,
+            source: transaction.source,
+            claimed: transaction.claimed
         };
     }
 
-    /** Start (or resume) the bounded active-cleanup window. */
-    resumeCleanup() {
-        const tracked = this._tracked.find((entry) => entry.cleanupReadyAt != null);
-        if (tracked && tracked.cleanupActiveSince == null) {
-            tracked.cleanupActiveSince = this.now();
+    /**
+     * Hand the transaction to the FSM. Stopping normal movement resets the
+     * pathfinder, and an acquired transaction must survive that reset.
+     */
+    claimPassage() {
+        if (!this._transaction) return false;
+        this._transaction.claimed = true;
+        return true;
+    }
+
+    /** Start (or resume) the bounded transaction window. */
+    resumePassage() {
+        const transaction = this._transaction;
+        if (transaction && transaction.activeSince == null) {
+            transaction.activeSince = this.now();
         }
     }
 
-    /** Safety/combat may suspend cleanup without consuming its timeout. */
-    suspendCleanup() {
-        const now = this.now();
-        for (const tracked of this._tracked) {
-            if (tracked.cleanupActiveSince != null) {
-                tracked.cleanupActiveMs += Math.max(0, now - tracked.cleanupActiveSince);
-            }
-            tracked.cleanupActiveSince = null;
-        }
+    /** Safety/combat may suspend a transaction without consuming its timeout. */
+    suspendPassage() {
+        const transaction = this._transaction;
+        if (!transaction || transaction.activeSince == null) return;
+        transaction.activeMs += Math.max(0, this.now() - transaction.activeSince);
+        transaction.activeSince = null;
     }
 
     /**
-     * End the current cleanup explicitly when its route cannot be recovered.
+     * End the transaction with a recorded reason and hold off on the same
+     * passage briefly so a failing route cannot livelock the FSM.
      * @param {string} reason
      */
-    failCleanup(reason) {
-        const tracked = this._tracked.find((entry) => entry.cleanupReadyAt != null);
-        if (!tracked) return false;
-        console.warn(`[companion] passage cleanup failed (${reason}) at ${tracked.key}`);
-        this._forget(tracked.key);
+    failPassage(reason) {
+        const transaction = this._transaction;
+        if (!transaction) return false;
+        console.warn(`[companion] passage transit failed (${reason}) at ${transaction.key}`);
+        this._cooldown.set(transaction.key, this.now() + PASSAGE_RETRY_COOLDOWN_MS);
+        this._transaction = null;
+        return true;
+    }
+
+    /** End the transaction after its final block state was confirmed. */
+    finishPassage() {
+        if (!this._transaction) return false;
+        this._transaction = null;
         return true;
     }
 
@@ -324,20 +434,16 @@ export class DoorTracker {
     }
 
     /**
-     * Expire stale entries and close a passage only after the bot crosses it.
+     * Observation only: expire stale entries and request a closing transaction
+     * once the bot has crossed a passage somebody else opened.
      */
-    async tick(options = {}) {
-        const allowClose = options.allowClose !== false;
+    async tick() {
         const now = this.now();
         this._pending = this._pending.filter((p) => now - p.at <= SWING_MATCH_MS);
-        this._tracked = this._tracked.filter((tracked) => (
-            tracked.cleanupReadyAt != null || now - tracked.openedAt <= TRACK_TTL_MS
-        ));
-        for (const [key, activatedAt] of this._recentOpens) {
-            if (now - activatedAt > REOPEN_GUARD_MS) this._recentOpens.delete(key);
+        this._tracked = this._tracked.filter((t) => now - t.openedAt <= TRACK_TTL_MS);
+        for (const [key, until] of this._cooldown) {
+            if (until <= now) this._cooldown.delete(key);
         }
-
-        if (this._closing || this._opening) return;
 
         const botPos = this.bot.entity?.position;
         if (!botPos) return;
@@ -357,55 +463,242 @@ export class DoorTracker {
             }
 
             tracked.openObserved = true;
-            if (tracked.cleanupReadyAt != null) {
-                const activeMs = tracked.cleanupActiveMs + (
-                    tracked.cleanupActiveSince == null ? 0 : now - tracked.cleanupActiveSince
-                );
-                if (activeMs > CLEANUP_TIMEOUT_MS) {
-                    this.failCleanup('timeout');
-                    return;
-                }
-                if (!allowClose) return;
-                if (tracked.cleanupActiveSince == null) tracked.cleanupActiveSince = now;
-            }
-            if (tracked.closeRequestedAt != null) {
-                if (now - tracked.closeRequestedAt <= CLOSE_CONFIRM_MS) continue;
-                tracked.closeRequestedAt = null;
-                tracked.retryCloseAt = now + CLOSE_RETRY_MS;
-            }
+            if (this._transaction) continue;
 
-            if (tracked.cleanupReadyAt == null) {
-                const result = evaluatePassage(tracked, botPos);
-                tracked.approachSide = result.approachSide;
-                if (!result.readyToClose) continue;
-                tracked.cleanupReadyAt = now;
-                if (!allowClose) return;
-                tracked.cleanupActiveSince = now;
-            }
-            if (now < tracked.retryCloseAt) continue;
+            const crossed = evaluatePassage(tracked, botPos);
+            tracked.approachSide = crossed.approachSide;
+            if (!crossed.readyToClose) continue;
+            if (this._onCooldown(tracked.key, now)) continue;
 
-            await this._closeTracked(tracked, block);
+            // An owner-opened passage the bot already crossed starts at the
+            // closing stage of the very same transaction.
+            this._transaction = createTransaction({
+                key: tracked.key,
+                passagePos: tracked.doorPos,
+                facing: tracked.facing,
+                approachSide: tracked.approachSide,
+                exitSide: null,
+                approachPoint: null,
+                exitPoint: null,
+                stage: PASSAGE_STAGE.closing,
+                source: 'tracked',
+                now
+            });
             return;
         }
-
-        if (this.cleanupPending) return;
-        await this._openAuthorizedPassageOnApproach(botPos);
     }
 
     /**
-     * Authorize only actions whose complete route actually crosses the passage.
-     * MovementController runs first and removes an invalid path before this
-     * listener sees it, while this second check protects activateBlock races.
+     * Advance the transaction and report the single next action the
+     * `passage_transit` state has to perform.
+     * @param {number} [now]
+     * @returns {PassageStep}
+     */
+    advancePassage(now = this.now()) {
+        const transaction = this._transaction;
+        if (!transaction) return { action: 'done' };
+
+        const activeMs = transaction.activeMs + (
+            transaction.activeSince == null
+                ? 0
+                : Math.max(0, now - transaction.activeSince)
+        );
+        if (activeMs > PASSAGE_TIMEOUT_MS) return { action: 'fail', reason: 'timeout' };
+
+        const block = this._blockAt(transaction.passagePos);
+        if (!block || !isCloseablePassage(block)) return { action: 'done' };
+
+        const botPos = this.bot.entity?.position;
+        if (!botPos) return { action: 'hold' };
+
+        const open = block._properties?.open === true;
+        const center = passageCenter(transaction.passagePos);
+        const inReach = Math.hypot(botPos.x - center.x, botPos.z - center.z) <= PASSAGE_OPERATE_REACH
+            && Math.abs(botPos.y - center.y) <= PASSAGE_VERTICAL_REACH;
+        const side = doorSide(botPos, transaction.passagePos, transaction.facing);
+
+        if (transaction.stage === PASSAGE_STAGE.approach) {
+            const step = this._advanceApproach(transaction, { now, open, inReach, side });
+            if (step) return step;
+        }
+
+        if (transaction.stage === PASSAGE_STAGE.crossing) {
+            const step = this._advanceCrossing(transaction, { open, side, botPos });
+            if (step) return step;
+        }
+
+        if (transaction.stage === PASSAGE_STAGE.closing) {
+            return this._advanceClosing(transaction, { now, open, inReach, center });
+        }
+
+        return { action: 'hold' };
+    }
+
+    /**
+     * @param {PassageTransaction} transaction
+     * @returns {PassageStep|null} null once the stage advanced
+     */
+    _advanceApproach(transaction, { now, open, inReach, side }) {
+        if (open) {
+            // Confirmed open: the same transaction now owns the crossing.
+            transaction.stage = PASSAGE_STAGE.crossing;
+            transaction.openRequestedAt = null;
+            transaction.retryAt = 0;
+            this._startTracking(
+                transaction.passagePos,
+                transaction.facing,
+                now,
+                { openObserved: true }
+            );
+            return null;
+        }
+
+        if (transaction.openRequestedAt != null) {
+            // Stay in reach until the world reflects the open, then retry.
+            if (now - transaction.openRequestedAt <= OPEN_CONFIRM_MS) return { action: 'hold' };
+            transaction.openRequestedAt = null;
+            transaction.retryAt = now + OPERATION_RETRY_MS;
+            return { action: 'hold' };
+        }
+
+        // A stale route can leave the bot already past a closed passage.
+        if (transaction.exitSide != null && side !== 0 && side === transaction.exitSide) {
+            return { action: 'done' };
+        }
+        if (!inReach) {
+            return {
+                action: 'move',
+                target: passageApproachTarget(transaction),
+                range: APPROACH_GOAL_RANGE
+            };
+        }
+        if (now < transaction.retryAt) return { action: 'hold' };
+        return { action: 'open' };
+    }
+
+    /**
+     * @param {PassageTransaction} transaction
+     * @returns {PassageStep|null} null once the stage advanced
+     */
+    _advanceCrossing(transaction, { open, side, botPos }) {
+        if (!open) {
+            if (transaction.exitSide != null && side === transaction.exitSide) {
+                return { action: 'done' };
+            }
+            // Closed again before the crossing: reopen from the same transaction.
+            transaction.stage = PASSAGE_STAGE.approach;
+            transaction.openRequestedAt = null;
+            return { action: 'hold' };
+        }
+
+        const crossed = evaluatePassage(
+            {
+                approachSide: transaction.approachSide,
+                facing: transaction.facing,
+                doorPos: transaction.passagePos
+            },
+            botPos
+        );
+        transaction.approachSide = crossed.approachSide;
+        if (!crossed.readyToClose) {
+            return {
+                action: 'move',
+                target: passageCrossTarget(transaction),
+                range: APPROACH_GOAL_RANGE
+            };
+        }
+        transaction.stage = PASSAGE_STAGE.closing;
+        return null;
+    }
+
+    /**
+     * @param {PassageTransaction} transaction
+     * @returns {PassageStep}
+     */
+    _advanceClosing(transaction, { now, open, inReach, center }) {
+        if (!open) return { action: 'done' };
+
+        if (transaction.closeRequestedAt != null) {
+            if (now - transaction.closeRequestedAt <= CLOSE_CONFIRM_MS) return { action: 'hold' };
+            transaction.closeRequestedAt = null;
+            transaction.retryAt = now + OPERATION_RETRY_MS;
+            return { action: 'hold' };
+        }
+        if (!inReach) {
+            return { action: 'move', target: center, range: CLOSE_GOAL_RANGE };
+        }
+        if (now < transaction.retryAt) return { action: 'hold' };
+        return { action: 'close' };
+    }
+
+    /**
+     * Open the transaction's passage. Only `passage_transit` calls this.
+     * @returns {Promise<boolean>}
+     */
+    async openPassage() {
+        const transaction = this._transaction;
+        if (!transaction) return false;
+        const block = this._blockAt(transaction.passagePos);
+        if (!block || !isCloseablePassage(block) || block._properties?.open === true) {
+            return false;
+        }
+
+        transaction.openRequestedAt = this.now();
+        const activated = await this._activatePassage(block, 'open');
+        if (!activated) {
+            transaction.openRequestedAt = null;
+            transaction.retryAt = this.now() + OPERATION_RETRY_MS;
+        }
+        return activated;
+    }
+
+    /**
+     * Close the transaction's passage. Only `passage_transit` calls this.
+     * @returns {Promise<boolean>}
+     */
+    async closePassage() {
+        const transaction = this._transaction;
+        if (!transaction) return false;
+        const block = this._blockAt(transaction.passagePos);
+        if (!block || !isCloseablePassage(block) || block._properties?.open !== true) {
+            return false;
+        }
+
+        transaction.closeRequestedAt = this.now();
+        const activated = await this._activatePassage(block, 'close');
+        if (!activated) {
+            transaction.closeRequestedAt = null;
+            transaction.retryAt = this.now() + OPERATION_RETRY_MS;
+        }
+        return activated;
+    }
+
+    /**
+     * @param {import('prismarine-block').Block} block
+     * @param {'open'|'close'} kind
+     */
+    async _activatePassage(block, kind) {
+        this._operating = true;
+        try {
+            await this.bot.activateBlock(block);
+            return true;
+        } catch (err) {
+            console.warn(`[companion] passage ${kind} failed:`, err?.message || err);
+            return false;
+        } finally {
+            this._operating = false;
+        }
+    }
+
+    /**
+     * Request a transaction for the first passage a complete route crosses.
      * @param {{ status?: string, path?: Array<{
      *   x?:number,y?:number,z?:number,
      *   toPlace?: Array<{ x:number,y:number,z:number,useOne?:boolean }>
      * }> }} result
      */
     _handlePathUpdate(result) {
-        this._authorizedPathPassages.clear();
-        if (result?.status !== 'success' || !Array.isArray(result.path)) {
-            return;
-        }
+        if (result?.status !== 'success' || !Array.isArray(result.path)) return;
 
         const endpoint = result.path.at(-1);
         if (!Number.isFinite(endpoint?.x) || !Number.isFinite(endpoint?.y)
@@ -416,142 +709,92 @@ export class DoorTracker {
         const analysis = analyzePassageRoute(this.bot, result.path);
         if (!analysis.valid) return;
 
-        this._authorizedPathPassages = analysis.passages;
         this._removePathfinderPassageActions(result.path);
-    }
-
-    _clearPathAuthorization() {
-        this._authorizedPathPassages.clear();
+        this._requestRoutePassage(analysis.passages);
     }
 
     /**
-     * @param {import('prismarine-block').Block} block
-     * @returns {import('./passageRoute.js').RoutePassagePlan|null}
+     * Only a candidate the FSM has not acquired yet may be discarded when a
+     * route is invalidated. An acquired transaction outlives `path_reset` and
+     * `goal_updated`, including the reset caused by stopping normal movement.
      */
-    _authorizedPassageFor(block) {
-        const passageKey = posKey(normalizeDoorPos(block));
-        const passage = this._authorizedPathPassages.get(passageKey);
-        if (!passage) return null;
-        const botPos = this.bot.entity?.position;
-        if (!botPos || doorSide(botPos, passage.passagePos, passage.facing) !== passage.approachSide) {
-            return null;
-        }
-        return passage;
+    _dropUnclaimedRoutePassage() {
+        const transaction = this._transaction;
+        if (!transaction || transaction.claimed) return;
+        if (transaction.source !== 'route') return;
+        this._transaction = null;
     }
 
     /**
-     * Record closed passages opened through an authorized route.
-     * @param {import('prismarine-block').Block} block
-     * @param {...any} args
+     * @param {Map<string, import('./passageRoute.js').RoutePassagePlan>} passages
      */
-    _wrappedActivateBlock(block, ...args) {
-        const passage = isCloseablePassage(block);
-        const doorKey = passage ? posKey(normalizeDoorPos(block)) : null;
-        const opening = passage && block._properties?.open !== true;
+    _requestRoutePassage(passages) {
+        if (this._transaction) return;
+        // One route contributes one transaction; a later passage is handled
+        // after normal work recomputes its route.
+        const passage = passages.values().next().value;
+        if (!passage) return;
 
-        if (opening) {
-            const authorization = this._authorizedPassageFor(block);
-            if (!authorization) return Promise.resolve();
+        const now = this.now();
+        if (this._onCooldown(passage.key, now)) return;
 
-            const lastToggle = this._recentOpens.get(doorKey);
-            if (lastToggle != null && this.now() - lastToggle < REOPEN_GUARD_MS) {
-                return Promise.resolve();
-            }
-        }
+        const block = this._blockAt(passage.passagePos);
+        if (!isCloseablePassage(block) || block._properties?.open === true) return;
 
-        if (!this._closing) {
-            this._noteBotOpened(block);
-        }
-        if (passage) {
-            this._recentOpens.set(doorKey, this.now());
-        }
-
-        let activation;
-        try {
-            activation = this._originalActivateBlock(block, ...args);
-        } catch (err) {
-            if (passage) console.warn('[companion] door activation failed:', err?.message || err);
-            throw err;
-        }
-
-        if (!passage) return activation;
-        return Promise.resolve(activation).catch((err) => {
-            console.warn('[companion] door activation failed:', err?.message || err);
-            throw err;
+        this._transaction = createTransaction({
+            key: passage.key,
+            passagePos: passage.passagePos,
+            facing: passage.facing,
+            approachSide: passage.approachSide,
+            exitSide: passage.exitSide,
+            approachPoint: passage.approachPoint,
+            exitPoint: passage.exitPoint,
+            stage: PASSAGE_STAGE.approach,
+            source: 'route',
+            now
         });
     }
 
     /**
-     * mineflayer-pathfinder treats `useOne` as a block-placement operation and
-     * can reset an otherwise valid route with `no_scaffolding_blocks` directly
-     * after opening a door. DoorTracker owns authorized passage activation, so
-     * remove only those actions before pathfinder adopts the emitted path.
+     * @param {string} key
+     * @param {number} now
+     */
+    _onCooldown(key, now) {
+        return (this._cooldown.get(key) ?? 0) > now;
+    }
+
+    /**
+     * Passages are operated by `passage_transit` alone. Silently succeeding on
+     * an unowned activation hid a stalled route, so refuse it instead.
+     * @param {import('prismarine-block').Block} block
+     * @param {...any} args
+     */
+    _wrappedActivateBlock(block, ...args) {
+        if (!isCloseablePassage(block)) {
+            return this._originalActivateBlock(block, ...args);
+        }
+        if (!this._operating) {
+            return Promise.reject(new Error(
+                `passage activation is owned by passage_transit: ${posKey(normalizeDoorPos(block))}`
+            ));
+        }
+        return Promise.resolve(this._originalActivateBlock(block, ...args));
+    }
+
+    /**
+     * mineflayer-pathfinder opens doors itself through `useOne` actions, which
+     * is exactly the parallel door control the passage transaction replaces.
+     * Remove those actions before pathfinder adopts the emitted path.
      * @param {Array<any>} path
      */
     _removePathfinderPassageActions(path) {
-        if (this._authorizedPathPassages.size === 0) return;
-
         for (const node of path) {
             if (!Array.isArray(node?.toPlace)) continue;
             node.toPlace = node.toPlace.filter((action) => {
                 if (action?.useOne !== true) return true;
-                const block = this._blockAt(action);
-                if (!isCloseablePassage(block)) return true;
-                return !this._authorizedPathPassages.has(posKey(normalizeDoorPos(block)));
+                return !isCloseablePassage(this._blockAt(action));
             });
         }
-    }
-
-    /**
-     * Open the next authorized closed passage only when the bot reaches the
-     * planned entrance side. The same route remains active and carries the bot
-     * through; normal tracking closes the passage after the crossing.
-     * @param {{ x:number,y:number,z:number }} botPos
-     */
-    async _openAuthorizedPassageOnApproach(botPos) {
-        const candidates = [...this._authorizedPathPassages.values()]
-            .map((passage) => ({
-                passage,
-                distance: Math.hypot(
-                    botPos.x - (passage.passagePos.x + 0.5),
-                    botPos.z - (passage.passagePos.z + 0.5)
-                )
-            }))
-            .filter(({ passage, distance }) =>
-                distance <= APPROACH_DISTANCE
-                && Math.abs(botPos.y - passage.passagePos.y) <= APPROACH_VERTICAL_TOLERANCE
-                && doorSide(botPos, passage.passagePos, passage.facing) === passage.approachSide
-            )
-            .sort((a, b) => a.distance - b.distance);
-
-        for (const { passage } of candidates) {
-            const block = this._blockAt(passage.passagePos);
-            if (!isCloseablePassage(block) || block._properties?.open === true) continue;
-
-            this._opening = true;
-            try {
-                await this.bot.activateBlock(block);
-            } catch {
-                // _wrappedActivateBlock logs operational activation failures.
-            } finally {
-                this._opening = false;
-            }
-            return;
-        }
-    }
-
-    /**
-     * @param {import('prismarine-block').Block|null|undefined} block
-     */
-    _noteBotOpened(block) {
-        if (!block || !isCloseablePassage(block)) return;
-        if (block._properties?.open === true) return;
-        this._startTracking(
-            normalizeDoorPos(block),
-            block._properties?.facing,
-            this.now(),
-            { openObserved: false }
-        );
     }
 
     /**
@@ -643,16 +886,11 @@ export class DoorTracker {
         const approachSide = botPos ? doorSide(botPos, doorPos, facing) : null;
         this._tracked.push({
             key,
-            doorPos,
+            doorPos: { ...doorPos },
             facing,
             approachSide: approachSide || null,
             openedAt,
-            openObserved: options.openObserved === true,
-            closeRequestedAt: null,
-            retryCloseAt: 0,
-            cleanupReadyAt: null,
-            cleanupActiveSince: null,
-            cleanupActiveMs: 0
+            openObserved: options.openObserved === true
         });
     }
 
@@ -661,29 +899,11 @@ export class DoorTracker {
      * @returns {import('prismarine-block').Block|null}
      */
     _blockAt(doorPos) {
-        return this.bot.blockAt(new Vec3(doorPos.x, doorPos.y, doorPos.z));
-    }
-
-    /**
-     * @param {{ key: string, doorPos: {x:number,y:number,z:number} }} tracked
-     * @param {import('prismarine-block').Block} block
-     */
-    async _closeTracked(tracked, block) {
-        this._closing = true;
-        try {
-            const current = this._blockAt(tracked.doorPos) || block;
-            if (!current || !isCloseablePassage(current) || current._properties?.open !== true) {
-                return;
-            }
-            tracked.closeRequestedAt = this.now();
-            await this.bot.activateBlock(current);
-        } catch (err) {
-            tracked.closeRequestedAt = null;
-            tracked.retryCloseAt = this.now() + CLOSE_RETRY_MS;
-            console.warn('[companion] door close failed:', err?.message || err);
-        } finally {
-            this._closing = false;
-        }
+        return this.bot.blockAt(new Vec3(
+            Math.floor(doorPos.x),
+            Math.floor(doorPos.y),
+            Math.floor(doorPos.z)
+        ));
     }
 
     /** @param {string} key */
@@ -691,4 +911,40 @@ export class DoorTracker {
         this._tracked = this._tracked.filter((t) => t.key !== key);
         this._pending = this._pending.filter((p) => p.key !== key);
     }
+}
+
+/**
+ * @param {{
+ *   key: string,
+ *   passagePos: { x: number, y: number, z: number },
+ *   facing?: string,
+ *   approachSide: -1|0|1|null,
+ *   exitSide: -1|1|null,
+ *   approachPoint: { x: number, y: number, z: number }|null,
+ *   exitPoint: { x: number, y: number, z: number }|null,
+ *   stage: PassageStage,
+ *   source: 'route'|'tracked',
+ *   now: number
+ * }} init
+ * @returns {PassageTransaction}
+ */
+function createTransaction(init) {
+    return {
+        key: init.key,
+        passagePos: { ...init.passagePos },
+        facing: init.facing,
+        approachSide: init.approachSide ?? null,
+        exitSide: init.exitSide ?? null,
+        approachPoint: init.approachPoint ? { ...init.approachPoint } : null,
+        exitPoint: init.exitPoint ? { ...init.exitPoint } : null,
+        stage: init.stage,
+        source: init.source,
+        claimed: false,
+        createdAt: init.now,
+        activeSince: null,
+        activeMs: 0,
+        openRequestedAt: null,
+        closeRequestedAt: null,
+        retryAt: 0
+    };
 }

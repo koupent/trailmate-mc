@@ -4,6 +4,9 @@ import { EventEmitter } from 'node:events';
 import {
     DoorTracker,
     doorSide,
+    PASSAGE_RETRY_COOLDOWN_MS,
+    PASSAGE_STAGE,
+    PASSAGE_TIMEOUT_MS,
     evaluatePassage,
     isCloseablePassage,
     isClosedToOpen,
@@ -174,7 +177,7 @@ describe('isDoorBetween', () => {
 
 });
 
-describe('DoorTracker integration', () => {
+describe('DoorTracker passage transactions', () => {
     /** @type {any} */
     let bot;
     /** @type {any} */
@@ -202,37 +205,27 @@ describe('DoorTracker integration', () => {
         return block;
     }
 
-    function routeThrough(block) {
-        const doorPos = normalizeDoorPos(block);
-        const center = { x: doorPos.x + 0.5, y: doorPos.y, z: doorPos.z + 0.5 };
-        const acrossX = block._properties?.facing === 'east'
-            || block._properties?.facing === 'west';
-        const approach = acrossX
-            ? { ...center, x: center.x + 1.5 }
-            : { ...center, z: center.z + 1.5 };
-        const passage = {
-            ...center,
-            toPlace: [{ ...doorPos, useOne: true }]
-        };
-        const exit = acrossX
-            ? { ...center, x: center.x - 1.5 }
-            : { ...center, z: center.z - 1.5 };
-        return [approach, passage, exit];
-    }
-
-    function authorizePathDoor(block, status = 'success') {
-        const path = routeThrough(block);
-        if (status === 'success') bot.entity.position = { ...path[0] };
-        bot.emit('path_update', {
-            status,
-            path
-        });
-    }
-
     /**
-     * Owner swing + look + closed→open update, then leave the door open in the world.
-     * @returns {any} open block
+     * Pathfinder-shaped route crossing a north/south passage from +z to -z,
+     * with the integer node coordinates mineflayer-pathfinder emits.
      */
+    function routeThrough(pos) {
+        return [
+            { x: pos.x, y: pos.y, z: pos.z + 2, toPlace: [] },
+            { x: pos.x, y: pos.y, z: pos.z + 1, toPlace: [] },
+            { x: pos.x, y: pos.y, z: pos.z, toPlace: [{ ...pos, useOne: true }] },
+            { x: pos.x, y: pos.y, z: pos.z - 1, toPlace: [] },
+            { x: pos.x, y: pos.y, z: pos.z - 2, toPlace: [] }
+        ];
+    }
+
+    function emitRoute(pos, status = 'success') {
+        const result = { status, path: routeThrough(pos) };
+        bot.emit('path_update', result);
+        return result;
+    }
+
+    /** Owner swing + look + closed-to-open update, leaving the door open. */
     function ownerOpens(name, pos, props) {
         const closed = setBlock(name, pos, { ...props, open: false });
         bot.blockAtEntityCursor = () => closed;
@@ -242,6 +235,16 @@ describe('DoorTracker integration', () => {
         return setBlock(name, pos, openProps);
     }
 
+    /** Drive the transaction exactly the way PassageTransitBehavior does. */
+    async function runStep() {
+        const step = tracker.advancePassage();
+        if (step.action === 'open') await tracker.openPassage();
+        else if (step.action === 'close') await tracker.closePassage();
+        else if (step.action === 'done') tracker.finishPassage();
+        else if (step.action === 'fail') tracker.failPassage(step.reason);
+        return step;
+    }
+
     beforeEach(() => {
         blocks = new Map();
         activations = [];
@@ -249,15 +252,13 @@ describe('DoorTracker integration', () => {
         activationFailures = 0;
         owner = {
             id: 42,
-            position: { x: 0, y: 64, z: 0, offset() { return this; } },
+            position: { x: 0.5, y: 64, z: 0, offset() { return this; } },
             height: 1.62,
             pitch: 0,
             yaw: 0
         };
         bot = new EventEmitter();
-        bot.entity = {
-            position: { x: 0.5, y: 64, z: 3 }
-        };
+        bot.entity = { position: { x: 0.5, y: 64, z: 2.5 } };
         bot.blockAtEntityCursor = () => null;
         bot.blockAt = (pos) => blocks.get(`${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`) || null;
         bot.activateBlock = (block) => {
@@ -278,640 +279,348 @@ describe('DoorTracker integration', () => {
         tracker.dispose();
     });
 
-    it('tracks a wooden door only when owner swing + look + closed→open match', () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-        assert.equal(tracker.trackedCount, 1);
+    it('requests a transaction for the first closed passage a route crosses', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+
+        emitRoute({ x: 0, y: 64, z: 0 });
+
+        assert.equal(tracker.passagePending, true);
+        const transaction = tracker.passageTransaction;
+        assert.equal(transaction.key, '0,64,0');
+        assert.equal(transaction.stage, PASSAGE_STAGE.approach);
+        assert.equal(transaction.source, 'route');
+        assert.equal(transaction.claimed, false);
     });
 
-    it('ignores doors that were already open when looked at', () => {
-        // Keep owner away so a later closed→open is not treated as owner-near open.
-        owner.position = { x: 40, y: 64, z: 40, offset() { return this; } };
-        const openDoor = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.blockAtEntityCursor = () => openDoor;
-        bot.emit('entitySwingArm', owner);
-        bot.emit('blockUpdate',
-            makeBlock('oak_door', { x: 0, y: 64, z: 0 }, { open: false, facing: 'north', half: 'lower' }),
-            makeBlock('oak_door', { x: 0, y: 64, z: 0 }, { open: true, facing: 'north', half: 'lower' })
-        );
-        assert.equal(tracker.trackedCount, 0);
+    it('strips the pathfinder door action so nothing opens beside the FSM', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+
+        const result = emitRoute({ x: 0, y: 64, z: 0 });
+
+        assert.deepEqual(result.path[2].toPlace, []);
+        assert.equal(activations.length, 0);
     });
 
-    it('ignores swings from non-owner entities', () => {
-        owner.position = { x: 40, y: 64, z: 40, offset() { return this; } };
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.blockAtEntityCursor = () => closed;
-        bot.emit('entitySwingArm', { id: 99 });
-        bot.emit('blockUpdate', closed, makeBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        }));
-        assert.equal(tracker.trackedCount, 0);
+    it('handles only the first passage of a route that crosses several', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: -4 }, { facing: 'north', open: false });
+        const path = [
+            ...routeThrough({ x: 0, y: 64, z: 0 }),
+            { x: 0, y: 64, z: -3, toPlace: [] },
+            { x: 0, y: 64, z: -4, toPlace: [{ x: 0, y: 64, z: -4, useOne: true }] },
+            { x: 0, y: 64, z: -5, toPlace: [] },
+            { x: 0, y: 64, z: -6, toPlace: [] }
+        ];
+
+        bot.emit('path_update', { status: 'success', path });
+
+        assert.equal(tracker.passageTransaction.key, '0,64,0');
+        assert.deepEqual(path[6].toPlace, []);
     });
 
-    it('ignores redstone-style opens without a matching owner swing', () => {
-        // Owner far away: must not treat as a companion passage to close.
-        owner.position = { x: 40, y: 64, z: 40, offset() { return this; } };
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.emit('blockUpdate', closed, makeBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        }));
-        assert.equal(tracker.trackedCount, 0);
+    it('drops an unclaimed route candidate when the route is invalidated', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+        emitRoute({ x: 0, y: 64, z: 0 });
+
+        bot.emit('path_reset', 'goal_updated');
+
+        assert.equal(tracker.passagePending, false);
     });
 
-    it('tracks owner-near opens even when the swing did not target the door', () => {
-        owner.position = { x: 0.5, y: 64, z: 0.8, offset() { return this; } };
-        bot.entity.position = { x: 0.5, y: 64, z: 2 };
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.emit('blockUpdate', closed, makeBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        }));
-        assert.equal(tracker.trackedCount, 1);
+    it('keeps an acquired transaction across path_reset and goal_updated', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+        emitRoute({ x: 0, y: 64, z: 0 });
+        tracker.claimPassage();
+
+        bot.emit('goal_updated', { name: 'replacement' });
+        bot.emit('path_reset', 'goal_updated');
+
+        assert.equal(tracker.passagePending, true);
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.approach);
     });
 
-    it('matches an owner-open update delayed by network latency', () => {
-        owner.position = { x: 3.5, y: 64, z: 0.5, offset() { return this; } };
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.blockAtEntityCursor = () => closed;
-        bot.emit('entitySwingArm', owner);
+    it('ignores incomplete routes', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
 
-        now += 1000;
-        bot.emit('blockUpdate', closed, makeBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        }));
+        emitRoute({ x: 0, y: 64, z: 0 }, 'partial');
 
-        assert.equal(tracker.trackedCount, 1);
+        assert.equal(tracker.passagePending, false);
     });
 
-    it('ignores iron doors and trapdoors', () => {
-        for (const name of ['iron_door', 'oak_trapdoor']) {
-            const closed = setBlock(name, { x: 1, y: 64, z: 1 }, { open: false, facing: 'north' });
-            bot.blockAtEntityCursor = () => closed;
-            bot.emit('entitySwingArm', owner);
-            bot.emit('blockUpdate', closed, makeBlock(name, { x: 1, y: 64, z: 1 }, {
-                open: true,
-                facing: 'north'
-            }));
+    it('ignores a route that returns through the same passage', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+        const path = [
+            { x: 0, y: 64, z: 1, toPlace: [] },
+            { x: 0, y: 64, z: 0, toPlace: [{ x: 0, y: 64, z: 0, useOne: true }] },
+            { x: 0, y: 64, z: -1, toPlace: [] },
+            { x: 0, y: 64, z: 1, toPlace: [] }
+        ];
+
+        bot.emit('path_update', { status: 'success', path });
+
+        assert.equal(tracker.passagePending, false);
+    });
+
+    it('ignores routes that never cross a passage', () => {
+        setBlock('oak_fence_gate', { x: 4, y: 64, z: 4 }, { facing: 'north', open: false });
+
+        bot.emit('path_update', {
+            status: 'success',
+            path: [
+                { x: 0, y: 64, z: 1, toPlace: [] },
+                { x: 0, y: 64, z: 2, toPlace: [] }
+            ]
+        });
+
+        assert.equal(tracker.passagePending, false);
+    });
+
+    it('never requests a transaction for iron doors or trapdoors', () => {
+        for (const name of ['iron_door', 'iron_trapdoor', 'oak_trapdoor']) {
+            setBlock(name, { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+            emitRoute({ x: 0, y: 64, z: 0 });
+            assert.equal(tracker.passagePending, false, name);
         }
-        assert.equal(tracker.trackedCount, 0);
     });
 
-    it('does not close when only approaching the door', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
+    it('refuses passage activation requested outside passage transit', async () => {
+        const gate = setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, {
             facing: 'north',
-            half: 'lower'
+            open: false
         });
+        emitRoute({ x: 0, y: 64, z: 0 });
 
-        bot.entity.position = { x: 0.5, y: 64, z: 1.5 };
-        await tracker.tick();
-        assert.equal(activations.length, 0);
-        assert.equal(tracker.trackedCount, 1);
-    });
-
-    it('closes once after crossing to the opposite side', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-
-        bot.entity.position = { x: 0.5, y: 64, z: 1.8 };
-        await tracker.tick();
-        assert.equal(activations.length, 0);
-
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-        await tracker.tick();
-        assert.equal(activations.length, 1);
-        assert.equal(activations[0].name, 'oak_door');
-        assert.equal(tracker.trackedCount, 1);
-
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        await tracker.tick();
-        assert.equal(tracker.trackedCount, 0);
-        assert.equal(activations.length, 1);
-    });
-
-    it('closes after a fast crossing between ticks', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-        await tracker.tick();
-
-        assert.equal(activations.length, 1);
-        assert.equal(activations[0].name, 'oak_door');
-    });
-
-    it('forgets a tracked door that closes on its own', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-        assert.equal(tracker.trackedCount, 1);
-
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        await tracker.tick();
-        assert.equal(tracker.trackedCount, 0);
+        await assert.rejects(() => bot.activateBlock(gate), /passage_transit/);
         assert.equal(activations.length, 0);
     });
 
-    it('tracks fence gates the same way as wooden doors', async () => {
-        ownerOpens('oak_fence_gate', { x: 2, y: 64, z: 2 }, {
-            facing: 'east'
-        });
+    it('still forwards non-passage activations, such as graves', async () => {
+        const grave = setBlock('player_head', { x: 3, y: 64, z: 3 }, {});
 
-        bot.entity.position = { x: 1, y: 64, z: 2.5 };
-        await tracker.tick();
-        bot.entity.position = { x: 4, y: 64, z: 2.5 };
-        await tracker.tick();
+        await bot.activateBlock(grave);
+
         assert.equal(activations.length, 1);
-        assert.equal(activations[0].name, 'oak_fence_gate');
+        assert.equal(activations[0].name, 'player_head');
     });
 
-    it('tracks a door the bot opens via activateBlock', async () => {
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        authorizePathDoor(closed);
-        await bot.activateBlock(closed);
-        assert.equal(tracker.trackedCount, 1);
-        assert.equal(activations.length, 1);
+    it('walks to the route stand point while out of activation range', () => {
+        setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, { facing: 'north', open: false });
+        emitRoute({ x: 0, y: 64, z: 0 });
+        bot.entity.position = { x: 0.5, y: 64, z: 9 };
 
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.entity.position = { x: 0.5, y: 64, z: 1.8 };
-        await tracker.tick();
-        assert.equal(activations.length, 1);
+        const step = tracker.advancePassage();
 
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-        await tracker.tick();
+        assert.equal(step.action, 'move');
+        assert.deepEqual(step.target, { x: 0.5, y: 64, z: 1.5 });
+    });
+
+    it('runs open, crossing, and close as one transaction', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        emitRoute(gatePos);
+        tracker.claimPassage();
+        tracker.resumePassage();
+
+        // 1-2. Already within reach: stop and open.
+        assert.equal((await runStep()).action, 'open');
+        assert.equal(activations.length, 1);
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.approach);
+
+        // 3. Nothing advances until the world publishes the open state.
+        assert.equal((await runStep()).action, 'hold');
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: true });
+
+        // 4. Confirmed open: walk to the far side of the passage.
+        const crossing = await runStep();
+        assert.equal(crossing.action, 'move');
+        assert.deepEqual(crossing.target, { x: 0.5, y: 64, z: -1.5 });
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.crossing);
+
+        // 5. Clear of the passage: close it.
+        bot.entity.position = { x: 0.5, y: 64, z: -1.5 };
+        assert.equal((await runStep()).action, 'close');
         assert.equal(activations.length, 2);
-        assert.equal(activations[1].name, 'oak_door');
-        assert.equal(tracker.trackedCount, 1);
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.closing);
 
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        await tracker.tick();
-        assert.equal(tracker.trackedCount, 0);
+        // 6. Only the confirmed closed state ends the transaction.
+        assert.equal((await runStep()).action, 'hold');
+        assert.equal(tracker.passagePending, true);
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        assert.equal((await runStep()).action, 'done');
+        assert.equal(tracker.passagePending, false);
     });
 
-    it('blocks a door action from an incomplete path to an unreachable owner', async () => {
-        const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
-            open: false,
-            facing: 'north'
-        });
-        bot.entity.position = { x: -327.5, y: 75, z: 226.5 };
-        owner.position = { x: -331.28, y: 75, z: 230.75 };
-        authorizePathDoor(gate, 'partial');
+    it('stays at the passage and retries when the open state is delayed', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        emitRoute(gatePos);
+        tracker.claimPassage();
+        tracker.resumePassage();
 
-        await bot.activateBlock(gate);
-
-        assert.equal(activations.length, 0);
-        assert.equal(tracker.trackedCount, 0);
-    });
-
-    it('allows an authorized detour passage outside the direct bot-owner line', async () => {
-        const gate = setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
-            open: false,
-            facing: 'north'
-        });
-        authorizePathDoor(gate, 'success');
-
-        await bot.activateBlock(gate);
-
-        assert.equal(activations.length, 1);
-        assert.equal(tracker.trackedCount, 1);
-    });
-
-    it('opens an authorized passage on approach without pathfinder executing useOne', async () => {
-        const gate = setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north'
-        });
-        const path = routeThrough(gate);
-        bot.entity.position = { ...path[0] };
-        const result = { status: 'success', path };
-
-        bot.emit('path_update', result);
-
-        assert.deepEqual(result.path[1].toPlace, []);
-        assert.equal(activations.length, 0);
-
-        await tracker.tick();
-
-        assert.equal(activations.length, 1);
-        assert.equal(activations[0].name, 'oak_fence_gate');
-        assert.equal(tracker.trackedCount, 1);
-    });
-
-    it('blocks a stale authorization when the bot is no longer on the planned approach side', async () => {
-        const gate = setBlock('oak_fence_gate', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north'
-        });
-        authorizePathDoor(gate);
-        bot.entity.position = { x: 0.5, y: 64, z: -1 };
-
-        await bot.activateBlock(gate);
-
-        assert.equal(activations.length, 0);
-        assert.equal(tracker.trackedCount, 0);
-    });
-
-    it('keeps bot-opened tracking while the open state is delayed', async () => {
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        authorizePathDoor(closed);
-        await bot.activateBlock(closed);
-
-        await tracker.tick();
-        now += 2000;
-        await tracker.tick();
-
-        assert.equal(tracker.trackedCount, 1);
+        await runStep();
         assert.equal(activations.length, 1);
 
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        });
-        await tracker.tick();
-        assert.equal(tracker.trackedCount, 1);
-    });
-
-    it('retries closing after activateBlock fails', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-        activationFailures = 1;
-
-        await tracker.tick();
-        assert.equal(activations.length, 1);
-        assert.equal(tracker.trackedCount, 1);
-
-        now += 599;
-        await tracker.tick();
+        // Confirmation window: hold in reach instead of walking away.
+        now += 2500;
+        assert.equal((await runStep()).action, 'hold');
         assert.equal(activations.length, 1);
 
+        // Window expired, short retry backoff.
         now += 1;
-        await tracker.tick();
-        assert.equal(activations.length, 2);
-
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        await tracker.tick();
-        assert.equal(tracker.trackedCount, 0);
-    });
-
-    it('retries closing when the world state stays open', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-
-        await tracker.tick();
-        assert.equal(activations.length, 1);
-
-        now += 1201;
-        await tracker.tick();
-        assert.equal(activations.length, 1);
-
+        assert.equal((await runStep()).action, 'hold');
         now += 600;
-        await tracker.tick();
+        assert.equal((await runStep()).action, 'open');
         assert.equal(activations.length, 2);
-        assert.equal(tracker.trackedCount, 1);
     });
 
-    it('fails an active cleanup explicitly after its deadline', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-
-        await tracker.tick({ allowClose: false });
-        assert.equal(tracker.cleanupPending, true);
-        assert.equal(activations.length, 0);
-        tracker.resumeCleanup();
-        now += 15001;
+    it('retries an open whose activation failed', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        emitRoute(gatePos);
+        tracker.claimPassage();
+        tracker.resumePassage();
+        activationFailures = 1;
 
         const warnings = [];
         const originalWarn = console.warn;
         console.warn = (...args) => warnings.push(args.join(' '));
         try {
-            await tracker.tick({ allowClose: true });
+            await runStep();
+        } finally {
+            console.warn = originalWarn;
+        }
+        assert.equal(activations.length, 1);
+        assert.equal(tracker.passagePending, true);
+        assert.match(warnings[0], /passage open failed/);
+
+        now += 600;
+        assert.equal((await runStep()).action, 'open');
+        assert.equal(activations.length, 2);
+    });
+
+    it('retries a close that the world state does not reflect', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        ownerOpens('oak_fence_gate', gatePos, { facing: 'north' });
+        bot.entity.position = { x: 0.5, y: 64, z: -2 };
+        await tracker.tick();
+        tracker.claimPassage();
+        tracker.resumePassage();
+
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.closing);
+        assert.equal((await runStep()).action, 'close');
+        assert.equal(activations.length, 1);
+
+        now += 1201;
+        assert.equal((await runStep()).action, 'hold');
+        now += 600;
+        assert.equal((await runStep()).action, 'close');
+        assert.equal(activations.length, 2);
+    });
+
+    it('starts at the closing stage for a passage the owner opened', async () => {
+        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, { facing: 'north', half: 'lower' });
+        assert.equal(tracker.trackedCount, 1);
+        assert.equal(tracker.passagePending, false);
+
+        bot.entity.position = { x: 0.5, y: 64, z: 1.8 };
+        await tracker.tick();
+        assert.equal(tracker.passagePending, false, 'not crossed yet');
+
+        bot.entity.position = { x: 0.5, y: 64, z: -2 };
+        await tracker.tick();
+
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.closing);
+        assert.equal(tracker.passageTransaction.source, 'tracked');
+        assert.equal(activations.length, 0, 'detection never operates the door');
+    });
+
+    it('forgets a tracked passage that closes on its own', async () => {
+        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, { facing: 'north', half: 'lower' });
+        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
+            facing: 'north',
+            half: 'lower',
+            open: false
+        });
+
+        await tracker.tick();
+
+        assert.equal(tracker.trackedCount, 0);
+        assert.equal(tracker.passagePending, false);
+    });
+
+    it('does not consume the deadline while suspended for safety', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        emitRoute(gatePos);
+        tracker.claimPassage();
+
+        tracker.resumePassage();
+        now += 10_000;
+        tracker.suspendPassage();
+        now += 60_000;
+
+        tracker.resumePassage();
+        assert.equal((await runStep()).action, 'open');
+        assert.equal(tracker.passagePending, true);
+    });
+
+    it('fails with a recorded reason after the deadline and backs off', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        emitRoute(gatePos);
+        tracker.claimPassage();
+        tracker.resumePassage();
+        now += PASSAGE_TIMEOUT_MS + 1;
+
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (...args) => warnings.push(args.join(' '));
+        try {
+            assert.equal((await runStep()).action, 'fail');
         } finally {
             console.warn = originalWarn;
         }
 
-        assert.equal(tracker.cleanupPending, false);
-        assert.equal(tracker.trackedCount, 0);
-        assert.match(warnings[0], /passage cleanup failed \(timeout\)/);
+        assert.equal(tracker.passagePending, false);
+        assert.match(warnings[0], /passage transit failed \(timeout\) at 0,64,0/);
+
+        // The same passage must not immediately request another transaction.
+        emitRoute(gatePos);
+        assert.equal(tracker.passagePending, false);
+
+        now += PASSAGE_RETRY_COOLDOWN_MS + 1;
+        emitRoute(gatePos);
+        assert.equal(tracker.passagePending, true);
     });
 
-    it('preserves cleanup across a suspended safety interval', async () => {
-        ownerOpens('oak_door', { x: 0, y: 64, z: 0 }, {
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-        await tracker.tick({ allowClose: false });
+    it('ends the transaction when the passage block disappears', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        emitRoute(gatePos);
+        tracker.claimPassage();
+        blocks.delete('0,64,0');
 
-        tracker.resumeCleanup();
-        now += 10000;
-        tracker.suspendCleanup();
-        now += 60000;
-        await tracker.tick({ allowClose: false });
-        assert.equal(tracker.cleanupPending, true);
-
-        tracker.resumeCleanup();
-        await tracker.tick({ allowClose: true });
-        assert.equal(activations.length, 1);
-        assert.equal(tracker.cleanupPending, true);
+        assert.equal((await runStep()).action, 'done');
+        assert.equal(tracker.passagePending, false);
     });
 
-    it('does not track already-open doors activated by the bot', async () => {
-        const openDoor = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        });
-        await bot.activateBlock(openDoor);
-        assert.equal(tracker.trackedCount, 0);
-        assert.equal(activations.length, 1);
+    it('reopens from the same transaction when the passage closes mid-crossing', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        emitRoute(gatePos);
+        tracker.claimPassage();
+        tracker.resumePassage();
+
+        await runStep();
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: true });
+        assert.equal((await runStep()).action, 'move');
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.crossing);
+
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
+        assert.equal((await runStep()).action, 'hold');
+        assert.equal(tracker.passageTransaction.stage, PASSAGE_STAGE.approach);
+
+        now += 600;
+        assert.equal((await runStep()).action, 'open');
     });
-
-    it('does not re-track when closing a tracked door', async () => {
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        authorizePathDoor(closed);
-        await bot.activateBlock(closed);
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        });
-
-        bot.entity.position = { x: 0.5, y: 64, z: 1.8 };
-        await tracker.tick();
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-        await tracker.tick();
-
-        assert.equal(tracker.trackedCount, 1);
-        assert.equal(activations.length, 2);
-
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        await tracker.tick();
-        assert.equal(tracker.trackedCount, 0);
-    });
-
-    it('does not track iron doors or trapdoors opened by the bot', async () => {
-        for (const name of ['iron_door', 'oak_trapdoor']) {
-            const closed = setBlock(name, { x: 4, y: 64, z: 4 }, {
-                open: false,
-                facing: 'north'
-            });
-            await bot.activateBlock(closed);
-        }
-        assert.equal(tracker.trackedCount, 0);
-    });
-
-    it('does not duplicate tracking for the same bot-opened door', async () => {
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        authorizePathDoor(closed);
-        await bot.activateBlock(closed);
-        await bot.activateBlock(closed);
-        assert.equal(tracker.trackedCount, 1);
-        assert.equal(activations.length, 1);
-    });
-
-    it('does not proactively open an unrelated gate when owner is unreachable', async () => {
-        setBlock('oak_fence_gate', { x: 2, y: 64, z: 1 }, {
-            open: false,
-            facing: 'north',
-        });
-        bot.entity.position = { x: 0.5, y: 64, z: 0.5 };
-        owner.position = { x: 0.5, y: 64, z: 6.5 };
-
-        await tracker.tick();
-        assert.equal(activations.length, 0);
-    });
-
-    it('blocks the reproduced flying-owner route that ends on the opening side', async () => {
-        const gate = setBlock('pale_oak_fence_gate', { x: -359, y: 75, z: 226 }, {
-            open: false,
-            facing: 'west'
-        });
-        bot.entity.position = { x: -357.5, y: 75, z: 226.5 };
-        owner.position = { x: -355.31, y: 78.24, z: 236.04 };
-        bot.emit('path_update', {
-            status: 'success',
-            path: [
-                {
-                    x: -358.5,
-                    y: 75,
-                    z: 226.5,
-                    toPlace: [{ x: -359, y: 75, z: 226, useOne: true }]
-                },
-                { x: -355.51, y: 75, z: 232.21 }
-            ]
-        });
-
-        await bot.activateBlock(gate);
-
-        assert.equal(activations.length, 0);
-        assert.equal(tracker.trackedCount, 0);
-    });
-
-    it('allows a wide detour that crosses the gate plane away from the gate', async () => {
-        setBlock('pale_oak_fence_gate', { x: -359, y: 75, z: 226 }, {
-            open: false,
-            facing: 'west'
-        });
-        bot.entity.position = { x: -356.3, y: 75, z: 231.15 };
-        owner.position = { x: -354.24, y: 78.62, z: 230.3 };
-        const result = {
-            status: 'success',
-            path: [
-                { x: -357.5, y: 75, z: 230.5, toPlace: [] },
-                { x: -357.5, y: 75, z: 229.5, toPlace: [] },
-                { x: -357.5, y: 75, z: 228.5, toPlace: [] },
-                { x: -357.5, y: 75, z: 227.5, toPlace: [] },
-                { x: -357.5, y: 75, z: 226.5, toPlace: [] },
-                {
-                    x: -359,
-                    y: 75,
-                    z: 226,
-                    toPlace: [{ x: -359, y: 75, z: 226, useOne: true }]
-                },
-                { x: -360, y: 76, z: 226, toPlace: [] },
-                { x: -359, y: 76, z: 226, toPlace: [] },
-                { x: -359, y: 77, z: 224, toPlace: [] },
-                { x: -359, y: 77, z: 230, toPlace: [] },
-                { x: -356, y: 77, z: 230, toPlace: [] }
-            ]
-        };
-
-        bot.emit('path_update', result);
-
-        assert.equal(result.path[5].toPlace.length, 0);
-        assert.equal(activations.length, 0);
-
-        bot.entity.position = { x: -357.5, y: 75, z: 226.5 };
-        await tracker.tick();
-
-        assert.equal(activations.length, 1);
-        assert.equal(tracker.trackedCount, 1);
-    });
-
-    it('rejects a route that crosses and then returns through the same gate', async () => {
-        setBlock('pale_oak_fence_gate', { x: -359, y: 75, z: 226 }, {
-            open: false,
-            facing: 'west'
-        });
-        bot.entity.position = { x: -356.3, y: 75, z: 226.5 };
-        const result = {
-            status: 'success',
-            path: [
-                { x: -357.5, y: 75, z: 226.5, toPlace: [] },
-                {
-                    x: -359,
-                    y: 75,
-                    z: 226.5,
-                    toPlace: [{ x: -359, y: 75, z: 226, useOne: true }]
-                },
-                { x: -360, y: 75, z: 226.5, toPlace: [] },
-                { x: -357.5, y: 75, z: 226.5, toPlace: [] }
-            ]
-        };
-
-        bot.emit('path_update', result);
-
-        assert.equal(result.path[1].toPlace.length, 1);
-        bot.entity.position = { x: -357.5, y: 75, z: 226.5 };
-        await tracker.tick();
-        assert.equal(activations.length, 0);
-        assert.equal(tracker.trackedCount, 0);
-    });
-
-    it('accepts the logged wide gate detour before the owner moves farther away', async () => {
-        setBlock('pale_oak_fence_gate', { x: -329, y: 75, z: 226 }, {
-            open: false,
-            facing: 'west'
-        });
-        bot.entity.position = { x: -335.94, y: 75, z: 243.5 };
-        const result = {
-            status: 'success',
-            path: [
-                { x: -330, y: 75, z: 227.5, toPlace: [] },
-                {
-                    x: -329,
-                    y: 75,
-                    z: 226.5,
-                    toPlace: [{ x: -329, y: 75, z: 226, useOne: true }]
-                },
-                { x: -327.5, y: 75, z: 226.5, toPlace: [] },
-                { x: -327.5, y: 75, z: 240.5, toPlace: [] },
-                { x: -329, y: 75, z: 246, toPlace: [] }
-            ]
-        };
-
-        bot.emit('path_update', result);
-
-        assert.equal(result.path.length, 5);
-        bot.entity.position = { x: -330, y: 75, z: 227.5 };
-        await tracker.tick();
-        assert.equal(activations.length, 1);
-        assert.equal(tracker.trackedCount, 1);
-    });
-
-    it('closes a bot-opened passage only after crossing, even if the goal changes', async () => {
-        const closed = setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: false,
-            facing: 'north',
-            half: 'lower'
-        });
-        authorizePathDoor(closed);
-        await bot.activateBlock(closed);
-        setBlock('oak_door', { x: 0, y: 64, z: 0 }, {
-            open: true,
-            facing: 'north',
-            half: 'lower'
-        });
-        bot.emit('goal_updated', { name: 'replacement' });
-        await tracker.tick();
-        assert.equal(activations.length, 1);
-
-        bot.entity.position = { x: 0.5, y: 64, z: -2 };
-        await tracker.tick();
-        assert.equal(activations.length, 2);
-    });
-
 });

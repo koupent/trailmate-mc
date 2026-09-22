@@ -51,7 +51,7 @@ export function passagePending(targets) {
     return Boolean(targets._passagePending);
 }
 
-/** Recovery work keeps its safety priority over passage cleanup. */
+/** Recovery work keeps its safety priority over a passage transaction. */
 export function safetyDutyPending(targets) {
     if (targets.ctx?.deathRecovery?.active) return true;
     const next = (targets.interrupts || []).find((interrupt) => (
@@ -108,7 +108,7 @@ export function shouldEnterDuty(targets) {
 }
 
 /** @param {object} targets */
-export function shouldEnterPassageCleanup(targets) {
+export function shouldEnterPassageTransit(targets) {
     if (!passagePending(targets)) return false;
     if (shouldEnterCombat(targets)) return false;
     return !safetyDutyPending(targets);

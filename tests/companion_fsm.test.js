@@ -12,7 +12,7 @@ import {
     safetyDutyPending,
     shouldEnterCombat,
     shouldEnterDuty,
-    shouldEnterPassageCleanup,
+    shouldEnterPassageTransit,
     shouldStayInCombat
 } from '../src/companion/stateMachine/transitions.js';
 
@@ -66,7 +66,7 @@ describe('companion fsm transitions', () => {
         assert.equal(shouldEnterDuty(targets), false);
     });
 
-    it('prioritizes combat and safety duty above passage cleanup', () => {
+    it('prioritizes combat and safety duty above a passage transaction', () => {
         const recovery = { name: 'recovery', _lastShouldRun: false };
         const targets = makeTargets({
             _passagePending: true,
@@ -74,23 +74,23 @@ describe('companion fsm transitions', () => {
         });
 
         assert.equal(passagePending(targets), true);
-        assert.equal(shouldEnterPassageCleanup(targets), true);
+        assert.equal(shouldEnterPassageTransit(targets), true);
 
         targets.ctx.agent.reflexes.wantsCombat = true;
-        assert.equal(shouldEnterPassageCleanup(targets), false);
+        assert.equal(shouldEnterPassageTransit(targets), false);
 
         targets.ctx.agent.reflexes.wantsCombat = false;
         recovery._lastShouldRun = true;
         assert.equal(safetyDutyPending(targets), true);
-        assert.equal(shouldEnterPassageCleanup(targets), false);
+        assert.equal(shouldEnterPassageTransit(targets), false);
     });
 
-    it('returns from combat to a pending passage cleanup before normal work', async () => {
+    it('returns from combat to a pending passage transaction before normal work', async () => {
         const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
         const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
         const base = makeTargets().ctx;
         base.movement = { stop() {} };
-        base.doors = { resumeCleanup() {}, suspendCleanup() {} };
+        base.doors = { claimPassage() {}, resumePassage() {}, suspendPassage() {} };
         const mode = { onEnter() {}, onExit() {}, tick() {} };
         const targets = createCompanionTargets({
             ctx: base,
@@ -105,7 +105,7 @@ describe('companion fsm transitions', () => {
 
         targets._passagePending = true;
         root.update();
-        assert.equal(root.activeState, states.passageCleanup);
+        assert.equal(root.activeState, states.passageTransit);
 
         targets.ctx.agent.reflexes.wantsCombat = true;
         root.update();
@@ -113,7 +113,7 @@ describe('companion fsm transitions', () => {
 
         targets.ctx.agent.reflexes.wantsCombat = false;
         root.update();
-        assert.equal(root.activeState, states.passageCleanup);
+        assert.equal(root.activeState, states.passageTransit);
     });
 
     it('preferGearRecovery when unarmed near own grave helper path', () => {

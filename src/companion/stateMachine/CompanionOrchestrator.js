@@ -8,8 +8,8 @@ import { WaitMode } from '../modes/WaitMode.js';
 import { createCompanionTargets } from './targets.js';
 import { createRootMachine } from './createRootMachine.js';
 import { prepareCompanionWorldTick } from './prepareTick.js';
-import { startPassageUpkeep, syncPassageCleanup } from './passageUpkeep.js';
-import { refreshDutyFlags, shouldEnterPassageCleanup } from './transitions.js';
+import { startPassageUpkeep, syncPassageTransit } from './passageUpkeep.js';
+import { refreshDutyFlags, shouldEnterPassageTransit } from './transitions.js';
 
 export class CompanionOrchestrator {
     /**
@@ -40,7 +40,7 @@ export class CompanionOrchestrator {
             interrupts: this.interrupts
         });
         // Long-running normal actions use one common cooperative-yield signal.
-        ctx.shouldYieldNormalAction = () => shouldEnterPassageCleanup(this.targets);
+        ctx.shouldYieldNormalAction = () => shouldEnterPassageTransit(this.targets);
         this.targets.preferredMode = defaultModeId === 'wait' ? 'wait' : 'follow';
 
         const built = createRootMachine(this.targets);
@@ -77,7 +77,7 @@ export class CompanionOrchestrator {
     }
 
     /**
-     * Active NestedStateMachine leaf id (follow|wait|combat|duty).
+     * Active NestedStateMachine leaf id (follow|wait|combat|passage_transit|duty).
      */
     getActiveFsmId() {
         return this.targets.activeId;
@@ -116,13 +116,13 @@ export class CompanionOrchestrator {
             if (this.targets.paused) return;
             await prepareCompanionWorldTick(this.ctx);
             await refreshDutyFlags(this.targets);
-            syncPassageCleanup(this.ctx, this.targets);
+            syncPassageTransit(this.ctx, this.targets);
 
-            // A crossed passage must take control before another normal-state
-            // tick can extend the distance from the door. Also let safety work
-            // preempt or release an already-active cleanup state immediately.
-            if (this.targets.activeId === 'passage_cleanup'
-                || shouldEnterPassageCleanup(this.targets)) {
+            // A requested passage must take control before another
+            // normal-state tick walks away from the door. Also let safety work
+            // preempt or release an active transaction immediately.
+            if (this.targets.activeId === 'passage_transit'
+                || shouldEnterPassageTransit(this.targets)) {
                 this._applyTransitions();
             }
 
@@ -130,8 +130,8 @@ export class CompanionOrchestrator {
             const active = this.root.activeState;
             if (active && typeof active.runTick === 'function') {
                 // Long normal actions can hold this await for seconds. Keep
-                // detecting crossings so they can yield to passage cleanup.
-                const upkeep = active === this.fsmStates.passageCleanup
+                // detecting passages so they can yield to passage_transit.
+                const upkeep = active === this.fsmStates.passageTransit
                     ? { stop() {} }
                     : startPassageUpkeep(this.ctx, this.targets);
                 try {
@@ -143,7 +143,7 @@ export class CompanionOrchestrator {
                 }
             }
 
-            syncPassageCleanup(this.ctx, this.targets);
+            syncPassageTransit(this.ctx, this.targets);
             this._applyTransitions();
         } catch (err) {
             console.error('[companion] fsm tick error:', err);
