@@ -1,4 +1,5 @@
 import { jumpOntoStep, sleep, MANUAL_JUMP_DISTANCE, CLIMB_HOLD_MS } from '../movement/climb.js';
+import { jumpBlockedByFarmland } from '../movement/farmland.js';
 import { scanSurroundings } from '../movement/surroundings.js';
 import { isCloseablePassage } from '../movement/DoorTracker.js';
 import { DEFAULT_FOLLOW_MIN_DISTANCE } from '../movement/followConstants.js';
@@ -91,9 +92,13 @@ export class RecoveryInterrupt {
         );
 
         // When already against the lip, skip GoalNear and jump manually.
+        // Farmland is never jumped off or onto, so those ledges go back to
+        // pathfinder. It refuses the same move, so the climb ends as
+        // unreachable instead of bouncing on the field.
         const preferManual =
-            distToStep <= MANUAL_JUMP_DISTANCE ||
-            this._climbAttempts >= MANUAL_JUMP_AFTER_ATTEMPTS;
+            (distToStep <= MANUAL_JUMP_DISTANCE
+                || this._climbAttempts >= MANUAL_JUMP_AFTER_ATTEMPTS)
+            && !jumpBlockedByFarmland(bot, bot.entity.position, cell.center);
         if (!preferManual) {
             ctx.movement.climbTo(cell.center, CLIMB_HOLD_MS);
             return;

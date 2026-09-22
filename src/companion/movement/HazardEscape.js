@@ -3,6 +3,7 @@ import {
     movementControlsTowardBearing,
     threatBearingRad
 } from '../../combat/threatArc.js';
+import { jumpBlockedByFarmland } from './farmland.js';
 import {
     blockAt,
     CONTACT_HAZARD_RADIUS,
@@ -228,12 +229,16 @@ export class HazardEscapeController {
         this.bot.setControlState?.('left', controls.left);
         this.bot.setControlState?.('right', controls.right);
         this.bot.setControlState?.('sprint', true);
+        const wantsJump = forceJump
+            || hazards.some((hazard) => hazard.block.name === 'lava')
+            || this.target.y > position.y + 0.4
+            || hasObstacleAhead(this.bot, position, bearing);
+        // Farmland outranks the escape jump, with no exception for lava or
+        // burning: the bot keeps walking toward the same escape target and
+        // simply never leaves the ground over a field.
         this.bot.setControlState?.(
             'jump',
-            forceJump
-                || hazards.some((hazard) => hazard.block.name === 'lava')
-                || this.target.y > position.y + 0.4
-                || hasObstacleAhead(this.bot, position, bearing)
+            wantsJump && !jumpBlockedByFarmland(this.bot, position, this.target)
         );
     }
 

@@ -4,6 +4,7 @@ import {
     findContactHazards,
     isDamageBlock
 } from './movement/hazardBlocks.js';
+import { isFarmlandBlock } from './movement/farmland.js';
 
 /** Default block-light level at which spawn-proof torches may be placed (1.21 hostile spawn). */
 export const DEFAULT_TORCH_LIGHT_THRESHOLD = 0;
@@ -286,8 +287,54 @@ export function applySafeMovementFlags(movements, options = {}) {
     // Library typo: scafoldingBlocks. Empty = never place bridge/tower blocks.
     movements.scafoldingBlocks = [];
     configureDamageBlockAvoidance(movements);
+    configureFarmlandJumpAvoidance(movements);
     configureDoorAwareMovements(movements);
     return movements;
+}
+
+/**
+ * Keep A* from planning any route that takes off from farmland or lands on it.
+ * A jump breaks the block it pushes off and the block it comes down on, so the
+ * bot would till the owner's field back into dirt just by walking home.
+ *
+ * Only moves that change height, plus parkour (a jump even when level), are
+ * removed. Same-height walking is untouched, so the bot still crosses a flat
+ * field and still reaches farmland to plant on it.
+ * @param {import('mineflayer-pathfinder').Movements} movements
+ */
+export function configureFarmlandJumpAvoidance(movements) {
+    if (movements._trailmateFarmlandProtection) return movements;
+    movements._trailmateFarmlandProtection = true;
+
+    // Step-up jumps, diagonal rises, and step-down / fall moves.
+    for (const method of [
+        'getMoveJumpUp',
+        'getMoveDiagonal',
+        'getMoveForward',
+        'getMoveDropDown',
+        'getMoveDown'
+    ]) {
+        filterGeneratedMoves(movements, method, verticalMoveTouchesFarmland);
+    }
+    // Parkour always leaves the ground, including across a level gap.
+    filterGeneratedMoves(movements, 'getMoveParkourForward', moveTouchesFarmland);
+    return movements;
+}
+
+function verticalMoveTouchesFarmland(movements, node, move) {
+    if (move.y === node.y) return false;
+    return moveTouchesFarmland(movements, node, move);
+}
+
+function moveTouchesFarmland(movements, node, move) {
+    // Path nodes are feet cells, so the support block is one cell below.
+    return isFarmlandBlock(movements.getBlock(node, 0, -1, 0))
+        || isFarmlandBlock(movements.getBlock(
+            node,
+            move.x - node.x,
+            move.y - node.y - 1,
+            move.z - node.z
+        ));
 }
 
 /**
