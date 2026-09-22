@@ -97,6 +97,20 @@ export type ItemShareConfig = {
   keep_weapon_stacks: number;
   /** Items kept per armor/shield category, including equipped items. */
   keep_equipment_sets: number;
+  /** Re-open a chest whose deposit was cut short once control comes back. */
+  resume_enabled: boolean;
+  /** How long an interrupted chest stays worth returning to. */
+  resume_expire_ms: number;
+  /** Wait between resume attempts. */
+  resume_retry_ms: number;
+  /** Resume attempts per chest before it is given up on. */
+  resume_max_attempts: number;
+  /** Open/close cycles per chest placement. */
+  max_open_passes: number;
+  /** Tell the owner what happened to the deposit. */
+  notify_enabled: boolean;
+  /** Abort the deposit while the post-damage combat latch is up. */
+  abort_on_recent_damage: boolean;
 };
 
 export type CompanionConfig = {
@@ -173,7 +187,14 @@ const DEFAULT_COMPANION: CompanionConfig = {
     keep_torch_stacks: 2,
     keep_food_stacks: 2,
     keep_weapon_stacks: 2,
-    keep_equipment_sets: 2
+    keep_equipment_sets: 2,
+    resume_enabled: true,
+    resume_expire_ms: 120000,
+    resume_retry_ms: 3000,
+    resume_max_attempts: 5,
+    max_open_passes: 4,
+    notify_enabled: true,
+    abort_on_recent_damage: true
   },
   reflexes: {
     self_defense: true,

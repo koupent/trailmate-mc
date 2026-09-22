@@ -17,6 +17,7 @@ import {
   isUsableCompanionChat
 } from '../src/companion/dialogueParse.js';
 import { tCommand } from '../src/i18n/index.js';
+import { CompanionDialogue } from '../src/companion/CompanionDialogue.js';
 
 describe('commands', () => {
   const allowed = ['follow', 'wait'];
@@ -615,5 +616,55 @@ describe('combat commentary', () => {
       hostile: { name: 'zombie', distance: 3 }
     });
     assert.match(text, /skeleton/);
+  });
+});
+
+describe('capability notices', () => {
+  function makeDialogue() {
+    /** @type {string[]} */
+    const said = [];
+    const agent = {
+      language: 'ja',
+      shut_up: false,
+      bot: { inventory: { slots: [] } },
+      companion: null,
+      async openChat(text) { said.push(text); }
+    };
+    const manager = { getModeCatalog: () => [], interrupts: [] };
+    return { dialogue: new CompanionDialogue(agent, manager, {}), said, agent };
+  }
+
+  it('holds back the same result until its cooldown passes', async () => {
+    const { dialogue, said } = makeDialogue();
+
+    assert.equal(await dialogue.speakNotice('chest_full', {}, { now: 1000 }), true);
+    assert.equal(await dialogue.speakNotice('chest_full', {}, { now: 5000 }), false);
+    assert.equal(await dialogue.speakNotice('chest_deposit_later', {}, { now: 5000 }), true);
+    assert.equal(await dialogue.speakNotice('chest_full', {}, { now: 45000 }), true);
+
+    assert.equal(said.length, 3);
+    assert.equal(said[0], tCommand('ja', 'chest_full'));
+    assert.equal(said[1], tCommand('ja', 'chest_deposit_later'));
+  });
+
+  it('stays quiet for an unknown key or a muted companion', async () => {
+    const { dialogue, said, agent } = makeDialogue();
+
+    assert.equal(await dialogue.speakNotice('no_such_notice_key'), false);
+    agent.shut_up = true;
+    assert.equal(await dialogue.speakNotice('chest_deposit_done'), false);
+    assert.equal(said.length, 0);
+  });
+
+  it('has a line for every chest transfer outcome', () => {
+    for (const key of [
+      'chest_deposit_done',
+      'chest_deposit_partial',
+      'chest_full',
+      'chest_deposit_later',
+      'chest_deposit_resume'
+    ]) {
+      assert.notEqual(tCommand('ja', key), key, `${key} is translated`);
+    }
   });
 });

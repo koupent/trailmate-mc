@@ -45,7 +45,14 @@
       "keep_torch_stacks": 2,
       "keep_food_stacks": 2,
       "keep_weapon_stacks": 2,
-      "keep_equipment_sets": 2
+      "keep_equipment_sets": 2,
+      "resume_enabled": true,
+      "resume_expire_ms": 120000,
+      "resume_retry_ms": 3000,
+      "resume_max_attempts": 5,
+      "max_open_passes": 4,
+      "notify_enabled": true,
+      "abort_on_recent_damage": true
     },
     "reflexes": {
       "self_defense": true,
