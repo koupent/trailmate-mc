@@ -42,10 +42,16 @@
     },
     "item_share": {
       "enabled": true,
-      "keep_torch_stacks": 2,
-      "keep_food_stacks": 2,
-      "keep_weapon_stacks": 2,
-      "keep_equipment_sets": 2,
+      "retention": {
+        "helmet": { "limit": 2, "items": {} },
+        "chestplate": { "limit": 2, "items": {} },
+        "leggings": { "limit": 2, "items": {} },
+        "boots": { "limit": 2, "items": {} },
+        "shield": { "limit": 2, "items": {} },
+        "weapon": { "limit": 2, "items": {} },
+        "food": { "limit": 2, "items": {} },
+        "torch": { "limit": 2, "items": {} }
+      },
       "resume_enabled": true,
       "resume_expire_ms": 120000,
       "resume_retry_ms": 3000,

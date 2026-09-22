@@ -31,6 +31,12 @@ import {
   createProxyWatch,
   isProxyBackendFailure
 } from './proxyRecovery.mjs';
+import {
+  effectiveRetention,
+  mergeRetentionIntoConfig,
+  normalizeRetentionInput,
+  readRetentionBlock
+} from './retentionSettings.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
@@ -86,6 +92,13 @@ const server = http.createServer(async (request, response) => {
       await writeSettings(body);
       return json(response, 200, { ok: true, settings: await readSettings() });
     }
+    if (request.method === 'GET' && url.pathname === '/api/retention') {
+      return json(response, 200, await readRetentionSettings());
+    }
+    if (request.method === 'POST' && url.pathname === '/api/retention') {
+      const body = await readJson(request);
+      return json(response, 200, await writeRetentionSettings(body?.retention));
+    }
     if (request.method === 'GET' && url.pathname === '/api/status') {
       return sendControlStatus(response);
     }
@@ -140,7 +153,14 @@ const server = http.createServer(async (request, response) => {
     }
     json(response, 405, { error: 'method not allowed' });
   } catch (error) {
-    json(response, 500, { error: error instanceof Error ? error.message : String(error) });
+    // A rejected value is the user's typo, not a broken dashboard: say so with
+    // a 4xx so the form can show the message instead of "サーバーエラー".
+    const status = Number(error?.status) >= 400 && Number(error?.status) < 600
+      ? Number(error.status)
+      : 500;
+    json(response, status, {
+      error: error instanceof Error ? error.message : String(error)
+    });
   }
 });
 
@@ -254,6 +274,103 @@ async function writeSettings(body) {
   const container = await findServiceContainerId(viaproxyService);
   if (container) {
     await dockerRequest('POST', `/containers/${container}/restart`);
+  }
+}
+
+/**
+ * The candidate item list, published by the bot from its own registry.
+ * Null while the trailmate container is still starting.
+ */
+async function fetchRetentionCatalog() {
+  try {
+    const upstream = await fetch(`${controlUrl}/retention/catalog`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!upstream.ok) return null;
+    const catalog = await upstream.json();
+    return Array.isArray(catalog?.categories) && catalog.categories.length > 0
+      ? catalog
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+async function readConfigJson() {
+  await ensureConfigFiles();
+  try {
+    return JSON.parse(await fs.readFile(PATHS.config, 'utf8'));
+  } catch {
+    return {};
+  }
+}
+
+/** Catalog plus whatever `config.json` currently says, ready to draw. */
+async function readRetentionSettings() {
+  const catalog = await fetchRetentionCatalog();
+  const stored = readRetentionBlock(await readConfigJson());
+  return {
+    catalog,
+    retention: catalog ? effectiveRetention(catalog, stored) : null,
+    backendReady: Boolean(catalog),
+    message: catalog
+      ? null
+      : '相棒（ボット）コンテナの準備中です。アイテム一覧を取得できるまでお待ちください。'
+  };
+}
+
+/**
+ * Validate, persist, then hand the result to a running companion.
+ *
+ * The write is an in-place `fs.writeFile` on purpose. `config.json` is bind
+ * mounted into the bot as a single file, so writing a temporary file and
+ * renaming it over the top would swap the inode and leave the bot reading the
+ * old contents for the rest of its life.
+ *
+ * ViaProxy is deliberately left alone: which items the companion keeps has
+ * nothing to do with the proxy, and restarting it would drop the session.
+ *
+ * @param {unknown} input
+ */
+async function writeRetentionSettings(input) {
+  const catalog = await fetchRetentionCatalog();
+  const retention = normalizeRetentionInput(catalog, input);
+
+  const config = mergeRetentionIntoConfig(await readConfigJson(), retention);
+  await fs.writeFile(PATHS.config, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+
+  const applied = await pushRetentionToBot(retention);
+  return {
+    ok: true,
+    applied,
+    catalog,
+    retention: effectiveRetention(catalog, retention),
+    backendReady: true,
+    message: applied
+      ? '保存しました。次のチェスト返却から新しい設定で動きます。'
+      : '保存しました。相棒が未スポーンのため、次のスポーンから反映されます。'
+  };
+}
+
+/**
+ * Push the saved policy onto the live companion. A failure here is not a
+ * failed save — the file is already written, so the next spawn picks it up.
+ * @param {object} retention
+ */
+async function pushRetentionToBot(retention) {
+  try {
+    const upstream = await fetch(`${controlUrl}/retention`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ retention }),
+      signal: AbortSignal.timeout(5000)
+    });
+    if (!upstream.ok) return false;
+    const result = await upstream.json();
+    return Boolean(result?.applied);
+  } catch {
+    return false;
   }
 }
 
@@ -889,7 +1006,7 @@ async function waitForViaProxyHealthy(timeoutMs) {
 
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
-  if (!['index.html', 'app.js', 'logFollow.js', 'styles.css'].includes(file)) {
+  if (!['index.html', 'app.js', 'logFollow.js', 'retention.js', 'styles.css'].includes(file)) {
     return json(response, 404, { error: 'not found' });
   }
   const full = path.join(publicDir, file);

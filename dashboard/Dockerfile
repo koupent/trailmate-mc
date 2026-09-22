@@ -23,6 +23,7 @@ COPY dockerApi.mjs ./
 COPY update.mjs ./
 COPY backendReady.mjs ./
 COPY proxyRecovery.mjs ./
+COPY retentionSettings.mjs ./
 COPY public ./public
 
 EXPOSE 8787

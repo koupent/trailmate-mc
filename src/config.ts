@@ -85,18 +85,33 @@ export type OwnerWorkConfig = {
   fov_degrees: number;
 };
 
+/**
+ * One retention category: how many stacks it keeps in total, and the per-item
+ * exceptions inside that budget. `0` strikes an item off the list; an item that
+ * is absent is kept, capped only by the category budget.
+ */
+export type RetentionCategoryConfig = {
+  limit: number;
+  items: Record<string, number>;
+};
+
+/** Keyed by the categories in `itemClassify.js` (helmet, weapon, food, …). */
+export type RetentionConfig = Record<string, RetentionCategoryConfig>;
+
 export type ItemShareConfig = {
   enabled: boolean;
   /** @deprecated Transfers are triggered by an owner-placed chest. */
   interval_ms: number;
-  /** Total torch stacks kept. */
-  keep_torch_stacks: number;
-  /** Total safe food stacks kept. */
-  keep_food_stacks: number;
-  /** Total melee weapons kept, including the held weapon. */
-  keep_weapon_stacks: number;
-  /** Items kept per armor/shield category, including equipped items. */
-  keep_equipment_sets: number;
+  /** Which items the companion keeps, and how many. Edited from the dashboard. */
+  retention?: RetentionConfig;
+  /** @deprecated Superseded by `retention`; read once to migrate an old config. */
+  keep_torch_stacks?: number;
+  /** @deprecated Superseded by `retention`; read once to migrate an old config. */
+  keep_food_stacks?: number;
+  /** @deprecated Superseded by `retention`; read once to migrate an old config. */
+  keep_weapon_stacks?: number;
+  /** @deprecated Superseded by `retention`; read once to migrate an old config. */
+  keep_equipment_sets?: number;
   /** Re-open a chest whose deposit was cut short once control comes back. */
   resume_enabled: boolean;
   /** How long an interrupted chest stays worth returning to. */
@@ -184,10 +199,8 @@ const DEFAULT_COMPANION: CompanionConfig = {
   item_share: {
     enabled: true,
     interval_ms: 60000,
-    keep_torch_stacks: 2,
-    keep_food_stacks: 2,
-    keep_weapon_stacks: 2,
-    keep_equipment_sets: 2,
+    // Left out on purpose: `resolveRetentionPolicy` fills it in, so the
+    // defaults live in one place instead of being restated here.
     resume_enabled: true,
     resume_expire_ms: 120000,
     resume_retry_ms: 3000,

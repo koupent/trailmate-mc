@@ -7,6 +7,7 @@ type LocaleBundle = {
   events: Record<string, string[]>;
   movement?: Record<string, string>;
   supply_categories?: Record<string, string>;
+  retention_categories?: Record<string, string>;
 };
 
 const cache = new Map<string, LocaleBundle>();
@@ -56,6 +57,16 @@ function messagePattern(message: string): string {
 export function tSupplyCategory(language: string, id: string): string {
   const bundle = loadLocale(language);
   return bundle.supply_categories?.[id] || id;
+}
+
+/**
+ * Tab name for a retention category in the dashboard's item picker. Separate
+ * from `tSupplyCategory` because a tab has room the chat line does not: the
+ * companion asks for 松明, the tab it lives on is 松明・ランタン.
+ */
+export function tRetentionCategory(language: string, id: string): string {
+  const bundle = loadLocale(language);
+  return bundle.retention_categories?.[id] || tSupplyCategory(language, id);
 }
 
 export function tMovement(language: string, key: string, vars: CommentaryVars = {}): string {

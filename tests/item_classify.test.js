@@ -10,7 +10,7 @@ import {
     isWorkItemCategoryName,
     ITEM_CATEGORY,
     materialScore,
-    RETENTION_LIMIT_KEY_BY_CATEGORY
+    RETAINED_CATEGORIES
 } from '../src/companion/utils/itemClassify.js';
 
 /** The version the companion is configured for by default. */
@@ -105,6 +105,17 @@ describe('classifyItemName', () => {
         assert.equal(isTorchItemName('redstone_torch'), false);
         assert.equal(isTorchItemName('wall_torch'), false);
         assert.equal(isTorchItemName(null), false);
+        // Kept with the torches, but never reached for to light a dark spot.
+        assert.equal(isTorchItemName('lantern'), false);
+        assert.equal(isTorchItemName('soul_lantern'), false);
+    });
+
+    it('keeps the lanterns in the torch category without making them placeable', () => {
+        for (const name of ['torch', 'soul_torch', 'lantern', 'soul_lantern']) {
+            assert.equal(withRegistry(name), ITEM_CATEGORY.torch, name);
+            assert.equal(withoutRegistry(name), ITEM_CATEGORY.torch, `${name} (no registry)`);
+        }
+        assert.equal(withRegistry('redstone_torch'), ITEM_CATEGORY.other);
     });
 
     it('reads food from the registry', () => {
@@ -112,6 +123,29 @@ describe('classifyItemName', () => {
         assert.equal(withRegistry('cooked_beef'), ITEM_CATEGORY.food);
         // Excluded by default because the companion must not eat it.
         assert.equal(withRegistry('rotten_flesh'), ITEM_CATEGORY.other);
+    });
+
+    it('does not count a raw ingredient as food', () => {
+        // Worth a furnace trip, not a kept inventory slot.
+        for (const name of ['beef', 'porkchop', 'mutton', 'rabbit', 'cod', 'salmon']) {
+            assert.equal(withRegistry(name), ITEM_CATEGORY.other, name);
+            assert.equal(withRegistry(`cooked_${name}`), ITEM_CATEGORY.food, `cooked_${name}`);
+        }
+        // Cooked forms the `cooked_` prefix does not name, plus the raw fish
+        // vanilla never lets you cook at all.
+        assert.equal(withRegistry('potato'), ITEM_CATEGORY.other);
+        assert.equal(withRegistry('baked_potato'), ITEM_CATEGORY.food);
+        assert.equal(withRegistry('tropical_fish'), ITEM_CATEGORY.other);
+        // Raw is a property of the item, so an empty exclusion list cannot
+        // turn it back into food the way it can for a golden apple.
+        assert.equal(
+            classifyItemName('beef', {
+                itemsByName: REGISTRY.itemsByName,
+                foodsByName: REGISTRY.foodsByName,
+                excludedFoods: []
+            }),
+            ITEM_CATEGORY.other
+        );
     });
 
     it('lets an explicit exclusion list outrank the food category', () => {
@@ -230,7 +264,7 @@ describe('materialScore', () => {
 
 describe('category predicates', () => {
     it('retains exactly the categories in the allow-list', () => {
-        assert.deepEqual(Object.keys(RETENTION_LIMIT_KEY_BY_CATEGORY), [
+        assert.deepEqual(RETAINED_CATEGORIES, [
             'helmet',
             'chestplate',
             'leggings',
@@ -240,7 +274,7 @@ describe('category predicates', () => {
             'food',
             'torch'
         ]);
-        for (const category of Object.keys(RETENTION_LIMIT_KEY_BY_CATEGORY)) {
+        for (const category of RETAINED_CATEGORIES) {
             assert.equal(isRetainedCategory(category), true, category);
         }
         for (const category of [

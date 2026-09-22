@@ -2,10 +2,14 @@
  * Decide which inventory stacks the companion should keep vs give away.
  *
  * Retention is an allow-list over the categories in `itemClassify`: a stack is
- * kept only when its category appears in `RETENTION_LIMIT_KEY_BY_CATEGORY` and
- * it ranks inside that category's limit. Everything else goes back to the
- * owner, so a classification rule this repo has not written yet costs an item
- * handed over — never an item stuck in the companion's inventory forever.
+ * kept only when its category is one the companion keeps and it fits inside
+ * that category's budget *and* its own per-item limit. Everything else goes
+ * back to the owner, so a classification rule this repo has not written yet
+ * costs an item handed over — never an item stuck in the companion's
+ * inventory forever.
+ *
+ * `retentionPolicy.js` owns the shape of those limits, and the owner edits
+ * them from the dashboard; this file only applies them.
  */
 
 import { UNSAFE_OR_SPECIAL_FOODS } from '../../host/autoEat.js';
@@ -14,17 +18,17 @@ import {
     classifyOptionsFromBot,
     isEquipmentCategory,
     isRetainedCategory,
+    isTorchItemName,
     ITEM_CATEGORY,
     materialScore,
-    RETENTION_LIMIT_KEY_BY_CATEGORY
+    RETAINED_CATEGORIES
 } from './itemClassify.js';
-
-export const DEFAULT_RETENTION = {
-    keep_torch_stacks: 2,
-    keep_food_stacks: 2,
-    keep_equipment_sets: 2,
-    keep_weapon_stacks: 2
-};
+import {
+    categoryRetention,
+    isItemRetained,
+    itemRetentionLimit,
+    resolveRetentionPolicy
+} from './retentionPolicy.js';
 
 /** Prefer attackDamage over material tier when ranking weapons. */
 const WEAPON_DAMAGE_WEIGHT = 10;
@@ -38,10 +42,12 @@ export function tierOf(name) {
 }
 
 /**
+ * Torch and soul torch — what the placement reflex can use. The lanterns share
+ * their retention category but are not placed, so they are not torches here.
  * @param {string} name
  */
 export function isTorch(name) {
-    return classifyItemName(name) === ITEM_CATEGORY.torch;
+    return isTorchItemName(name);
 }
 
 /**
@@ -83,20 +89,6 @@ export function equipmentScore(item, options = {}) {
 }
 
 /**
- * Keep the top N stacks (by compare) in keepSlots.
- * @param {Array<{ slot: number }>} items
- * @param {number} keepCount
- * @param {(a: any, b: any) => number} compareDesc
- * @param {Set<number>} keepSlots
- */
-function keepTopStacks(items, keepCount, compareDesc, keepSlots) {
-    const ranked = items.slice().sort(compareDesc);
-    for (const stack of ranked.slice(0, keepCount)) {
-        keepSlots.add(stack.slot);
-    }
-}
-
-/**
  * @param {{ name: string }} a
  * @param {{ name: string }} b
  * @param {Record<string, { foodPoints?: number, saturation?: number }>} foodsByName
@@ -118,28 +110,32 @@ function comparatorFor(category) {
     if (category === ITEM_CATEGORY.food) {
         return (a, b, context) => compareFoodDesc(a, b, context.foodsByName);
     }
-    if (category === ITEM_CATEGORY.torch) return (a, b) => b.count - a.count;
+    // A lantern is worth keeping but cannot be placed, so it never displaces a
+    // torch stack the companion would otherwise light a cave with.
+    if (category === ITEM_CATEGORY.torch) {
+        return (a, b) => (
+            Number(isTorchItemName(b.name)) - Number(isTorchItemName(a.name))
+            || b.count - a.count
+        );
+    }
     return (a, b, context) => equipmentScore(b, context) - equipmentScore(a, context);
 }
 
 /**
- * Every retention category in a fixed request order, with the setting that
- * defines its target count. Built straight from the classifier's allow-list,
- * so keep decisions and shortage requests cannot drift from each other — or
- * from what the classifier thinks an item is.
+ * Every retention category in a fixed request order. Built straight from the
+ * classifier's allow-list, so keep decisions and shortage requests cannot
+ * drift from each other — or from what the classifier thinks an item is.
  *
  * @type {ReadonlyArray<{
  *   id: string,
- *   limitKey: keyof typeof DEFAULT_RETENTION,
  *   equipment: boolean,
  *   matches: (stack: any, context: any) => boolean,
  *   compare: (a: any, b: any, context: any) => number
  * }>}
  */
 export const RETENTION_CATEGORIES = Object.freeze(
-    Object.entries(RETENTION_LIMIT_KEY_BY_CATEGORY).map(([category, limitKey]) => Object.freeze({
+    RETAINED_CATEGORIES.map((category) => Object.freeze({
         id: category,
-        limitKey,
         /** Worn and wielded pieces count against their own limit. */
         equipment: isEquipmentCategory(category),
         matches: (/** @type {any} */ stack, /** @type {any} */ context) => (
@@ -150,38 +146,66 @@ export const RETENTION_CATEGORIES = Object.freeze(
 );
 
 /**
- * @param {Partial<typeof DEFAULT_RETENTION>} policy
- * @param {keyof typeof DEFAULT_RETENTION} key
+ * Fill one category's budget and record the slots that got it.
+ *
+ * Worn and wielded pieces are taken first and unconditionally: whatever the
+ * numbers say, a deposit never strips the companion of what it is using. They
+ * still consume the budget, so "keep 2 helmets" means one worn and one spare —
+ * not two spares on top of the one on its head.
+ *
+ * An item the owner has struck off the list is not eligible even while
+ * equipped. `listUnequipTargets` pulls it out of the armor slot first, and
+ * auto-equip replaces it from whatever is still allowed; leaving it on would
+ * make unticking a box in the dashboard do nothing at all.
+ *
+ * @param {Array<{ slot: number, name: string, count: number }>} groupStacks
+ * @param {import('./retentionPolicy.js').CategoryRetention} entry
+ * @param {(a: any, b: any) => number} compareDesc
+ * @param {Set<number>} equippedSlots
+ * @param {Set<number>} keepSlots
  */
-function retentionLimit(policy, key) {
-    const configured = policy[key] ?? DEFAULT_RETENTION[key] ?? 0;
-    return Math.max(0, Math.trunc(Number(configured) || 0));
+function fillCategoryBudget(groupStacks, entry, compareDesc, equippedSlots, keepSlots) {
+    const eligible = groupStacks.filter((stack) => isItemRetained(entry, stack.name));
+    const spares = eligible
+        .filter((stack) => !equippedSlots.has(stack.slot))
+        .sort(compareDesc);
+    /** @type {Map<string, number>} */
+    const perItem = new Map();
+    let kept = 0;
+
+    const take = (/** @type {{ slot: number, name: string }} */ stack) => {
+        keepSlots.add(stack.slot);
+        perItem.set(stack.name, (perItem.get(stack.name) || 0) + 1);
+        kept += 1;
+    };
+
+    for (const stack of eligible) {
+        if (equippedSlots.has(stack.slot)) take(stack);
+    }
+    for (const stack of spares) {
+        if (kept >= entry.limit) break;
+        const itemLimit = itemRetentionLimit(entry, stack.name);
+        if (itemLimit != null && (perItem.get(stack.name) || 0) >= itemLimit) continue;
+        take(stack);
+    }
 }
 
 /**
- * Keep equipped items plus the best spares up to each category's total limit.
- * Stacked categories (food, torches) have no equipped notion and simply keep
- * their best N.
+ * Keep equipped items plus the best spares, inside every category's budget.
  *
  * @param {Array<{ slot: number, name: string, count: number }>} stacks
- * @param {Partial<typeof DEFAULT_RETENTION>} policy
+ * @param {import('./retentionPolicy.js').RetentionPolicy} policy
  * @param {{ foodsByName: object, excludedFoods: Set<string>, itemsByName?: object }} context
  * @param {Set<number>} equippedSlots
  * @param {Set<number>} keepSlots
  */
 function applyRetention(stacks, policy, context, equippedSlots, keepSlots) {
     for (const rule of RETENTION_CATEGORIES) {
-        const groupStacks = stacks.filter((stack) => rule.matches(stack, context));
-        const limit = retentionLimit(policy, rule.limitKey);
-        if (!rule.equipment) {
-            keepTopStacks(groupStacks, limit, (a, b) => rule.compare(a, b, context), keepSlots);
-            continue;
-        }
-        const equippedCount = groupStacks.filter((stack) => equippedSlots.has(stack.slot)).length;
-        keepTopStacks(
-            groupStacks.filter((stack) => !equippedSlots.has(stack.slot)),
-            Math.max(0, limit - equippedCount),
+        fillCategoryBudget(
+            stacks.filter((stack) => rule.matches(stack, context)),
+            categoryRetention(policy, rule.id),
             (a, b) => rule.compare(a, b, context),
+            equippedSlots,
             keepSlots
         );
     }
@@ -276,29 +300,51 @@ export function listOccupiedStacks(bot) {
 }
 
 /**
+ * Whether the companion still has a use for this item name.
+ *
+ * Both halves matter: the classifier decides the item is one of the kinds the
+ * companion keeps, and the owner's policy decides it has not been struck off
+ * that kind's list.
+ *
+ * @param {string} name
+ * @param {import('./itemClassify.js').ClassifyOptions} classify
+ * @param {import('./retentionPolicy.js').RetentionPolicy} policy
+ */
+function isRetainedItem(name, classify, policy) {
+    const category = classifyItemName(name, classify);
+    if (!isRetainedCategory(category)) return false;
+    return isItemRetained(categoryRetention(policy, category), name);
+}
+
+/**
  * Resolve the slots that are genuinely equipped right now.
  *
  * A worn slot counts only while it holds something the companion keeps: a
- * bucket parked in the off-hand is surplus, and `listUnequipTargets` is what
- * gets it out. Inventory hotbar contents are not equipment either, unless the
- * selected item is gear.
+ * bucket parked in the off-hand is surplus, and so is a helmet the owner has
+ * unticked in the dashboard. `listUnequipTargets` is what gets either of them
+ * out. Inventory hotbar contents are not equipment either, unless the selected
+ * item is gear the policy still allows.
  *
  * @param {import('mineflayer').Bot} bot
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{ foodsByName?: object, bannedFood?: Iterable<string>, itemsByName?: object }} [options]
  * @returns {Set<number>}
  */
-export function equippedItemSlots(bot, options = {}) {
+export function equippedItemSlots(bot, policy = {}, options = {}) {
     const classify = classifyOptions(bot, options);
+    const resolved = resolveRetentionPolicy(policy);
     const slots = new Set();
 
     for (const slot of armorAndOffhandSlots(bot)) {
         const item = bot?.inventory?.slots?.[slot];
         if (!item?.name) continue;
-        if (isRetainedCategory(classifyItemName(item.name, classify))) slots.add(slot);
+        if (isRetainedItem(item.name, classify, resolved)) slots.add(slot);
     }
 
     const held = bot?.heldItem;
-    if (held?.slot != null && isEquipmentCategory(classifyItemName(held.name, classify))) {
+    if (held?.slot != null
+        && isEquipmentCategory(classifyItemName(held.name, classify))
+        && isRetainedItem(held.name, classify, resolved)) {
         slots.add(held.slot);
     }
     return slots;
@@ -312,16 +358,18 @@ export function equippedItemSlots(bot, options = {}) {
  * unequipped back into the inventory proper first.
  *
  * @param {import('mineflayer').Bot} bot
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{ foodsByName?: object, bannedFood?: Iterable<string>, itemsByName?: object }} [options]
  * @returns {Array<{ slot: number, destination: string, name: string }>}
  */
-export function listUnequipTargets(bot, options = {}) {
+export function listUnequipTargets(bot, policy = {}, options = {}) {
     const classify = classifyOptions(bot, options);
+    const resolved = resolveRetentionPolicy(policy);
     const targets = [];
     for (const { destination, slot } of equipmentDestinations(bot)) {
         const item = bot?.inventory?.slots?.[slot];
         if (!item?.name) continue;
-        if (isRetainedCategory(classifyItemName(item.name, classify))) continue;
+        if (isRetainedItem(item.name, classify, resolved)) continue;
         targets.push({ slot, destination, name: item.name });
     }
     return targets;
@@ -333,7 +381,7 @@ export function listUnequipTargets(bot, options = {}) {
  * an open container window.
  *
  * @param {Array<{ slot: number, name: string, count: number, attackDamage?: number }>} stacks
- * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{
  *   equippedSlots?: Iterable<number>,
  *   itemsByName?: Record<string, { enchantCategories?: string[] }>,
@@ -344,7 +392,8 @@ export function listUnequipTargets(bot, options = {}) {
  */
 export function retainedSlots(stacks, policy = {}, options = {}) {
     const equippedSlots = new Set(options.equippedSlots || []);
-    const keepSlots = new Set(equippedSlots);
+    /** @type {Set<number>} */
+    const keepSlots = new Set();
     const context = {
         itemsByName: options.itemsByName,
         foodsByName: options.foodsByName || {},
@@ -352,7 +401,7 @@ export function retainedSlots(stacks, policy = {}, options = {}) {
             ? options.bannedFood
             : new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS)
     };
-    applyRetention(stacks, policy, context, equippedSlots, keepSlots);
+    applyRetention(stacks, resolveRetentionPolicy(policy), context, equippedSlots, keepSlots);
     return keepSlots;
 }
 
@@ -367,7 +416,7 @@ export function retainedSlots(stacks, policy = {}, options = {}) {
  * per-slot move needs click-level window control instead of `deposit`.
  *
  * @param {Array<{ slot: number, type: number, name: string, count: number, attackDamage?: number }>} stacks
- * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{
  *   equippedSlots?: Iterable<number>,
  *   itemsByName?: Record<string, { enchantCategories?: string[] }>,
@@ -416,13 +465,13 @@ export function isPlayerInventorySlot(slot) {
  * Shared retention policy for chest deposits and ordinary surplus transfers.
  * @param {import('mineflayer').Bot} bot
  * @param {ReturnType<typeof listOccupiedStacks>} stacks
- * @param {Partial<typeof DEFAULT_RETENTION>} policy
+ * @param {Record<string, unknown>} policy an `item_share` config block
  * @param {{ foodsByName?: object, bannedFood?: string[] }} options
  */
 function retainedItemSlots(bot, stacks, policy, options) {
     return retainedSlots(stacks, policy, {
         ...retentionOptionsFromBot(bot, options),
-        equippedSlots: equippedItemSlots(bot, options)
+        equippedSlots: equippedItemSlots(bot, policy, options)
     });
 }
 
@@ -443,13 +492,12 @@ export function retentionOptionsFromBot(bot, options = {}) {
 /**
  * Inventory stacks to put in an owner-placed handoff chest.
  *
- * Keep:
- * - configured total armor / shield / melee weapon counts, including equipped items
- * - configured food and torch stack counts
- * Everything else is deposited.
+ * Keep whatever the retention policy allows — each category's budget, spent on
+ * the items the owner left on its list and capped by any per-item limit, with
+ * worn and wielded pieces taken first. Everything else is deposited.
  *
  * @param {import('mineflayer').Bot} bot
- * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
  */
 export function listChestDepositStacks(bot, policy = {}, options = {}) {
@@ -474,21 +522,21 @@ export function listChestDepositStacks(bot, policy = {}, options = {}) {
  * containers that do not expose their window slots.
  *
  * @param {import('mineflayer').Bot} bot
- * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
  * @returns {ReturnType<typeof planDepositByType>}
  */
 export function listChestDepositPlan(bot, policy = {}, options = {}) {
     return planDepositByType(listOccupiedStacks(bot), policy, {
         ...retentionOptionsFromBot(bot, options),
-        equippedSlots: equippedItemSlots(bot, options)
+        equippedSlots: equippedItemSlots(bot, policy, options)
     });
 }
 
 /**
  * Stacks the companion may give away (surplus beyond retention policy).
  * @param {import('mineflayer').Bot} bot
- * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
  * @returns {Array<{ slot: number, type: number, count: number, name: string }>}
  */
@@ -507,18 +555,30 @@ export function listGiveableStacks(bot, policy = {}, options = {}) {
  * so a worn piece and a spare are each counted once; food and torches count
  * occupied stacks, so a partial stack still counts as one.
  *
+ * Only stacks the policy would actually keep count towards a target. Two
+ * wooden swords the owner has struck off the list are not two melee weapons —
+ * the companion is unarmed and says so.
+ *
  * @param {import('mineflayer').Bot} bot
- * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {Record<string, unknown>} [policy] an `item_share` config block
  * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
  * @returns {Array<{ id: string, current: number, target: number, missing: number }>}
  */
 export function listRetentionStock(bot, policy = {}, options = {}) {
     const stacks = listOccupiedStacks(bot);
     const context = classifyOptions(bot, options);
+    const resolved = resolveRetentionPolicy(policy);
 
-    return RETENTION_CATEGORIES.map(({ id, limitKey, matches }) => {
-        const current = stacks.filter((stack) => matches(stack, context)).length;
-        const target = retentionLimit(policy, limitKey);
-        return { id, current, target, missing: Math.max(0, target - current) };
+    return RETENTION_CATEGORIES.map(({ id, matches }) => {
+        const entry = categoryRetention(resolved, id);
+        const current = stacks.filter(
+            (stack) => matches(stack, context) && isItemRetained(entry, stack.name)
+        ).length;
+        return {
+            id,
+            current,
+            target: entry.limit,
+            missing: Math.max(0, entry.limit - current)
+        };
     });
 }
