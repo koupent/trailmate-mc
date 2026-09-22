@@ -8,6 +8,7 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import {
     DoorTracker,
+    PASSAGE_RETRY_COOLDOWN_MS,
     PASSAGE_STAGE,
     PASSAGE_TIMEOUT_MS
 } from '../src/companion/movement/DoorTracker.js';
@@ -371,6 +372,44 @@ describe('passage transit', () => {
             await tickUntil(world, () => manager.getActiveFsmId() !== 'passage_transit');
             assert.equal(world.ctx.doors.passagePending, false);
             assert.ok(warnings.some((line) => /passage transit failed \(unreachable\)/.test(line)));
+        } finally {
+            console.warn = originalWarn;
+            world.dispose();
+        }
+    });
+
+    it('comes back to close a gate it opened but never crossed', async () => {
+        const world = makePassageWorld();
+        world.addDrop(1, -3);
+        const manager = world.start([new NearbyLootInterrupt()]);
+
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (...args) => warnings.push(args.join(' '));
+        try {
+            await tickUntil(world, () => world.isGateOpen());
+            assert.equal(world.ctx.bot.entity.position.z, APPROACH_Z);
+
+            // The route dies between the open and the crossing.
+            world.movement.status = 'noPath';
+            await tickUntil(world, () => manager.getActiveFsmId() !== 'passage_transit');
+            assert.equal(world.ctx.doors.passagePending, false);
+            assert.equal(world.isGateOpen(), true, 'the failure hands back an open gate');
+            assert.ok(warnings.some((line) => /\(unreachable\) at 0,64,0, left open/.test(line)));
+
+            // Nothing pulls the bot through any more: it turns back and leaves.
+            // An open gate emits no pathfinder door action, so no route
+            // transaction can compete with the one the departure rule creates.
+            world.removeDrop(1);
+            world.movement.status = 'idle';
+            world.bot.entity.position = { x: 0.5, y: 64, z: 6.5 };
+            world.advance(PASSAGE_RETRY_COOLDOWN_MS + 1);
+
+            await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
+            assert.equal(world.transaction().stage, PASSAGE_STAGE.closing);
+
+            await tickUntil(world, () => world.isGateOpen() === false);
+            await tickUntil(world, () => world.ctx.doors.passagePending === false);
         } finally {
             console.warn = originalWarn;
             world.dispose();

@@ -47,6 +47,15 @@ const PASSAGE_STAND_DISTANCE = 2.5;
 const CROSS_POINT_MIN_CLEARANCE = 1.65;
 /** After a failure, leave the same passage alone for this long. */
 export const PASSAGE_RETRY_COOLDOWN_MS = 5000;
+/**
+ * The bot counts as having left a passage it opened past this distance. It sits
+ * clearly beyond every legitimate placement around a passage: the approach and
+ * crossing stand points (`PASSAGE_STAND_DISTANCE` plus `APPROACH_GOAL_RANGE`),
+ * and the activation reach a failed transit leaves the bot standing in.
+ */
+export const PASSAGE_ABANDON_DISTANCE = 4.5;
+/** Past this, walking back to close is not worth interrupting normal work. */
+export const PASSAGE_ABANDON_MAX_DISTANCE = 10;
 
 /**
  * Ordered stages of one passage transaction. The FSM owns a transaction from
@@ -174,6 +183,39 @@ export function evaluatePassage(tracked, botPos, opts = {}) {
 }
 
 /**
+ * Whether the bot opened this passage, never crossed it, and has since walked
+ * away from it.
+ *
+ * `evaluatePassage` cannot describe this case. Its `approachSide` latches on
+ * the first approach and is never reassigned, so a bot that turns back to the
+ * side it came from can never satisfy `side !== approachSide`: the crossing
+ * condition is not merely unmet, it is structurally unreachable.
+ *
+ * Distance is measured in three dimensions. A bot standing on top of the
+ * passage is horizontally at the door, and `_advanceClosing` requires vertical
+ * reach as well, so a horizontal-only rule would never fire there.
+ * @param {{
+ *   openedByBot?: boolean,
+ *   doorPos: { x: number, y: number, z: number }
+ * }} tracked
+ * @param {{ x: number, y: number, z: number }} botPos
+ * @param {{ abandonDistance?: number, maxDistance?: number }} [opts]
+ * @returns {boolean}
+ */
+export function isAbandonedPassage(tracked, botPos, opts = {}) {
+    if (tracked?.openedByBot !== true || !botPos) return false;
+    const abandonDistance = opts.abandonDistance ?? PASSAGE_ABANDON_DISTANCE;
+    const maxDistance = opts.maxDistance ?? PASSAGE_ABANDON_MAX_DISTANCE;
+    const center = passageCenter(tracked.doorPos);
+    const distance = Math.hypot(
+        botPos.x - center.x,
+        botPos.y - center.y,
+        botPos.z - center.z
+    );
+    return distance > abandonDistance && distance <= maxDistance;
+}
+
+/**
  * True when a block update is a closed-to-open transition of a closeable passage.
  * @param {{ name?: string, _properties?: { open?: boolean } }|null|undefined} oldBlock
  * @param {{ name?: string, _properties?: { open?: boolean } }|null|undefined} newBlock
@@ -237,6 +279,7 @@ function offsetFromPassage(transaction, side, distance) {
  *   stage: PassageStage,
  *   source: 'route'|'tracked',
  *   claimed: boolean,
+ *   openedByBot: boolean,
  *   createdAt: number,
  *   activeSince: number|null,
  *   activeMs: number,
@@ -283,7 +326,8 @@ export class DoorTracker {
          *   facing?: string,
          *   approachSide: -1|0|1|null,
          *   openedAt: number,
-         *   openObserved: boolean
+         *   openObserved: boolean,
+         *   openedByBot: boolean
          * }[]} */
         this._tracked = [];
         /** @type {PassageTransaction|null} The single passage under FSM control. */
@@ -331,6 +375,18 @@ export class DoorTracker {
     /** @returns {number} */
     get trackedCount() {
         return this._tracked.length;
+    }
+
+    /**
+     * Read-only view of what is tracked and who opened it, for diagnostics.
+     * @returns {{ key: string, openedByBot: boolean, openObserved: boolean }[]}
+     */
+    get trackedPassages() {
+        return this._tracked.map((tracked) => ({
+            key: tracked.key,
+            openedByBot: tracked.openedByBot === true,
+            openObserved: tracked.openObserved === true
+        }));
     }
 
     /** True while a passage transaction needs the FSM to own movement. */
@@ -386,7 +442,14 @@ export class DoorTracker {
     failPassage(reason) {
         const transaction = this._transaction;
         if (!transaction) return false;
-        console.warn(`[companion] passage transit failed (${reason}) at ${transaction.key}`);
+        // This is the only exit that can hand back an open passage, so say so:
+        // the next report should be readable from the log alone.
+        const block = this._blockAt(transaction.passagePos);
+        const leftOpen = isCloseablePassage(block) && block._properties?.open === true;
+        console.warn(
+            `[companion] passage transit failed (${reason}) at ${transaction.key}`
+            + (leftOpen ? ', left open' : '')
+        );
         this._cooldown.set(transaction.key, this.now() + PASSAGE_RETRY_COOLDOWN_MS);
         this._transaction = null;
         return true;
@@ -467,7 +530,11 @@ export class DoorTracker {
 
             const crossed = evaluatePassage(tracked, botPos);
             tracked.approachSide = crossed.approachSide;
-            if (!crossed.readyToClose) continue;
+            // A passage the bot opened and then walked away from without
+            // crossing is closed too. Here the transaction that should have
+            // closed it is already gone, so this state can only mean a failed
+            // transit: nothing else ends a transaction with the passage open.
+            if (!crossed.readyToClose && !isAbandonedPassage(tracked, botPos)) continue;
             if (this._onCooldown(tracked.key, now)) continue;
 
             // An owner-opened passage the bot already crossed starts at the
@@ -544,11 +611,13 @@ export class DoorTracker {
             transaction.stage = PASSAGE_STAGE.crossing;
             transaction.openRequestedAt = null;
             transaction.retryAt = 0;
+            // The record may already have expired while the open went
+            // unconfirmed, so restate the origin this transaction established.
             this._startTracking(
                 transaction.passagePos,
                 transaction.facing,
                 now,
-                { openObserved: true }
+                { openObserved: true, openedByBot: transaction.openedByBot }
             );
             return null;
         }
@@ -643,7 +712,19 @@ export class DoorTracker {
             return false;
         }
 
-        transaction.openRequestedAt = this.now();
+        const requestedAt = this.now();
+        transaction.openRequestedAt = requestedAt;
+        transaction.openedByBot = true;
+        // Record the origin before the await, not when the open is confirmed.
+        // Failing right after the activation must still leave a record saying
+        // the bot opened this passage, and starting here beats the blockUpdate
+        // that would otherwise credit an owner standing next to the door.
+        this._startTracking(
+            transaction.passagePos,
+            transaction.facing,
+            requestedAt,
+            { openedByBot: true }
+        );
         const activated = await this._activatePassage(block, 'open');
         if (!activated) {
             transaction.openRequestedAt = null;
@@ -867,7 +948,7 @@ export class DoorTracker {
      * @param {{ x: number, y: number, z: number }} doorPos
      * @param {string|undefined} facing
      * @param {number} [openedAt]
-     * @param {{ openObserved?: boolean }} [options]
+     * @param {{ openObserved?: boolean, openedByBot?: boolean }} [options]
      */
     _startTracking(doorPos, facing, openedAt = this.now(), options = {}) {
         const key = posKey(doorPos);
@@ -879,6 +960,9 @@ export class DoorTracker {
                 existing.approachSide = botPos ? doorSide(botPos, doorPos, facing) || null : null;
             }
             if (options.openObserved) existing.openObserved = true;
+            // Origin is only ever promoted: a later confirmation that omits it
+            // must not disown a passage the bot opened itself.
+            if (options.openedByBot) existing.openedByBot = true;
             return;
         }
 
@@ -890,7 +974,8 @@ export class DoorTracker {
             facing,
             approachSide: approachSide || null,
             openedAt,
-            openObserved: options.openObserved === true
+            openObserved: options.openObserved === true,
+            openedByBot: options.openedByBot === true
         });
     }
 
@@ -940,6 +1025,7 @@ function createTransaction(init) {
         stage: init.stage,
         source: init.source,
         claimed: false,
+        openedByBot: false,
         createdAt: init.now,
         activeSince: null,
         activeMs: 0,
