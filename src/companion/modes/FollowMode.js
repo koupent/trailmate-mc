@@ -7,6 +7,7 @@ import {
     LAST_KNOWN_ARRIVE_RANGE
 } from '../movement/followConstants.js';
 import { resolveFollowPhase } from '../movement/followPhase.js';
+import { ColumnClimber } from '../movement/climbColumn.js';
 import { wouldPathPassNearPlayer } from '../movement/playerPathClearance.js';
 import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
 import { canPlaceUnderProtection } from '../blockProtection.js';
@@ -55,6 +56,9 @@ export class FollowMode extends Mode {
         this._plantingTargetKey = null;
         /** @type {Map<string, number>} */
         this._unreachableFarmlandUntil = new Map();
+        /** Manual ladder / vine climb; pathfinder never moves vertically here. */
+        this._climb = new ColumnClimber();
+        this._climbConsulted = false;
     }
 
     async onEnter() {
@@ -63,6 +67,7 @@ export class FollowMode extends Mode {
 
     async onExit(ctx) {
         this._plantingTargetKey = null;
+        this._climb.release(ctx);
         // FSM では combat/duty へ一瞬でも遷移するたびに呼ばれる。
         // ここで stop すると追従ゴールが毎回消え、棒立ち・duty 往復の原因になる。
         // 待機への切替は WaitMode.onEnter が stop する。
@@ -72,6 +77,20 @@ export class FollowMode extends Mode {
     }
 
     async tick(ctx) {
+        this._climbConsulted = false;
+        try {
+            await this._runTick(ctx);
+        } finally {
+            // Every early return above the climb branch — combat taking over,
+            // the owner disappearing, a pickup pause — must let go of forward.
+            if (!this._climbConsulted) this._climb.release(ctx);
+        }
+    }
+
+    /**
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     */
+    async _runTick(ctx) {
         const bot = ctx.bot;
 
         ctx.movement.tickHoldWatchdog();
@@ -140,6 +159,12 @@ export class FollowMode extends Mode {
             return;
         }
         this._plantingTargetKey = null;
+
+        // A* generates no upward move for this companion, so a ladder or vine
+        // wall is climbed by hand from the foot the follow route already
+        // reached. Everything below stays untouched when it does not apply.
+        this._climbConsulted = true;
+        if (this._climb.tick(ctx)) return;
 
         const phase = resolveFollowPhase(ctx, owner);
 
