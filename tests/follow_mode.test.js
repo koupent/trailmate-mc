@@ -261,6 +261,66 @@ describe('FollowMode unified owner follow', () => {
     });
 });
 
+describe('FollowMode column climb', () => {
+    /** Vines on the west face of a wall, with the owner waiting on top. */
+    function makeVineWallCtx() {
+        const ctx = makeFollowCtx(new Vec3(0.5, 64, 0.5), new Vec3(1.5, 67, 0.5), {
+            blockAt: ({ x, y, z }) => {
+                if (x === 0 && z === 0 && y >= 64 && y <= 66) {
+                    return { name: 'vine', boundingBox: 'empty' };
+                }
+                if (x === 1 && z === 0 && y >= 64 && y <= 66) return solidBlock();
+                return airBlock();
+            }
+        });
+        ctx.bot.entity.onGround = false;
+        ctx.bot.entity.yaw = 0;
+        ctx.bot.look = async () => {};
+        ctx.bot.controls = new Map();
+        ctx.bot.setControlState = (name, state) => ctx.bot.controls.set(name, state);
+        ctx.bot.getControlState = (name) => ctx.bot.controls.get(name) ?? false;
+        return ctx;
+    }
+
+    it('climbs the wall instead of handing the owner back to pathfinder', async () => {
+        const ctx = makeVineWallCtx();
+
+        await new FollowMode().tick(ctx);
+
+        assert.equal(
+            ctx.movement.calls.some((call) => call.type === 'followEntity'),
+            false,
+            'A* has no upward move, so follow must not reclaim the tick'
+        );
+        assert.equal(ctx.movement.calls.at(-1)?.type, 'stop');
+        assert.equal(ctx.bot.getControlState('forward'), true);
+    });
+
+    it('releases forward when combat takes the tick away mid-climb', async () => {
+        const ctx = makeVineWallCtx();
+        const mode = new FollowMode();
+
+        await mode.tick(ctx);
+        assert.equal(ctx.bot.getControlState('forward'), true);
+
+        ctx.agent.reflexes = { wantsCombat: true };
+        await mode.tick(ctx);
+
+        assert.equal(ctx.bot.getControlState('forward'), false);
+    });
+
+    it('leaves the ordinary follow decision alone on level ground', async () => {
+        const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(12, 64, 0));
+        ctx.bot.setControlState = () => assert.fail('no climb control on level ground');
+
+        await new FollowMode().tick(ctx);
+
+        const follow = ctx.movement.calls.find((call) => call.type === 'followEntity');
+        assert.ok(follow, 'expected the existing follow phase decision to run');
+        assert.equal(follow.rejected, false);
+    });
+});
+
 describe('FollowMode blocked goal refresh', () => {
     it('calls followEntity again when the previous goal was blocked', async () => {
         const ctx = makeFollowCtx(new Vec3(0, 64, 0), new Vec3(12, 64, 0));
