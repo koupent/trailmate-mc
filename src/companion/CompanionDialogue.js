@@ -11,15 +11,14 @@ import {
 } from './dialogueParse.js';
 import { buildOwnerFollowFacts, isPlayerEligible, lockOwner } from './ownerLock.js';
 import { giveAllItemsToPlayer, countAllItems } from './utils/giveAllItems.js';
-import {
-    countSupplyItems,
-    snapshotInventoryFill
-} from './utils/inventorySnapshot.js';
+import { snapshotInventoryFill } from './utils/inventorySnapshot.js';
 import {
     DEFAULT_INVENTORY_FILL_REARM_SLOTS,
     DEFAULT_INVENTORY_FILL_THRESHOLDS,
     InventoryFillTracker
 } from './utils/InventoryFillTracker.js';
+import { listRetentionStock } from './utils/itemRetention.js';
+import { SupplyRequestTracker } from './utils/SupplyRequestTracker.js';
 import { tCommand } from '../i18n/index.js';
 import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
@@ -34,7 +33,6 @@ export const DEFAULT_CHAT_CONFIG = {
     idle_chance: 0.55,
     combat_commentary_chance: 0.6,
     low_health: 8,
-    low_food_hunger: 14,
     stuck_seconds: 5,
     hostile_range: 12,
     hostile_approach_distances: [10, 6, 3],
@@ -64,6 +62,7 @@ export class CompanionDialogue {
             thresholds: this.config.inventory_fill_thresholds,
             rearmSlots: this.config.inventory_fill_rearm_slots
         });
+        this.supplyRequestTracker = new SupplyRequestTracker();
         this._lastInventoryFillMessage = '';
         this._prev = null;
         this._actionBusy = false;
@@ -80,6 +79,37 @@ export class CompanionDialogue {
 
     _isItemTransferActive() {
         return Boolean(this.agent.companion?.ctx?.itemTransfer?.active);
+    }
+
+    /** Retention targets shared with the chest / periodic transfers. */
+    _retentionPolicy() {
+        return this.companionConfig?.item_share || {};
+    }
+
+    /** @returns {ReturnType<typeof listRetentionStock>} */
+    _readRetentionStock() {
+        return listRetentionStock(this.agent.bot, this._retentionPolicy());
+    }
+
+    /**
+     * Shortage readings are meaningless while a flow that legitimately empties
+     * the inventory is running, so the tracker keeps its previous reading.
+     */
+    _isSupplyObservationHeld() {
+        if (!this.agent.bot?.inventory) return true;
+        if (this._actionBusy || this._isItemTransferActive()) return true;
+        const ctx = this.agent.companion?.ctx;
+        return Boolean(
+            ctx?.deathRecovery?.pending
+            || ctx?.deathRecovery?.active
+            || ctx?.graveLoot?.active
+        );
+    }
+
+    /** Queue newly missing supplies, or keep the queue as-is while held. */
+    _observeSupplyRequest() {
+        if (this._isSupplyObservationHeld()) return this.supplyRequestTracker.peek();
+        return this.supplyRequestTracker.observe(this._readRetentionStock());
     }
 
     /**
@@ -112,14 +142,16 @@ export class CompanionDialogue {
         const snapshot = this._buildSnapshot();
         const dialogueConfig = this._dialogueConfig();
         const inventoryFillEvent = this.inventoryFillTracker.observe(snapshot);
+        const supplyRequestEvent = this._observeSupplyRequest();
         const situationEvent = detectSituationEvent(this._prev, snapshot, this.config);
         this._prev = snapshot;
 
-        // Urgent state changes keep precedence. Inventory milestones are
-        // guaranteed and outrank low-priority situation chatter.
+        // Urgent state changes keep precedence. Inventory milestones and
+        // supply requests are guaranteed: both stay queued until delivered,
+        // so they only outrank low-priority situation chatter.
         let event = situationEvent?.priority >= 2
             ? situationEvent
-            : inventoryFillEvent || situationEvent;
+            : inventoryFillEvent || supplyRequestEvent || situationEvent;
 
         if (!event) {
             event = detectCombatCommentary(snapshot);
@@ -150,15 +182,16 @@ export class CompanionDialogue {
 
         const language = this.agent.language || 'ja';
         const inventoryFill = event.inventoryFill;
-        const renderSnapshot = inventoryFill
-            ? {
-                ...snapshot,
-                inventoryFillPercent: inventoryFill.percent,
-                inventoryUsedSlots: inventoryFill.usedSlots,
-                inventoryTotalSlots: inventoryFill.totalSlots,
-                inventoryEmptySlots: inventoryFill.emptySlots
-            }
-            : snapshot;
+        const renderSnapshot = { ...snapshot };
+        if (inventoryFill) {
+            renderSnapshot.inventoryFillPercent = inventoryFill.percent;
+            renderSnapshot.inventoryUsedSlots = inventoryFill.usedSlots;
+            renderSnapshot.inventoryTotalSlots = inventoryFill.totalSlots;
+            renderSnapshot.inventoryEmptySlots = inventoryFill.emptySlots;
+        }
+        if (event.supplyCategories) {
+            renderSnapshot.supplyCategories = event.supplyCategories;
+        }
         const message = renderCommentary(language, event.id, renderSnapshot, {
             excludeMessage: inventoryFill ? this._lastInventoryFillMessage : ''
         });
@@ -168,6 +201,9 @@ export class CompanionDialogue {
         if (inventoryFill) {
             this._lastInventoryFillMessage = message;
             this.inventoryFillTracker.markDelivered();
+        }
+        if (event.supplyCategories) {
+            this.supplyRequestTracker.markDelivered();
         }
         if (isStuckEvent) {
             const ctx = this.agent.companion?.ctx;
@@ -260,6 +296,10 @@ export class CompanionDialogue {
                 await this._say(tCommand(language, 'give_all_failed'));
             }
         } finally {
+            // Whatever the sweep handed over is expected, not a shortage to report.
+            if (this.agent.bot?.inventory) {
+                this.supplyRequestTracker.acknowledge(this._readRetentionStock());
+            }
             const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
             ctx.nearbyLoot = ctx.nearbyLoot || { active: false, suppressUntil: 0 };
             ctx.nearbyLoot.suppressUntil = Date.now() + ms;
@@ -320,8 +360,6 @@ export class CompanionDialogue {
             nearbyPlayers: [],
             health: null,
             hunger: null,
-            foodCount: 0,
-            torchCount: 0,
             inventoryUsedSlots: 0,
             inventoryTotalSlots: 36,
             inventoryEmptySlots: 36,
@@ -371,7 +409,6 @@ export class CompanionDialogue {
             ? Date.now() - bot.lastDamageTime
             : null;
 
-        const { foodCount, torchCount } = countSupplyItems(bot);
         const inventoryFill = snapshotInventoryFill(bot);
         const combatTarget = bot.pvp?.target?.name || hostile?.name || null;
         const hostileBand = hostile
@@ -386,8 +423,6 @@ export class CompanionDialogue {
             nearbyPlayers,
             health: bot.health,
             hunger: bot.food,
-            foodCount,
-            torchCount,
             ...inventoryFill,
             timeOfDay,
             isNight,

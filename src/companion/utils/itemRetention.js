@@ -28,14 +28,15 @@ const TIER_SCORE = {
 /** Prefer attackDamage over material tier when ranking weapons. */
 const WEAPON_DAMAGE_WEIGHT = 10;
 
-const EQUIPMENT_GROUPS = [
-    'helmet',
-    'chestplate',
-    'leggings',
-    'boots',
-    'shield',
-    'weapon'
-];
+/** Equipment categories in request order, each with its retention limit. */
+const EQUIPMENT_RETENTION_RULES = Object.freeze([
+    { id: 'helmet', limitKey: 'keep_equipment_sets' },
+    { id: 'chestplate', limitKey: 'keep_equipment_sets' },
+    { id: 'leggings', limitKey: 'keep_equipment_sets' },
+    { id: 'boots', limitKey: 'keep_equipment_sets' },
+    { id: 'shield', limitKey: 'keep_equipment_sets' },
+    { id: 'weapon', limitKey: 'keep_weapon_stacks' }
+]);
 
 /**
  * @param {string} name
@@ -123,12 +124,6 @@ function compareFoodDesc(a, b, foodsByName) {
 
 const COMMON_STACK_RETENTION_RULES = Object.freeze([
     {
-        id: 'torch',
-        limitKey: 'keep_torch_stacks',
-        matches: (stack) => isTorch(stack.name),
-        compare: (a, b) => b.count - a.count
-    },
-    {
         id: 'food',
         limitKey: 'keep_food_stacks',
         matches: (stack, context) => isKeepableFood(
@@ -137,7 +132,36 @@ const COMMON_STACK_RETENTION_RULES = Object.freeze([
             context.bannedFood
         ),
         compare: (a, b, context) => compareFoodDesc(a, b, context.foodsByName)
+    },
+    {
+        id: 'torch',
+        limitKey: 'keep_torch_stacks',
+        matches: (stack) => isTorch(stack.name),
+        compare: (a, b) => b.count - a.count
     }
+]);
+
+/**
+ * Every retention category in a fixed request order, with the setting that
+ * defines its target count. Keep decisions and shortage requests share this
+ * list so neither can drift from the other.
+ * @type {ReadonlyArray<{
+ *   id: string,
+ *   limitKey: keyof typeof DEFAULT_RETENTION,
+ *   matches: (stack: any, context: any) => boolean
+ * }>}
+ */
+export const RETENTION_CATEGORIES = Object.freeze([
+    ...EQUIPMENT_RETENTION_RULES.map((rule) => Object.freeze({
+        id: rule.id,
+        limitKey: rule.limitKey,
+        matches: (stack) => equipmentGroup(stack.name) === rule.id
+    })),
+    ...COMMON_STACK_RETENTION_RULES.map((rule) => Object.freeze({
+        id: rule.id,
+        limitKey: rule.limitKey,
+        matches: rule.matches
+    }))
 ]);
 
 /**
@@ -179,10 +203,9 @@ function applyRetentionRules(stacks, policy, context, rules) {
  * @param {Set<number>} keepSlots
  */
 function applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots) {
-    for (const group of EQUIPMENT_GROUPS) {
+    for (const { id: group, limitKey } of EQUIPMENT_RETENTION_RULES) {
         const groupStacks = stacks.filter((stack) => equipmentGroup(stack.name) === group);
         const equippedCount = groupStacks.filter((stack) => equippedSlots.has(stack.slot)).length;
-        const limitKey = group === 'weapon' ? 'keep_weapon_stacks' : 'keep_equipment_sets';
         const spareCount = Math.max(0, retentionLimit(policy, limitKey) - equippedCount);
         keepTopStacks(
             groupStacks.filter((stack) => !equippedSlots.has(stack.slot)),
@@ -198,7 +221,7 @@ function applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots) {
  * @param {{ foodsByName?: object, bannedFood?: string[] }} options
  * @param {Set<number>} keepSlots
  */
-function createRetentionContext(bot, options, keepSlots) {
+function createRetentionContext(bot, options, keepSlots = new Set()) {
     return {
         foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
         bannedFood: new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS),
@@ -316,4 +339,26 @@ export function listGiveableStacks(bot, policy = {}, options = {}) {
     return stacks
         .filter((s) => !keepSlots.has(s.slot))
         .map(({ slot, type, count, name }) => ({ slot, type, count, name }));
+}
+
+/**
+ * How much of each retention category the companion currently holds against
+ * its target. Equipment slots and inventory are read from the same slot list,
+ * so a worn piece and a spare are each counted once; food and torches count
+ * occupied stacks, so a partial stack still counts as one.
+ *
+ * @param {import('mineflayer').Bot} bot
+ * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
+ * @returns {Array<{ id: string, current: number, target: number, missing: number }>}
+ */
+export function listRetentionStock(bot, policy = {}, options = {}) {
+    const stacks = listOccupiedStacks(bot);
+    const context = createRetentionContext(bot, options);
+
+    return RETENTION_CATEGORIES.map(({ id, limitKey, matches }) => {
+        const current = stacks.filter((stack) => matches(stack, context)).length;
+        const target = retentionLimit(policy, limitKey);
+        return { id, current, target, missing: Math.max(0, target - current) };
+    });
 }

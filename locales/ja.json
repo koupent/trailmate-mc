@@ -154,15 +154,10 @@
       "待機モードに戻った",
       "じっとしてるよ"
     ],
-    "no_food": [
-      "食べ物がない…持ってきて",
-      "お腹空いた、食料ちょうだい",
-      "食べるものがないよ"
-    ],
-    "no_torch": [
-      "松明がないよ",
-      "暗い、松明ほしい",
-      "松明持ってない…"
+    "supply_request": [
+      "{supplyCategories}が足りないよ。持ってきて",
+      "{supplyCategories}が心細いな…持ってきてほしい",
+      "{supplyCategories}を補充してほしいな"
     ],
     "inventory_fill_high": [
       "荷物、けっこう増えてきたよ！ いま{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）くらい",
@@ -189,5 +184,15 @@
   },
   "movement": {
     "path_blocked": "ごめん、通れない…"
+  },
+  "supply_categories": {
+    "helmet": "ヘルメット",
+    "chestplate": "チェスト装備",
+    "leggings": "レギンス",
+    "boots": "ブーツ",
+    "shield": "盾",
+    "weapon": "近接武器",
+    "food": "食料",
+    "torch": "松明"
   }
 }

@@ -6,6 +6,7 @@ type LocaleBundle = {
   commands: Record<string, string>;
   events: Record<string, string[]>;
   movement?: Record<string, string>;
+  supply_categories?: Record<string, string>;
 };
 
 const cache = new Map<string, LocaleBundle>();
@@ -49,6 +50,12 @@ export function tEvent(
 
 function messagePattern(message: string): string {
   return message.replace(/\d+(?:\.\d+)?/g, '#');
+}
+
+/** Display name for a retention category the companion is asking to restock. */
+export function tSupplyCategory(language: string, id: string): string {
+  const bundle = loadLocale(language);
+  return bundle.supply_categories?.[id] || id;
 }
 
 export function tMovement(language: string, key: string, vars: CommentaryVars = {}): string {
