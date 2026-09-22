@@ -1,4 +1,5 @@
 import type { ControlState } from 'mineflayer';
+import { jumpBlockedByFarmland } from '../companion/movement/farmland.js';
 import { scanSurroundings } from '../companion/movement/surroundings.js';
 import { movementControlsTowardBearing } from './threatArc.js';
 
@@ -15,6 +16,7 @@ type StepAssistBot = {
     yaw: number;
     onGround?: boolean;
   } | null;
+  blockAt?: (pos: any) => any;
   setControlState: (control: ControlState, state: boolean) => void;
 };
 
@@ -35,6 +37,7 @@ export function stepAheadAlongBearing(
 
 /**
  * 戦闘中のキー入力移動で段差に乗れるよう、接地時にジャンプと前進成分を補助する。
+ * 耕地からの踏み切りと耕地への着地は戦闘中でも農地を壊すため補助しない。
  * @returns 段差補助を適用した場合 true
  */
 export function applyCombatStepAssist(
@@ -44,6 +47,11 @@ export function applyCombatStepAssist(
   if (!bot.entity?.onGround) return false;
   const step = stepAheadAlongBearing(bot, bearingRad);
   if (!step) return false;
+  if (jumpBlockedByFarmland(bot, bot.entity.position, step.center)) {
+    // 段差補助を諦め、既存の横移動・間合い制御へ制御を戻す。
+    bot.setControlState('jump', false);
+    return false;
+  }
 
   bot.setControlState('jump', true);
   const controls = movementControlsTowardBearing(bearingRad, bot.entity.yaw, 0.1);

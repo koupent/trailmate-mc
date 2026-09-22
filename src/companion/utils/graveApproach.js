@@ -1,6 +1,7 @@
 import { approachPosition } from './approachPosition.js';
 import { DEFAULT_OWN_GRAVE_INTERACT_RANGE } from './graveInteract.js';
 import { jumpOntoStep, sleep, MANUAL_JUMP_DISTANCE, CLIMB_HOLD_MS } from '../movement/climb.js';
+import { jumpBlockedByFarmland } from '../movement/farmland.js';
 import { scanSurroundings } from '../movement/surroundings.js';
 
 const DEFAULT_POLL_MS = 250;
@@ -110,7 +111,10 @@ async function tryClimbTowardGrave(ctx, blockCenter, pollMs) {
             step.center.x - bot.entity.position.x,
             step.center.z - bot.entity.position.z
         );
-        if (distToStep <= MANUAL_JUMP_DISTANCE) {
+        // Farmland ledges are left to pathfinder, which applies the same rule
+        // and reports the grave unreachable instead of trampling the field.
+        if (distToStep <= MANUAL_JUMP_DISTANCE
+            && !jumpBlockedByFarmland(bot, bot.entity.position, step.center)) {
             ctx.movement.stop();
             bot.clearControlStates();
             await jumpOntoStep(bot, step.center);

@@ -1,4 +1,5 @@
 import Vec3 from 'vec3';
+import { jumpBlockedByFarmland } from './farmland.js';
 
 /** Lip distance at which a manual jump is preferred over GoalNear climb. */
 export const MANUAL_JUMP_DISTANCE = 1.35;
@@ -15,11 +16,19 @@ const BACK_SECONDS = 0.2;
  * Force a step-up when pathfinder alone is wedged against a lip.
  * Backs off first, waits for onGround, then jumps forward onto the step top.
  *
+ * Refused outright over farmland: no jump input and no manual velocity, so the
+ * caller falls back to a pathfinder route instead of tilling the field.
+ *
  * @param {import('mineflayer').Bot} bot
  * @param {import('vec3').Vec3} stepTop
  * @returns {Promise<boolean>}
  */
 export async function jumpOntoStep(bot, stepTop) {
+    if (jumpBlockedByFarmland(bot, bot.entity?.position, stepTop)) {
+        bot.setControlState('jump', false);
+        return false;
+    }
+
     bot.clearControlStates();
     stopPathfinder(bot);
 

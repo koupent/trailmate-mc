@@ -62,6 +62,7 @@ import {
   DEFAULT_TACTICAL_OBSERVATION_RADIUS,
   type TacticalThreatObservation
 } from '../combat/TacticalObservation.js';
+import { jumpBlockedByFarmland } from '../companion/movement/farmland.js';
 import {
   applyCombatStepAssist,
   stepAheadAlongBearing
@@ -507,6 +508,12 @@ export class Reflexes {
     const blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0)) || { name: 'air' };
 
     if (blockAbove.name === 'water' && !bot.pathfinder?.goal) {
+      // 耕地の上で浮上ジャンプすると畑が土へ戻るため、ここでも例外にしない。
+      // 泳ぎ出しは諦め、通常の移動・経路探索へ制御を戻す。
+      if (jumpBlockedByFarmland(bot, bot.entity.position, null)) {
+        bot.setControlState('jump', false);
+        return;
+      }
       bot.setControlState('jump', true);
       return;
     }
