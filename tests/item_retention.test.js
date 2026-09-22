@@ -1,7 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-    DEFAULT_RETENTION,
     listGiveableStacks,
     listUnequipTargets,
     equipmentGroup,
@@ -9,6 +8,10 @@ import {
     isTorch,
     isKeepableFood
 } from '../src/companion/utils/itemRetention.js';
+import {
+    DEFAULT_RETENTION_POLICY,
+    resolveRetentionPolicy
+} from '../src/companion/utils/retentionPolicy.js';
 import {
     shouldTransferNow,
     PeriodicItemTransfer
@@ -47,19 +50,28 @@ function makeBot(items, heldSlot = null) {
 }
 
 describe('itemRetention helpers', () => {
-    it('defaults every retention category to two', () => {
-        assert.deepEqual(DEFAULT_RETENTION, {
-            keep_torch_stacks: 2,
-            keep_food_stacks: 2,
-            keep_equipment_sets: 2,
-            keep_weapon_stacks: 2
-        });
+    it('defaults every retention category to two, with no per-item rules', () => {
+        assert.deepEqual(Object.keys(DEFAULT_RETENTION_POLICY), [
+            'helmet',
+            'chestplate',
+            'leggings',
+            'boots',
+            'shield',
+            'weapon',
+            'food',
+            'torch'
+        ]);
+        for (const [id, entry] of Object.entries(DEFAULT_RETENTION_POLICY)) {
+            assert.deepEqual(entry, { limit: 2, items: {} }, id);
+        }
     });
 
     it('classifies torches and keepable food', () => {
         assert.equal(isTorch('torch'), true);
         assert.equal(isTorch('soul_torch'), true);
         assert.equal(isTorch('redstone_torch'), false);
+        // Kept alongside the torches, but not something the reflex can place.
+        assert.equal(isTorch('lantern'), false);
         assert.equal(isKeepableFood('bread', FOODS_BY_NAME, new Set()), true);
         assert.equal(isKeepableFood('rotten_flesh', FOODS_BY_NAME, new Set(['rotten_flesh'])), false);
     });
@@ -208,6 +220,123 @@ describe('listGiveableStacks', () => {
         assert.deepEqual(
             listGiveableStacks(bot).map((stack) => stack.name),
             ['bow', 'crossbow', 'arrow', 'spectral_arrow']
+        );
+    });
+});
+
+describe('per-item retention rules', () => {
+    /** @param {Record<string, unknown>} retention */
+    function policy(retention) {
+        return { retention };
+    }
+
+    it('spends a category budget on the items the owner named', () => {
+        // "two melee weapons" and "one iron sword plus one golden sword" are
+        // the same budget said two different ways; both have to work.
+        const bot = makeBot([
+            makeItem(9, 'netherite_sword', 1, { attackDamage: 8 }),
+            makeItem(10, 'iron_sword', 1, { attackDamage: 6 }),
+            makeItem(11, 'iron_sword', 1, { attackDamage: 6 }),
+            makeItem(12, 'golden_sword', 1, { attackDamage: 4 })
+        ]);
+
+        const given = listGiveableStacks(bot, policy({
+            weapon: { limit: 2, items: { netherite_sword: 0, iron_sword: 1, golden_sword: 1 } }
+        }));
+
+        assert.deepEqual(given.map((stack) => stack.slot), [9, 11]);
+    });
+
+    it('never keeps an item struck off the list, however good it is', () => {
+        const bot = makeBot([
+            makeItem(9, 'netherite_helmet'),
+            makeItem(10, 'iron_helmet')
+        ]);
+
+        assert.deepEqual(
+            listGiveableStacks(bot, policy({ helmet: { limit: 2, items: { netherite_helmet: 0 } } }))
+                .map((stack) => stack.name),
+            ['netherite_helmet']
+        );
+    });
+
+    it('caps one item without capping the category', () => {
+        const bot = makeBot([
+            makeItem(9, 'torch', 64),
+            makeItem(10, 'torch', 32),
+            makeItem(11, 'lantern', 16),
+            makeItem(12, 'lantern', 8)
+        ]);
+
+        const given = listGiveableStacks(bot, policy({
+            torch: { limit: 3, items: { lantern: 1 } }
+        }));
+
+        // Both torch stacks fit, the third slot goes to one lantern, and the
+        // per-item cap sends the second lantern back.
+        assert.deepEqual(given.map((stack) => stack.slot), [12]);
+    });
+
+    it('keeps what the companion is wearing even at the smallest legal total', () => {
+        const bot = makeBot([
+            makeItem(5, 'iron_helmet'),
+            makeItem(9, 'netherite_helmet'),
+            makeItem(45, 'shield'),
+            makeItem(10, 'shield'),
+            makeItem(36, 'iron_sword', 1, { attackDamage: 6 }),
+            makeItem(11, 'netherite_sword', 1, { attackDamage: 8 })
+        ], 36);
+
+        const slots = listGiveableStacks(bot, policy({
+            helmet: { limit: 1, items: {} },
+            shield: { limit: 1, items: {} },
+            weapon: { limit: 1, items: {} }
+        })).map((stack) => stack.slot);
+
+        assert.equal(slots.includes(5), false, 'worn helmet stays');
+        assert.equal(slots.includes(45), false, 'worn shield stays');
+        assert.equal(slots.includes(36), false, 'held weapon stays');
+        // The worn pieces fill the budget, so every spare goes back.
+        assert.deepEqual(slots, [9, 10, 11]);
+    });
+
+    it('unequips a worn piece the owner has struck off, so the box actually does something', () => {
+        const bot = makeBot([
+            makeItem(5, 'leather_helmet'),
+            makeItem(45, 'shield')
+        ]);
+
+        const retention = policy({ helmet: { limit: 2, items: { leather_helmet: 0 } } });
+        assert.deepEqual(listUnequipTargets(bot, retention), [
+            { slot: 5, destination: 'head', name: 'leather_helmet' }
+        ]);
+        // Still equipment as far as the classifier is concerned; it is the
+        // owner's policy that took it off the list.
+        assert.deepEqual(listUnequipTargets(bot), []);
+    });
+
+    it('reads the four category limits an older config still carries', () => {
+        const bot = makeBot([
+            makeItem(9, 'torch', 64),
+            makeItem(10, 'torch', 32),
+            makeItem(11, 'torch', 16)
+        ]);
+
+        assert.deepEqual(
+            listGiveableStacks(bot, { keep_torch_stacks: 3 }).map((stack) => stack.slot),
+            []
+        );
+        assert.deepEqual(
+            listGiveableStacks(bot, { keep_torch_stacks: 1 }).map((stack) => stack.slot),
+            [10, 11]
+        );
+        // A retention block wins over the legacy key it replaces.
+        assert.deepEqual(
+            listGiveableStacks(bot, {
+                keep_torch_stacks: 1,
+                retention: { torch: { limit: 3, items: {} } }
+            }).map((stack) => stack.slot),
+            []
         );
     });
 });

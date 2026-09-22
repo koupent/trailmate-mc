@@ -70,6 +70,33 @@ const DEFAULT_CONFIG = {
 };
 
 /**
+ * Swap the retention rules of a companion that is already in the world.
+ *
+ * Two copies of `item_share` exist once `startCompanion` has run: the one the
+ * chest transfer reads when it plans a deposit, and the one on the context that
+ * the dialogue reads when it decides what to ask the owner for. Both are live
+ * objects, so replacing the `retention` block on each is the whole of "apply
+ * without a respawn" — the next chest is planned under the new rules.
+ *
+ * @param {{ itemTransfer?: { config?: object }, ctx?: { config?: { item_share?: object } } }|null|undefined} companion
+ * @param {import('./utils/retentionPolicy.js').RetentionPolicy} retention
+ * @returns {boolean} whether a live companion took the change
+ */
+export function applyRetentionConfig(companion, retention) {
+    if (!companion) return false;
+    let applied = false;
+    if (companion.itemTransfer?.config) {
+        companion.itemTransfer.config.retention = retention;
+        applied = true;
+    }
+    if (companion.ctx?.config?.item_share) {
+        companion.ctx.config.item_share.retention = retention;
+        applied = true;
+    }
+    return applied;
+}
+
+/**
  * @returns {import('./Mode.js').Mode[]}
  */
 export function createCompanionModes() {

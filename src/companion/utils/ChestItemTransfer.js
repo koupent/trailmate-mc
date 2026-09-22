@@ -14,7 +14,6 @@ import { isPlayerEligible } from '../ownerLock.js';
 import { approachPosition } from './approachPosition.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './nearbyLootConstants.js';
 import {
-    DEFAULT_RETENTION,
     isPlayerInventorySlot,
     equippedItemSlots,
     listChestDepositPlan,
@@ -28,6 +27,7 @@ import {
     countTypeInWindowInventory,
     readOpenContainerInventory
 } from './containerWindow.js';
+import { DEFAULT_RETENTION_POLICY, defaultRetentionBlock } from './retentionPolicy.js';
 
 const CHEST_NAMES = new Set(['chest', 'trapped_chest']);
 const REPLACEABLE_NAMES = new Set([
@@ -73,16 +73,23 @@ export const DEFAULT_CHEST_TRANSFER_CONFIG = {
      * a single point of damage hands control to combat for ~4s.
      */
     abort_on_recent_damage: true,
-    keep_torch_stacks: DEFAULT_RETENTION.keep_torch_stacks,
-    keep_food_stacks: DEFAULT_RETENTION.keep_food_stacks,
-    keep_weapon_stacks: DEFAULT_RETENTION.keep_weapon_stacks,
-    keep_equipment_sets: DEFAULT_RETENTION.keep_equipment_sets
+    /**
+     * Which items to keep and how many, per category. `createChestTransferConfig`
+     * gives every instance its own copy, and the dashboard replaces it wholesale
+     * when it saves — which is how a running companion picks up new rules at its
+     * next chest without a respawn.
+     * @type {import('./retentionPolicy.js').RetentionPolicy}
+     */
+    retention: DEFAULT_RETENTION_POLICY
 };
 
 /** @param {object} [config] */
 export function createChestTransferConfig(config = {}) {
     return {
         ...DEFAULT_CHEST_TRANSFER_CONFIG,
+        // Its own block, not the shared default: the live copy is replaced when
+        // the dashboard saves, and two companions must not share one object.
+        retention: defaultRetentionBlock(),
         ...(config || {})
     };
 }
@@ -377,7 +384,7 @@ export class ChestItemTransfer {
      * @param {import('mineflayer').Bot} bot
      */
     _unequipTargets(bot) {
-        return listUnequipTargets(bot);
+        return listUnequipTargets(bot, this.config);
     }
 
     /**
@@ -722,7 +729,7 @@ export class ChestItemTransfer {
         if (!live) return this._depositPlan(ctx.bot);
         return planDepositByType(live.stacks, this.config, {
             ...retentionOptionsFromBot(ctx.bot),
-            equippedSlots: equippedItemSlots(ctx.bot),
+            equippedSlots: equippedItemSlots(ctx.bot, this.config),
             isDepositable: (slot) => live.depositable.has(slot)
         });
     }

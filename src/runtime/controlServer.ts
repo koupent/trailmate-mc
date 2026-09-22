@@ -1,5 +1,6 @@
 import http from 'node:http';
 import dotenv from 'dotenv';
+import minecraftData from 'minecraft-data';
 import type { AppConfig } from '../config.js';
 import { loadConfig } from '../config.js';
 import { bootHost, type TrailmateHost } from '../host/BotHost.js';
@@ -8,6 +9,13 @@ import {
   isDuplicateLoginError
 } from './spawnErrors.js';
 import { itemDisplayNameJa } from '../i18n/itemNames.js';
+import { tRetentionCategory } from '../i18n/index.js';
+import { applyRetentionConfig } from '../companion/index.js';
+import {
+  buildRetentionCatalog,
+  type RetentionCatalog
+} from '../companion/utils/retentionCatalog.js';
+import { resolveRetentionPolicy } from '../companion/utils/retentionPolicy.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -54,6 +62,13 @@ export function startControlServer(
       if (request.method === 'POST' && url.pathname === '/despawn') {
         const result = await despawnCompanion(state);
         return json(response, result.ok ? 200 : 409, result);
+      }
+      if (request.method === 'GET' && url.pathname === '/retention/catalog') {
+        return json(response, 200, readRetentionCatalog(state));
+      }
+      if (request.method === 'POST' && url.pathname === '/retention') {
+        const body = await readJson(request);
+        return json(response, 200, applyRetention(state, body));
       }
       json(response, 404, { error: 'not found' });
     } catch (error) {
@@ -213,6 +228,75 @@ export function buildStatus(state: ControlState) {
   };
 }
 
+/** Cheap to build, but rebuilt on every dashboard tab switch without this. */
+const catalogCache = new Map<string, RetentionCatalog>();
+
+/**
+ * Item registry the retention catalog is built from.
+ *
+ * A spawned bot's own registry is the honest answer, because it is what the
+ * keep decision will read. Without one the configured version is loaded
+ * straight from `minecraft-data`, so the dashboard can offer the picker while
+ * the companion is still parked.
+ */
+function retentionRegistry(state: ControlState): {
+  registry: unknown;
+  version: string | null;
+} {
+  const live = (state.host?.bot as { registry?: { version?: { minecraftVersion?: string } } })
+    ?.registry;
+  if (live?.version?.minecraftVersion) {
+    return { registry: live, version: live.version.minecraftVersion };
+  }
+  const version = String(loadConfig().minecraft_version || '');
+  try {
+    return { registry: version ? minecraftData(version) : null, version: version || null };
+  } catch {
+    return { registry: null, version: version || null };
+  }
+}
+
+/**
+ * Candidate items the dashboard may offer, with their Japanese labels and the
+ * bounds each category's total accepts.
+ */
+export function readRetentionCatalog(state: ControlState): RetentionCatalog {
+  const { registry, version } = retentionRegistry(state);
+  const live = Boolean(state.host?.bot);
+  const cacheKey = `${live ? 'bot' : 'data'}:${version || 'unknown'}`;
+  const cached = catalogCache.get(cacheKey);
+  if (cached) return cached;
+
+  const language = process.env.BOT_LANGUAGE || 'ja';
+  const catalog = buildRetentionCatalog(registry as never, {
+    version,
+    itemLabel: itemDisplayNameJa,
+    categoryLabel: (id: string) => tRetentionCategory(language, id)
+  });
+  catalogCache.set(cacheKey, catalog);
+  return catalog;
+}
+
+/**
+ * Hand a saved retention policy to a companion that is already in the world.
+ *
+ * Persisting it is the dashboard's job — it owns the only writable mount of
+ * `config.json`. This route exists so the change does not have to wait for a
+ * despawn / respawn cycle to take effect.
+ */
+export function applyRetention(
+  state: ControlState,
+  body: unknown
+): { ok: true; applied: boolean; retention: ReturnType<typeof resolveRetentionPolicy> } {
+  const raw = (body ?? {}) as { retention?: unknown };
+  const retention = resolveRetentionPolicy({ retention: raw.retention ?? body });
+  const applied = applyRetentionConfig(
+    state.host?.companion as Parameters<typeof applyRetentionConfig>[0],
+    retention
+  );
+  return { ok: true, applied, retention };
+}
+
 function collectInventory(
   bot: TrailmateHost['bot']
 ): Array<{ name: string; displayName: string; count: number }> {
@@ -258,6 +342,19 @@ function roundCoord(value: number): number {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function readJson(request: http.IncomingMessage): Promise<unknown> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.from(chunk);
+    size += buffer.length;
+    if (size > 1_000_000) throw new Error('request too large');
+    chunks.push(buffer);
+  }
+  if (chunks.length === 0) return {};
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
 function json(response: http.ServerResponse, status: number, value: unknown): void {

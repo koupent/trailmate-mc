@@ -41,16 +41,45 @@ export const ITEM_CATEGORY = Object.freeze({
 });
 
 /**
- * Categories the companion keeps, and the setting that says how many of each.
+ * Categories the companion keeps, in the order the owner hears them.
  *
- * This map *is* the retention allow-list: a category missing from it is never
- * kept, in any amount. The retention rule table is built from these entries in
- * this order, so the request order the owner hears and the keep decision
- * cannot drift apart.
+ * This list *is* the retention allow-list: a category missing from it is never
+ * kept, in any amount. The retention rule table, the dashboard's tab strip and
+ * the shortage request all read this order, so none of them can drift apart.
  *
+ * @type {ReadonlyArray<ItemCategory>}
+ */
+export const RETAINED_CATEGORIES = Object.freeze([
+    ITEM_CATEGORY.helmet,
+    ITEM_CATEGORY.chestplate,
+    ITEM_CATEGORY.leggings,
+    ITEM_CATEGORY.boots,
+    ITEM_CATEGORY.shield,
+    ITEM_CATEGORY.weapon,
+    ITEM_CATEGORY.food,
+    ITEM_CATEGORY.torch
+]);
+
+const RETAINED_CATEGORY_SET = new Set(RETAINED_CATEGORIES);
+
+/** Categories that are worn or wielded: returning one strips the companion. */
+export const EQUIPMENT_CATEGORY_IDS = Object.freeze([
+    ITEM_CATEGORY.helmet,
+    ITEM_CATEGORY.chestplate,
+    ITEM_CATEGORY.leggings,
+    ITEM_CATEGORY.boots,
+    ITEM_CATEGORY.shield,
+    ITEM_CATEGORY.weapon
+]);
+
+/**
+ * The four per-category settings retention used before it moved to per-item
+ * rules. Read once, to carry an existing `config.json` over to the new shape.
+ *
+ * @deprecated Superseded by `companion.item_share.retention`.
  * @type {Readonly<Record<string, 'keep_equipment_sets'|'keep_weapon_stacks'|'keep_food_stacks'|'keep_torch_stacks'>>}
  */
-export const RETENTION_LIMIT_KEY_BY_CATEGORY = Object.freeze({
+export const LEGACY_RETENTION_LIMIT_KEY_BY_CATEGORY = Object.freeze({
     [ITEM_CATEGORY.helmet]: 'keep_equipment_sets',
     [ITEM_CATEGORY.chestplate]: 'keep_equipment_sets',
     [ITEM_CATEGORY.leggings]: 'keep_equipment_sets',
@@ -62,17 +91,13 @@ export const RETENTION_LIMIT_KEY_BY_CATEGORY = Object.freeze({
 });
 
 /** Categories that are worn or wielded: a held one counts as equipped. */
-const EQUIPMENT_CATEGORIES = new Set([
-    ITEM_CATEGORY.helmet,
-    ITEM_CATEGORY.chestplate,
-    ITEM_CATEGORY.leggings,
-    ITEM_CATEGORY.boots,
-    ITEM_CATEGORY.shield,
-    ITEM_CATEGORY.weapon
-]);
+const EQUIPMENT_CATEGORIES = new Set(EQUIPMENT_CATEGORY_IDS);
 
 /** Categories whose leading material token ranks one item against another. */
 const MATERIAL_TIERED_CATEGORIES = new Set([...EQUIPMENT_CATEGORIES, ITEM_CATEGORY.tool]);
+
+/** Light sources the torch reflex can actually place. */
+const PLACEABLE_TORCH_NAMES = new Set(['torch', 'soul_torch']);
 
 /** Categories that count as "the companion is armed". */
 const ARMED_CATEGORIES = new Set([ITEM_CATEGORY.weapon, ITEM_CATEGORY.rangedWeapon]);
@@ -87,10 +112,13 @@ const WORK_CATEGORIES = new Set([...ARMED_CATEGORIES, ITEM_CATEGORY.tool]);
 const EXACT_CATEGORY_OVERRIDES = new Map([
     // No registry category identifies a shield at all.
     ['shield', ITEM_CATEGORY.shield],
-    // Torches carry no enchant categories, and `redstone_torch` must not join
-    // them, so the two light sources are named outright.
+    // Light sources carry no enchant categories, and `redstone_torch` must not
+    // join them, so the four the companion carries are named outright. Only
+    // the two torches are placed — see `isTorchItemName`.
     ['torch', ITEM_CATEGORY.torch],
     ['soul_torch', ITEM_CATEGORY.torch],
+    ['lantern', ITEM_CATEGORY.torch],
+    ['soul_lantern', ITEM_CATEGORY.torch],
     // `trident` has only its own registry category and `mace` reads as a
     // weapon there; both are pinned so the two paths cannot drift.
     ['trident', ITEM_CATEGORY.weapon],
@@ -152,6 +180,43 @@ const MATERIAL_SCORE = Object.freeze({
 
 /** Foods the companion never counts as food, whatever the registry says. */
 const DEFAULT_EXCLUDED_FOODS = new Set(UNSAFE_OR_SPECIAL_FOODS);
+
+/**
+ * Raw ingredients: edible, but worth more cooked than carried.
+ *
+ * The registry answers this on its own — `cooked_<name>` existing means
+ * `<name>` is the raw side of a pair — and that derivation runs whenever
+ * `itemsByName` is available. This list is the same answer for the names the
+ * derivation cannot reach: the two whose cooked form is spelled differently,
+ * and the one raw fish vanilla never lets you cook. Both paths have to agree
+ * on every vanilla food, which `tests/item_classify.test.js` checks.
+ *
+ * Unlike `DEFAULT_EXCLUDED_FOODS` this is not a caller-overridable policy: it
+ * describes the item, so an explicit `excludedFoods` does not lift it.
+ */
+const RAW_INGREDIENT_FOODS = new Set([
+    'porkchop',
+    'beef',
+    'chicken',
+    'rabbit',
+    'mutton',
+    'cod',
+    'salmon',
+    // Cooked forms the `cooked_` prefix does not name.
+    'potato',
+    'kelp',
+    // No cooked form at all, and one hunger point raw.
+    'tropical_fish'
+]);
+
+/**
+ * Whether this food is the raw side of a cook-it-first pair.
+ * @param {string} name
+ * @param {ClassifyOptions['itemsByName']} itemsByName
+ */
+function isRawIngredientFood(name, itemsByName) {
+    return RAW_INGREDIENT_FOODS.has(name) || Boolean(itemsByName?.[`cooked_${name}`]);
+}
 
 /**
  * @typedef {{
@@ -247,7 +312,8 @@ function categoryFromName(name) {
  * signal that has not moved between data versions.
  *
  * An excluded food is never food: the caller's exclusion list is a decision
- * about that item, so it outranks the food category.
+ * about that item, so it outranks the food category. Neither is a raw
+ * ingredient — a stack of beef is worth a furnace trip, not a kept slot.
  *
  * @param {string|null|undefined} name
  * @param {ClassifyOptions} [options]
@@ -264,7 +330,9 @@ export function classifyItemName(name, options = {}) {
     const armorSlot = armorSlotFromRegistry(has);
     if (armorSlot) return armorSlot;
 
-    if (options.foodsByName?.[itemName] && !resolveExcludedFoods(options).has(itemName)) {
+    if (options.foodsByName?.[itemName]
+        && !isRawIngredientFood(itemName, options.itemsByName)
+        && !resolveExcludedFoods(options).has(itemName)) {
         return ITEM_CATEGORY.food;
     }
 
@@ -311,8 +379,7 @@ export function materialScore(name, category) {
  * @param {ItemCategory|null|undefined} category
  */
 export function isRetainedCategory(category) {
-    return category != null
-        && Object.prototype.hasOwnProperty.call(RETENTION_LIMIT_KEY_BY_CATEGORY, category);
+    return category != null && RETAINED_CATEGORY_SET.has(category);
 }
 
 /**
@@ -325,11 +392,15 @@ export function isEquipmentCategory(category) {
 
 /**
  * Torch and soul torch — the two light sources the companion places.
- * Neither needs a registry, so this takes no options.
+ *
+ * Narrower than `ITEM_CATEGORY.torch`, which also holds the lanterns: those
+ * are worth carrying but are not what a dark-spot reflex reaches for. Neither
+ * name needs a registry, so this takes no options.
+ *
  * @param {string|null|undefined} name
  */
 export function isTorchItemName(name) {
-    return classifyItemName(name) === ITEM_CATEGORY.torch;
+    return PLACEABLE_TORCH_NAMES.has(String(name || ''));
 }
 
 /**

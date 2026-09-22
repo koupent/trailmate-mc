@@ -89,6 +89,24 @@
 
       <section id="tab-settings" class="tab-panel" role="tabpanel" hidden>
         <div id="settings-setup-slot"></div>
+
+        <article class="zone zone-follow" id="retention-zone">
+          <div class="zone-head">
+            <h2 class="zone-title">相棒が手元に残すもの</h2>
+            <p class="zone-lead muted">
+              チェストを置いて返してもらうとき、相棒が自分用に残すアイテムです。
+              カテゴリごとの合計と、アイテムごとの上限の両方を指定できます。
+              保存すると、デスポーンせずに次の返却から反映されます。
+            </p>
+          </div>
+          <nav class="tabs subtabs" id="retention-tabs" role="tablist" aria-label="保持カテゴリ"></nav>
+          <div id="retention-panels" aria-live="polite">読み込み中…</div>
+          <div class="row retention-actions">
+            <button type="button" id="retention-save" class="primary" disabled>保持設定を保存</button>
+            <button type="button" id="retention-reset" disabled>既定に戻す</button>
+            <span id="retention-msg" class="msg"></span>
+          </div>
+        </article>
       </section>
     </div>
 
@@ -147,5 +165,6 @@
     </div>
   </main>
   <script type="module" src="/app.js"></script>
+  <script type="module" src="/retention.js"></script>
 </body>
 </html>

@@ -4,17 +4,16 @@
 
 import { isPlayerEligible } from '../ownerLock.js';
 import { currentControlOwner } from '../ControlPriority.js';
-import { listGiveableStacks, DEFAULT_RETENTION } from './itemRetention.js';
+import { listGiveableStacks } from './itemRetention.js';
+import { DEFAULT_RETENTION_POLICY, defaultRetentionBlock } from './retentionPolicy.js';
 import { giveStacksToPlayer } from './giveAllItems.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './nearbyLootConstants.js';
 
 export const DEFAULT_ITEM_SHARE_CONFIG = {
     enabled: true,
     interval_ms: 60_000,
-    keep_torch_stacks: DEFAULT_RETENTION.keep_torch_stacks,
-    keep_food_stacks: DEFAULT_RETENTION.keep_food_stacks,
-    keep_weapon_stacks: DEFAULT_RETENTION.keep_weapon_stacks,
-    keep_equipment_sets: DEFAULT_RETENTION.keep_equipment_sets
+    /** @type {import('./retentionPolicy.js').RetentionPolicy} */
+    retention: DEFAULT_RETENTION_POLICY
 };
 
 /**
@@ -23,6 +22,8 @@ export const DEFAULT_ITEM_SHARE_CONFIG = {
 export function createItemShareConfig(config = {}) {
     return {
         ...DEFAULT_ITEM_SHARE_CONFIG,
+        // Its own block, so replacing it later cannot reach the shared default.
+        retention: defaultRetentionBlock(),
         ...(config || {})
     };
 }
@@ -70,21 +71,6 @@ export class PeriodicItemTransfer {
     /**
      * @param {import('../CompanionContext.js').CompanionContext} ctx
      */
-    /**
-     * @returns {{ keep_torch_stacks: number, keep_food_stacks: number, keep_weapon_stacks: number, keep_equipment_sets: number }}
-     */
-    _retentionPolicy() {
-        return {
-            keep_torch_stacks: this.config.keep_torch_stacks,
-            keep_food_stacks: this.config.keep_food_stacks,
-            keep_weapon_stacks: this.config.keep_weapon_stacks,
-            keep_equipment_sets: this.config.keep_equipment_sets
-        };
-    }
-
-    /**
-     * @param {import('../CompanionContext.js').CompanionContext} ctx
-     */
     async maybeRun(ctx) {
         if (this._busy) return;
         if (!shouldTransferNow(ctx, {
@@ -97,7 +83,7 @@ export class PeriodicItemTransfer {
             return;
         }
 
-        const stacks = listGiveableStacks(ctx.bot, this._retentionPolicy());
+        const stacks = listGiveableStacks(ctx.bot, this.config);
         if (stacks.length === 0) {
             this._lastRunAt = Date.now();
             return;

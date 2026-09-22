@@ -131,6 +131,8 @@ function showTab(tabId) {
   } else if (tabId === 'settings') {
     void refreshMsLogin();
   }
+  // retention.js loads its own data the first time its tab is opened.
+  document.dispatchEvent(new CustomEvent('trailmate:tab', { detail: { tabId } }));
 }
 
 document.querySelectorAll('.tab').forEach((button) => {

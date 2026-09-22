@@ -199,5 +199,15 @@
     "weapon": "近接武器",
     "food": "食料",
     "torch": "松明"
+  },
+  "retention_categories": {
+    "helmet": "頭防具",
+    "chestplate": "胴防具",
+    "leggings": "脚防具",
+    "boots": "足防具",
+    "shield": "盾",
+    "weapon": "近接武器",
+    "food": "食料",
+    "torch": "松明・ランタン"
   }
 }
