@@ -78,6 +78,7 @@ import {
   TORCH_PLACE_COOLDOWN_MS,
   type LightSample
 } from './torchPlacement.js';
+import { isTorchItemName } from '../companion/utils/itemClassify.js';
 
 type DefendOwnerEntity = {
   position: {
@@ -1667,7 +1668,7 @@ export class Reflexes {
     const pos = this.bot.entity?.position;
     if (!pos) return;
 
-    const torch = this.bot.inventory.items().find((i) => i.name === 'torch');
+    const torch = this.bot.inventory.items().find((i) => isTorchItemName(i.name));
     if (!torch) return;
 
     const feet = this.bot.blockAt(pos);

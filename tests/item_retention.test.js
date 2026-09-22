@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
     DEFAULT_RETENTION,
     listGiveableStacks,
+    listUnequipTargets,
     equipmentGroup,
     equipmentScore,
     isTorch,
@@ -156,6 +157,46 @@ describe('listGiveableStacks', () => {
         assert.equal(giveable.some((s) => s.name === 'bread'), false);
     });
 
+    it('hands back everything outside the keep categories, full kit or not', () => {
+        // A full keep set leaves no room for anything else, and nothing here
+        // belongs to a keep category in the first place. Both readings have to
+        // agree, because the keep list is an allow-list now.
+        const junk = [
+            'chest',
+            'bucket',
+            'redstone',
+            'gold_ingot',
+            'wolf_armor',
+            'leather_horse_armor',
+            'carved_pumpkin',
+            'elytra'
+        ];
+        const fullKit = [
+            makeItem(9, 'netherite_helmet'),
+            makeItem(10, 'diamond_helmet'),
+            makeItem(11, 'netherite_chestplate'),
+            makeItem(12, 'diamond_chestplate'),
+            makeItem(13, 'netherite_leggings'),
+            makeItem(14, 'diamond_leggings'),
+            makeItem(15, 'netherite_boots'),
+            makeItem(16, 'diamond_boots'),
+            makeItem(17, 'shield'),
+            makeItem(18, 'shield'),
+            makeItem(19, 'netherite_sword'),
+            makeItem(20, 'diamond_sword'),
+            makeItem(21, 'cooked_beef', 16),
+            makeItem(22, 'bread', 16),
+            makeItem(23, 'torch', 64),
+            makeItem(24, 'torch', 32)
+        ];
+        const bot = makeBot([
+            ...fullKit,
+            ...junk.map((name, index) => makeItem(25 + index, name))
+        ]);
+
+        assert.deepEqual(listGiveableStacks(bot).map((stack) => stack.name), junk);
+    });
+
     it('does not retain ranged weapons or ammunition', () => {
         const bot = makeBot([
             makeItem(9, 'bow'),
@@ -167,6 +208,51 @@ describe('listGiveableStacks', () => {
         assert.deepEqual(
             listGiveableStacks(bot).map((stack) => stack.name),
             ['bow', 'crossbow', 'arrow', 'spectral_arrow']
+        );
+    });
+});
+
+describe('listUnequipTargets', () => {
+    it('reports worn slots holding something the companion does not keep', () => {
+        const bot = makeBot([
+            makeItem(5, 'diamond_helmet'),
+            makeItem(6, 'chest'),
+            makeItem(8, 'diamond_boots'),
+            makeItem(45, 'bucket')
+        ]);
+
+        assert.deepEqual(listUnequipTargets(bot), [
+            { slot: 6, destination: 'torso', name: 'chest' },
+            { slot: 45, destination: 'off-hand', name: 'bucket' }
+        ]);
+    });
+
+    it('never asks for an empty slot, because an empty unequip hangs', () => {
+        assert.deepEqual(listUnequipTargets(makeBot([])), []);
+    });
+
+    it('leaves worn gear alone', () => {
+        const bot = makeBot([
+            makeItem(5, 'diamond_helmet'),
+            makeItem(6, 'diamond_chestplate'),
+            makeItem(7, 'diamond_leggings'),
+            makeItem(8, 'diamond_boots'),
+            makeItem(45, 'shield')
+        ]);
+
+        assert.deepEqual(listUnequipTargets(bot), []);
+    });
+
+    it('stops treating a worn non-keepable item as equipped', () => {
+        const bot = makeBot([
+            makeItem(6, 'chest'),
+            makeItem(45, 'bucket'),
+            makeItem(9, 'cobblestone', 64)
+        ]);
+
+        assert.deepEqual(
+            listGiveableStacks(bot).map((stack) => stack.name).sort(),
+            ['bucket', 'chest', 'cobblestone']
         );
     });
 });

@@ -83,6 +83,23 @@ function makeWorld(options = {}) {
     })[destination];
     bot.lookAt = async () => events.push('look');
     bot.blockAt = () => chest;
+    /**
+     * Mineflayer's `unequip`: move the worn item into the inventory proper.
+     * Calling it on an empty slot blocks for ~4s in the real client, so the
+     * fake records every call and refuses one.
+     */
+    bot.unequip = async (destination) => {
+        events.push(`unequip:${destination}`);
+        const slot = bot.getEquipmentDestSlot(destination);
+        const worn = bot.inventory.slots[slot];
+        if (!worn) throw new Error(`unequip on empty slot ${slot}`);
+        const free = bot.inventory.slots.findIndex(
+            (stack, index) => index >= 9 && index < 45 && !stack
+        );
+        if (free === -1) throw new Error('inventory is full');
+        bot.inventory.slots[slot] = null;
+        bot.inventory.slots[free] = { ...worn, slot: free };
+    };
     bot.putSelectedItemRange = async (start, end, window, slot) => {
         putSelectedItemRange(start, end, window, slot);
         events.push('restore');
@@ -263,6 +280,100 @@ describe('chest deposit convergence', () => {
         });
         assert.equal(listChestDepositStacks(world.bot).length, 0);
         assert.deepEqual(world.spoken, ['chest_deposit_done']);
+    });
+
+    it('unequips worn surplus so a deposit can reach the armor and off-hand slots', async () => {
+        const world = makeWorld({
+            items: [
+                item(5, 'iron_helmet'),
+                // No container window maps these slots, so a deposit alone can
+                // never move what sits in them.
+                item(6, 'chest', 1),
+                item(8, 'iron_boots'),
+                item(45, 'bucket', 1),
+                item(36, 'iron_sword', 1, { attackDamage: 6 }),
+                item(9, 'cobblestone', 64)
+            ]
+        });
+        const transfer = makeTransfer(world);
+
+        const result = await transfer.handleBlockUpdate(
+            world.ctx,
+            { name: 'air' },
+            world.chest,
+            1100
+        );
+
+        assert.equal(result, 'ok');
+        assert.deepEqual(world.windows[0].containerContents(), {
+            chest: 1,
+            bucket: 1,
+            cobblestone: 64
+        });
+        assert.deepEqual(heldCounts(world.slots), {
+            iron_helmet: 1,
+            iron_boots: 1,
+            iron_sword: 1
+        });
+        assert.deepEqual(
+            world.events.filter((event) => event.startsWith('unequip:')),
+            ['unequip:torso', 'unequip:off-hand'],
+            'worn gear is left alone and no empty slot is unequipped'
+        );
+        assert.equal(listChestDepositStacks(world.bot).length, 0);
+        assert.deepEqual(world.spoken, ['chest_deposit_done']);
+    });
+
+    it('re-opens for worn surplus that a full inventory had no room for', async () => {
+        // `unequip` moves the item into the inventory, so a full inventory has
+        // to be drained first. Four repeated types keep the chest roomy.
+        const filler = ['dirt', 'cobblestone', 'flint', 'gravel'];
+        const types = new Map(filler.map((name) => [name, (nextType += 1)]));
+        const packed = [];
+        for (let slot = 9; slot < 45; slot += 1) {
+            const name = filler[slot % filler.length];
+            packed.push(item(slot, name, 1, { type: types.get(name) }));
+        }
+        const world = makeWorld({ items: [...packed, item(45, 'bucket', 1)] });
+        const transfer = makeTransfer(world);
+
+        const result = await transfer.handleBlockUpdate(
+            world.ctx,
+            { name: 'air' },
+            world.chest,
+            1100
+        );
+
+        assert.equal(result, 'ok');
+        assert.equal(world.windows.length, 2, 'the second pass has room to unequip into');
+        assert.deepEqual(world.windows[1].containerContents().bucket, 1);
+        assert.deepEqual(heldCounts(world.slots), {});
+        assert.deepEqual(
+            world.events.filter((event) => event.startsWith('unequip:')),
+            ['unequip:off-hand', 'unequip:off-hand'],
+            'the first attempt fails against a full inventory, the second lands'
+        );
+    });
+
+    it('opens the chest for worn surplus even when nothing else is deposited', async () => {
+        const world = makeWorld({
+            items: [
+                item(45, 'bucket', 1),
+                item(36, 'iron_sword', 1, { attackDamage: 6 })
+            ]
+        });
+        const transfer = makeTransfer(world);
+
+        const result = await transfer.handleBlockUpdate(
+            world.ctx,
+            { name: 'air' },
+            world.chest,
+            1100
+        );
+
+        assert.equal(result, 'ok');
+        assert.deepEqual(world.windows[0].containerContents(), { bucket: 1 });
+        assert.deepEqual(heldCounts(world.slots), { iron_sword: 1 });
     });
 
     it('re-plans from the open window instead of replaying the opening snapshot', async () => {

@@ -1009,6 +1009,36 @@ describe('grave detection regression', () => {
     });
 });
 
+describe('combatGate armament', () => {
+    const botWith = (names) => ({
+        inventory: { items: () => names.map((name) => ({ name })) },
+        heldItem: names[0] ? { name: names[0] } : null
+    });
+
+    it('counts bows and crossbows as armed, which keeps gear recovery off', async () => {
+        const { needsGearRecovery, hasEssentialWeaponEquipped } =
+            await import('../src/companion/combatGate.js');
+
+        for (const name of ['iron_sword', 'iron_axe', 'trident', 'mace', 'bow', 'crossbow']) {
+            assert.equal(needsGearRecovery(botWith([name])), false, name);
+            assert.equal(hasEssentialWeaponEquipped(botWith([name])), true, name);
+        }
+    });
+
+    it('does not mistake a pickaxe or a shield for a weapon', async () => {
+        const { needsGearRecovery, hasEssentialWeaponEquipped } =
+            await import('../src/companion/combatGate.js');
+
+        // The old regex matched `axe` inside `pickaxe`.
+        for (const name of ['iron_pickaxe', 'shield', 'torch', 'cobblestone']) {
+            assert.equal(needsGearRecovery(botWith([name])), true, name);
+            assert.equal(hasEssentialWeaponEquipped(botWith([name])), false, name);
+        }
+        assert.equal(needsGearRecovery(botWith([])), true);
+        assert.equal(hasEssentialWeaponEquipped(botWith([])), false);
+    });
+});
+
 describe('recovery combat defer', () => {
     it('武装済みかつ周囲に脅威があれば回収より戦闘を優先する', async () => {
         const { shouldDeferRecoveryForCombat } = await import('../src/companion/combatGate.js');

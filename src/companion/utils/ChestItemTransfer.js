@@ -18,7 +18,9 @@ import {
     isPlayerInventorySlot,
     equippedItemSlots,
     listChestDepositPlan,
-    planDepositByType
+    listUnequipTargets,
+    planDepositByType,
+    retentionOptionsFromBot
 } from './itemRetention.js';
 import {
     classifyDepositError,
@@ -276,7 +278,7 @@ export class ChestItemTransfer {
             this._enqueuePlacement(newBlock);
             return 'queued';
         }
-        if (this._depositPlan(ctx.bot).length === 0) return 'empty';
+        if (this._surplusCount(ctx.bot) === 0) return 'empty';
         return this._runDepositQueue(ctx, { placedBlock: newBlock });
     }
 
@@ -317,7 +319,7 @@ export class ChestItemTransfer {
             this._clearResume();
             return 'gone';
         }
-        if (this._depositPlan(ctx.bot).length === 0) {
+        if (this._surplusCount(ctx.bot) === 0) {
             this._clearResume();
             return 'empty';
         }
@@ -366,6 +368,48 @@ export class ChestItemTransfer {
      */
     _depositPlan(bot) {
         return listChestDepositPlan(bot, this.config);
+    }
+
+    /**
+     * Armor / off-hand slots holding something the companion does not keep.
+     * No container window maps those slots, so they have to be unequipped
+     * into the inventory proper before a deposit can reach them.
+     * @param {import('mineflayer').Bot} bot
+     */
+    _unequipTargets(bot) {
+        return listUnequipTargets(bot);
+    }
+
+    /**
+     * Everything still owed to the chest: deposit orders plus worn surplus.
+     * @param {import('mineflayer').Bot} bot
+     */
+    _surplusCount(bot) {
+        return this._depositPlan(bot).length + this._unequipTargets(bot).length;
+    }
+
+    /**
+     * Move worn surplus back into the inventory. Runs with every window
+     * closed, because an open container renumbers the slots this reads.
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     */
+    async _unequipSurplus(ctx) {
+        const bot = ctx.bot;
+        if (typeof bot?.unequip !== 'function') return;
+        for (const target of this._unequipTargets(bot)) {
+            // Unequipping an empty slot hangs for ~4s, and the slot may have
+            // emptied while an earlier unequip was in flight, so it is
+            // re-read immediately before the call.
+            if (!bot.inventory?.slots?.[target.slot]) continue;
+            try {
+                await bot.unequip(target.destination);
+            } catch (err) {
+                console.warn(
+                    `[companion] chest item-share could not unequip ${target.name}:`,
+                    err?.message || err
+                );
+            }
+        }
     }
 
     /**
@@ -425,7 +469,7 @@ export class ChestItemTransfer {
     _takeNextQueuedTransfer(ctx) {
         const pending = this._queuedPlacements.shift();
         if (!pending) return null;
-        if (this._depositPlan(ctx.bot).length === 0) return null;
+        if (this._surplusCount(ctx.bot) === 0) return null;
         return { placedBlock: pending.placedBlock };
     }
 
@@ -437,7 +481,7 @@ export class ChestItemTransfer {
      * @param {{ deposited: number, chestFull: boolean, failed: boolean, interrupted: boolean, chest: object|null }} summary
      */
     async _finishQueue(ctx, summary) {
-        const remaining = this._depositPlan(ctx.bot).length;
+        const remaining = this._surplusCount(ctx.bot);
 
         if (summary.deposited > 0) {
             const ms = ctx.config?.nearby_loot?.give_suppress_ms ?? DEFAULT_GIVE_SUPPRESS_MS;
@@ -547,7 +591,12 @@ export class ChestItemTransfer {
             if (outcome.failed && outcome.deposited === 0 && outcome.skipped.size === 0) break;
             // Anything the pass already gave up on will fail the same way again.
             const leftovers = this._depositPlan(ctx.bot);
-            if (!leftovers.some((entry) => !outcome.skipped.has(entry.type))) break;
+            const retryable = leftovers.some((entry) => !outcome.skipped.has(entry.type));
+            // Worn surplus cannot be unequipped into a full inventory. This
+            // pass just made room, so it is worth one more open.
+            const wornSurplus = outcome.deposited > 0
+                && this._unequipTargets(ctx.bot).length > 0;
+            if (!retryable && !wornSurplus) break;
         }
         return total;
     }
@@ -561,6 +610,7 @@ export class ChestItemTransfer {
     async _runOpenPass(ctx, placedBlock, approach) {
         let container = null;
         try {
+            await this._unequipSurplus(ctx);
             if (approach && !(await this._approachChest(ctx, placedBlock.position))) {
                 return emptyPassOutcome({ interrupted: this._shouldAbort(ctx), failed: true });
             }
@@ -671,8 +721,8 @@ export class ChestItemTransfer {
         const live = readOpenContainerInventory(ctx.bot, container);
         if (!live) return this._depositPlan(ctx.bot);
         return planDepositByType(live.stacks, this.config, {
+            ...retentionOptionsFromBot(ctx.bot),
             equippedSlots: equippedItemSlots(ctx.bot),
-            foodsByName: ctx.bot?.registry?.foodsByName || {},
             isDepositable: (slot) => live.depositable.has(slot)
         });
     }
