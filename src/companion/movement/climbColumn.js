@@ -18,6 +18,8 @@ const CLIMB_CONTROLS = ['forward', 'sprint'];
 
 /** The owner must be at least this far above before a climb starts. */
 export const CLIMB_MIN_OWNER_DY = 2;
+/** How far around the bot the approach looks for a column to walk into. */
+export const CLIMB_APPROACH_RADIUS = 3;
 /** Give up once the feet Y has not risen for this long. */
 export const CLIMB_STALL_MS = 1500;
 /** Hard cap on a single climb, stall or not. */
@@ -30,13 +32,24 @@ export const CLIMB_MAX_TOP_OUT_RETRIES = 2;
 export const CLIMB_RETRY_COOLDOWN_MS = 3000;
 /** Feet Y gain that counts as climb progress. */
 const CLIMB_PROGRESS_EPSILON = 0.15;
+/** Horizontal gain toward the column that counts as approach progress. */
+const CLIMB_APPROACH_PROGRESS_EPSILON = 0.15;
 
 /**
  * Exits that mean the wall itself is the problem. They hold the next attempt
  * off for a cooldown, so a vine that breaks halfway cannot pin the companion in
- * a loop of doomed climbs instead of letting it follow.
+ * a loop of doomed climbs instead of letting it follow. The approach exits are
+ * in here for the same reason: a column A* refuses to route into must hand the
+ * tick back to ordinary follow for a while instead of being asked again at 4Hz.
  */
-const CLIMB_FAILURE_REASONS = new Set(['stalled', 'timeout', 'top-out-failed']);
+const CLIMB_FAILURE_REASONS = new Set([
+    'stalled',
+    'timeout',
+    'top-out-failed',
+    'approach-blocked',
+    'approach-stalled',
+    'approach-timeout'
+]);
 
 /** Probe order for the supporting wall. Fixed so the choice is reproducible. */
 const HORIZONTAL_NEIGHBORS = [
@@ -45,6 +58,28 @@ const HORIZONTAL_NEIGHBORS = [
     { x: 1, z: 0 },
     { x: -1, z: 0 }
 ];
+
+/**
+ * Every horizontal offset within the approach radius, nearest first. Built once
+ * and never mutated, so the column picked for a given world is reproducible.
+ * The bot's own cell is left out: the caller has already asked
+ * `findStandingClimbColumn` about it.
+ */
+const APPROACH_OFFSETS = buildApproachOffsets(CLIMB_APPROACH_RADIUS);
+
+/**
+ * @param {number} radius
+ * @returns {HorizontalDirection[]}
+ */
+function buildApproachOffsets(radius) {
+    const offsets = [];
+    for (let x = -radius; x <= radius; x += 1) {
+        for (let z = -radius; z <= radius; z += 1) {
+            if (x !== 0 || z !== 0) offsets.push({ x, z });
+        }
+    }
+    return offsets.sort((a, b) => (a.x * a.x + a.z * a.z) - (b.x * b.x + b.z * b.z));
+}
 
 /**
  * @typedef {{ x: number, z: number }} HorizontalDirection
@@ -109,6 +144,44 @@ export function findStandingClimbColumn(bot, position = bot?.entity?.position) {
 }
 
 /**
+ * The nearest climbable column the bot could walk into from where it stands.
+ *
+ * Only the bot's own feet level is scanned, because entering a column means
+ * walking into it horizontally: a cell higher or lower is a different problem
+ * that ordinary pathfinding owns.
+ *
+ * The search is around the BOT, never around the owner. Once the owner has
+ * topped the wall its x,z column is the wall itself, and the vines stand at a
+ * different x,z entirely — while the companion, having failed to route onto the
+ * wall, is parked next to the foot of that very column.
+ *
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ x: number, y: number, z: number }} [position]
+ * @returns {ClimbColumn|null}
+ */
+export function findNearbyClimbColumn(bot, position = bot?.entity?.position) {
+    if (!position || typeof bot?.blockAt !== 'function') return null;
+
+    const x = Math.floor(position.x);
+    const y = Math.floor(position.y + 0.001);
+    const z = Math.floor(position.z);
+
+    for (const offset of APPROACH_OFFSETS) {
+        const cell = new Vec3(x + offset.x, y, z + offset.z);
+        if (!isClimbableColumnBlock(bot.blockAt(cell))) continue;
+        // A single climbable block is decoration, not a wall. The climb only
+        // ever runs with the owner CLIMB_MIN_OWNER_DY above, which one cell can
+        // never deliver, so walking over there would just burn the cooldown.
+        if (!isClimbableColumnBlock(bot.blockAt(cell.offset(0, 1, 0)))) continue;
+
+        const push = findClimbPushDirection(bot, cell);
+        if (push) return { cell, push };
+    }
+
+    return null;
+}
+
+/**
  * Yaw that makes `forward` walk along a horizontal direction.
  * Mineflayer's forward vector is `(-sin(yaw), -cos(yaw))`.
  *
@@ -120,12 +193,21 @@ export function yawTowardDirection(direction) {
 }
 
 /**
- * Hand-rolled ladder / vine climb.
+ * Hand-rolled vine climb, in two phases: walk into the column, then go up it.
  *
- * mineflayer-pathfinder never emits an upward move for this companion:
- * `allow1by1towers` is off, so `getMoveUp` returns before it can use a
- * climbable, and vines are not in `climbables` at all. A follow route therefore
- * ends at the foot of the wall — which is exactly where this controller starts.
+ * mineflayer-pathfinder emits no upward move over vines because they are absent
+ * from `climbables`, and putting them back does not help: `postProcessPath`
+ * collapses a vine node onto the cell below it, so every upward move A* planned
+ * is erased before it runs. Ladders are in `climbables` and are climbed by the
+ * pathfinder on its own; this controller merely also handles them.
+ *
+ * The approach phase exists because the follow route does NOT end at the foot of
+ * the wall. `GoalNear` with the follow range counts seven cells as arrived, of
+ * which the column is one, so a companion walking in from open ground stops
+ * beside the column rather than inside it; and once the owner is on top of the
+ * wall, the follow target is the owner's own unreachable cell up there. Either
+ * way nothing ever puts the feet in the column, which is the single condition
+ * the climb needs. So the climb walks itself in, with `GoalNear` range 0.
  *
  * From there physics asks for nothing but standing in the column and walking
  * into the wall behind it. Jump is never touched, because `climbUsingJump` is
@@ -152,10 +234,13 @@ export class ColumnClimber {
         this.maxTopOutRetries = options.maxTopOutRetries ?? CLIMB_MAX_TOP_OUT_RETRIES;
         this.retryCooldownMs = options.retryCooldownMs ?? CLIMB_RETRY_COOLDOWN_MS;
 
-        /** @type {'idle' | 'climbing' | 'topping'} */
+        /** @type {'idle' | 'approaching' | 'climbing' | 'topping'} */
         this.phase = 'idle';
         /** @type {HorizontalDirection|null} */
         this._push = null;
+        /** @type {Vec3|null} */
+        this._approachCell = null;
+        this._bestDistance = 0;
         this._blockedUntil = 0;
         this._startedAt = 0;
         this._progressAt = 0;
@@ -191,13 +276,21 @@ export class ColumnClimber {
         if (this.phase === 'topping') return this._tickTopOut(ctx, position, now);
 
         const column = findStandingClimbColumn(bot, position);
+        const belowOwner = ownerY - position.y >= this.minOwnerDy;
+
+        // Unlike the climb below, height is read before the column here: a bot
+        // still on the ground has nothing to lose by giving the walk up the
+        // moment the owner is no longer worth climbing to.
+        if (this.phase === 'approaching') {
+            if (!belowOwner) return this._release(ctx, 'owner-level');
+            if (column) return this._begin(ctx, position, column, now);
+            return this._tickApproach(ctx, position, now);
+        }
 
         if (this.phase === 'idle') {
-            if (now < this._blockedUntil) return false;
-            if (!column || ownerY - position.y < this.minOwnerDy) return false;
-            this._begin(ctx, position, column, now);
-            pressIntoWall(bot, this._push);
-            return true;
+            if (now < this._blockedUntil || !belowOwner) return false;
+            if (column) return this._begin(ctx, position, column, now);
+            return this._beginApproach(ctx, position, now);
         }
 
         if (now - this._startedAt >= this.timeoutMs) return this._release(ctx, 'timeout');
@@ -275,10 +368,93 @@ export class ColumnClimber {
     }
 
     /**
+     * Send the bot into a nearby column, since nothing else ever will.
+     *
+     * No control state is touched here. The walk belongs to the pathfinder;
+     * `forward` is only ever held once the feet are actually in the column.
+     *
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     * @param {{ x: number, y: number, z: number }} position
+     * @param {number} now
+     * @returns {boolean}
+     */
+    _beginApproach(ctx, position, now) {
+        if (typeof ctx?.movement?.goToward !== 'function') return false;
+
+        const target = findNearbyClimbColumn(ctx.bot, position);
+        if (!target) return false;
+
+        this.phase = 'approaching';
+        this._approachCell = target.cell;
+        this._startedAt = now;
+        this._progressAt = now;
+        this._bestDistance = horizontalDistanceToCell(position, target.cell);
+
+        console.log(
+            '[companion] column approach start',
+            JSON.stringify({
+                block: ctx.bot?.blockAt?.(target.cell)?.name ?? null,
+                cell: `${target.cell.x},${target.cell.y},${target.cell.z}`
+            })
+        );
+
+        // Ask for the route before any status is read: the follow route this
+        // replaces has usually just failed on the owner's cell on top of the
+        // wall, and that stale `unreachable` would abort the approach at once.
+        this._requestApproach(ctx);
+        return true;
+    }
+
+    /**
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     * @param {{ x: number, y: number, z: number }} position
+     * @param {number} now
+     * @returns {boolean}
+     */
+    _tickApproach(ctx, position, now) {
+        if (now - this._startedAt >= this.timeoutMs) {
+            return this._release(ctx, 'approach-timeout');
+        }
+
+        const movement = ctx.movement;
+        if (movement?.isBlocked || movement?.isUnreachable) {
+            return this._release(ctx, 'approach-blocked');
+        }
+
+        const distance = horizontalDistanceToCell(position, this._approachCell);
+        if (distance <= this._bestDistance - CLIMB_APPROACH_PROGRESS_EPSILON) {
+            this._bestDistance = distance;
+            this._progressAt = now;
+        } else if (now - this._progressAt >= this.stallMs) {
+            return this._release(ctx, 'approach-stalled');
+        }
+
+        this._requestApproach(ctx);
+        return true;
+    }
+
+    /**
+     * Re-assert the goal that puts the feet inside the column.
+     *
+     * Range 0 leaves `GoalNear.rangeSq` at 0, so `isEnd` demands the exact cell.
+     * Any wider range is what broke this in the first place: at range 1 the four
+     * horizontal neighbours also count as arrived, and A* stops at whichever it
+     * touches first — never the column itself.
+     *
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     */
+    _requestApproach(ctx) {
+        const cell = this._approachCell;
+        if (!cell) return;
+        ctx.movement.goToward(new Vec3(cell.x + 0.5, cell.y, cell.z + 0.5), 0);
+    }
+
+    /**
      * @param {import('../CompanionContext.js').CompanionContext} ctx
      * @param {{ x: number, y: number, z: number }} position
      * @param {ClimbColumn} column
      * @param {number} now
+     * @returns {true}
      */
     _begin(ctx, position, column, now) {
         // Mandatory: while pathfinder still holds a path it rewrites every
@@ -287,6 +463,8 @@ export class ColumnClimber {
 
         this.phase = 'climbing';
         this._push = column.push;
+        this._approachCell = null;
+        this._bestDistance = 0;
         this._startedAt = now;
         this._progressAt = now;
         this._bestY = position.y;
@@ -301,9 +479,19 @@ export class ColumnClimber {
                 y: round2(position.y)
             })
         );
+
+        pressIntoWall(ctx.bot, this._push);
+        return true;
     }
 
     /**
+     * Drop everything this controller was holding and hand the tick back.
+     *
+     * Controls are always released; an approach route is not, on purpose.
+     * Whatever takes the tick next — ordinary follow, combat, recovery — asks
+     * for its own goal before the bot could walk one more tick toward a column
+     * nobody wants any more.
+     *
      * @param {import('../CompanionContext.js').CompanionContext|null|undefined} ctx
      * @param {string} reason
      * @returns {false}
@@ -318,11 +506,17 @@ export class ColumnClimber {
 
         console.log(
             '[companion] column climb end',
-            JSON.stringify({ reason, y: round2(bot?.entity?.position?.y ?? 0) })
+            JSON.stringify({
+                phase: this.phase,
+                reason,
+                y: round2(bot?.entity?.position?.y ?? 0)
+            })
         );
 
         this.phase = 'idle';
         this._push = null;
+        this._approachCell = null;
+        this._bestDistance = 0;
         this._startedAt = 0;
         this._progressAt = 0;
         this._bestY = 0;
@@ -355,6 +549,19 @@ function pressIntoWall(bot, push) {
     // Sprinting off the lip overshoots the wall top and drops the bot back down.
     bot.setControlState?.('sprint', false);
     bot.setControlState?.('forward', true);
+}
+
+/**
+ * Distance from the body to the centre of a block cell, ignoring Y. The
+ * approach is a walk, so a bob over a step must not read as progress.
+ *
+ * @param {{ x: number, z: number }} position
+ * @param {{ x: number, z: number }|null} cell
+ * @returns {number}
+ */
+function horizontalDistanceToCell(position, cell) {
+    if (!cell) return 0;
+    return Math.hypot(position.x - (cell.x + 0.5), position.z - (cell.z + 0.5));
 }
 
 function round2(value) {
