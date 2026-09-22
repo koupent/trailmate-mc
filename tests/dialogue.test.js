@@ -147,8 +147,6 @@ describe('situation events', () => {
     hostile: null,
     lastDamageAgeMs: null,
     controlOwner: 'follow',
-    foodCount: 3,
-    torchCount: 5,
     hunger: 20
   };
 
@@ -169,8 +167,6 @@ describe('situation events', () => {
       ownerHasLos: true,
       botPos: { x: 0, y: 64, z: 0 },
       ownerPos: { x: 1, y: 64, z: 0 },
-      foodCount: 3,
-      torchCount: 5,
       hunger: 20
     };
     const event = detectSituationEvent(prev, snap, { low_health: 8 });
@@ -194,8 +190,6 @@ describe('situation events', () => {
       ownerHasLos: false,
       botPos: { x: 0, y: 64, z: 0 },
       ownerPos: { x: 8, y: 64, z: 0 },
-      foodCount: 3,
-      torchCount: 5,
       hunger: 20
     };
     const event = detectSituationEvent(prev, snap, { low_health: 8 });
@@ -219,23 +213,21 @@ describe('situation events', () => {
     assert.equal(event, null);
   });
 
-  it('detects no_food when hungry and out of food', () => {
-    const prev = { ...basePrev, foodCount: 2, hunger: 16 };
-    const snap = {
-      ...prev,
-      foodCount: 0,
-      hunger: 10
-    };
-    const event = detectSituationEvent(prev, snap, { low_food_hunger: 14 });
-    assert.equal(event?.id, 'no_food');
-  });
+  it('leaves empty food and torches to the supply request', () => {
+    // Both used to be their own event; the shortage tracker owns them now.
+    const hungry = detectSituationEvent(
+      { ...basePrev, hunger: 16 },
+      { ...basePrev, hunger: 10 },
+      {}
+    );
+    assert.equal(hungry, null);
 
-  it('detects no_torch when torches run out', () => {
-    const prev = { ...basePrev, torchCount: 2 };
-    const snap = { ...prev, torchCount: 0, isNight: true };
-    const event = detectSituationEvent(prev, snap, {});
-    assert.equal(event?.id, 'no_torch');
-    assert.equal(event?.priority, 2);
+    const nightfall = detectSituationEvent(
+      basePrev,
+      { ...basePrev, isNight: true },
+      {}
+    );
+    assert.equal(nightfall?.id, 'night');
   });
 
   it('detects damaged_combat when hit during combat', () => {
@@ -514,8 +506,6 @@ describe('hostile approach bands', () => {
         hostileBand: 'near',
         lastDamageAgeMs: null,
         controlOwner: 'follow',
-        foodCount: 3,
-        torchCount: 5,
         hunger: 20
       },
       {
@@ -527,8 +517,6 @@ describe('hostile approach bands', () => {
         hostileBand: null,
         lastDamageAgeMs: null,
         controlOwner: 'follow',
-        foodCount: 3,
-        torchCount: 5,
         hunger: 20
       },
       { hostile_approach_distances: distances }
@@ -545,8 +533,6 @@ describe('hostile approach bands', () => {
         hostileBand: null,
         lastDamageAgeMs: null,
         controlOwner: 'follow',
-        foodCount: 3,
-        torchCount: 5,
         hunger: 20
       },
       {
@@ -558,8 +544,6 @@ describe('hostile approach bands', () => {
         hostileBand: 'mid',
         lastDamageAgeMs: null,
         controlOwner: 'follow',
-        foodCount: 3,
-        torchCount: 5,
         hunger: 20
       },
       { hostile_approach_distances: distances }
@@ -588,8 +572,6 @@ describe('combat commentary', () => {
       lastDamageAgeMs: null,
       controlOwner: 'combat',
       combatTarget: 'zombie',
-      foodCount: 3,
-      torchCount: 5,
       hunger: 20
     };
     const snap = {

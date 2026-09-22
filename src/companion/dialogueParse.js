@@ -3,7 +3,7 @@
  * Mode/owner come from deterministic keywords; commentary uses locale catalogs.
  */
 
-import { tEvent } from '../i18n/index.js';
+import { tEvent, tSupplyCategory } from '../i18n/index.js';
 import { DEFAULT_FOLLOW_DISTANCE } from './movement/followConstants.js';
 import { isNearOwnerHorizontally } from './movement/followGeometry.js';
 
@@ -270,6 +270,20 @@ export function deriveOwnerLockedKey(followPhase) {
     return 'owner_locked_chase';
 }
 
+/** Categories are listed in retention order, joined the Japanese way. */
+const SUPPLY_CATEGORY_SEPARATOR = '、';
+
+/**
+ * @param {string} language
+ * @param {string[]|undefined} categories
+ */
+function supplyCategoryText(language, categories) {
+    if (!Array.isArray(categories) || categories.length === 0) return '';
+    return categories
+        .map((id) => tSupplyCategory(language, id))
+        .join(SUPPLY_CATEGORY_SEPARATOR);
+}
+
 /**
  * Snapshot-driven commentary via locale catalog (no LLM / no runtime MT).
  * @param {string} language
@@ -278,6 +292,7 @@ export function deriveOwnerLockedKey(followPhase) {
  * @param {{ excludeMessage?: string }} [options]
  */
 export function renderCommentary(language, eventId, snap = {}, options = {}) {
+    const locale = language || 'ja';
     const vars = {
         owner: snap.owner || 'だれか',
         distance: snap.ownerDistance != null ? snap.ownerDistance : '?',
@@ -292,9 +307,10 @@ export function renderCommentary(language, eventId, snap = {}, options = {}) {
         inventoryFillPercent: snap.inventoryFillPercent ?? '?',
         inventoryUsedSlots: snap.inventoryUsedSlots ?? '?',
         inventoryTotalSlots: snap.inventoryTotalSlots ?? '?',
-        inventoryEmptySlots: snap.inventoryEmptySlots ?? '?'
+        inventoryEmptySlots: snap.inventoryEmptySlots ?? '?',
+        supplyCategories: supplyCategoryText(locale, snap.supplyCategories)
     };
-    return tEvent(language || 'ja', String(eventId || ''), vars, options);
+    return tEvent(locale, String(eventId || ''), vars, options);
 }
 
 const DEFAULT_APPROACH_DISTANCES = [10, 6, 3];
@@ -479,7 +495,7 @@ function ownerFoundEventId(snap, config) {
 /**
  * @param {object|null} prev
  * @param {object} snap
- * @param {{ low_health?: number, stuck_seconds?: number, low_food_hunger?: number }} config
+ * @param {{ low_health?: number, stuck_seconds?: number }} config
  */
 function detectDamagedEvent(prev, snap, config) {
     const recentDamage = snap.lastDamageAgeMs != null
@@ -505,14 +521,13 @@ function detectDamagedEvent(prev, snap, config) {
  * Detect a notable situation change for spontaneous chat.
  * @param {object|null} prev
  * @param {object} snap
- * @param {{ low_health?: number, stuck_seconds?: number, low_food_hunger?: number }} config
+ * @param {{ low_health?: number, stuck_seconds?: number }} config
  * @returns {{ id: string, text: string, priority: number }|null}
  */
 export function detectSituationEvent(prev, snap, config = {}) {
     if (!prev || !snap) return null;
     const lowHealth = config.low_health ?? 8;
     const stuckSeconds = config.stuck_seconds ?? 5;
-    const lowFoodHunger = config.low_food_hunger ?? 14;
 
     if (prev.controlOwner !== snap.controlOwner) {
         const next = snap.controlOwner || 'follow';
@@ -538,30 +553,6 @@ export function detectSituationEvent(prev, snap, config = {}) {
     }
     if (prev.owner && !snap.owner) {
         return { id: 'owner_lost', text: 'Lost sight of owner for a long time', priority: 1 };
-    }
-
-    if (
-        snap.foodCount === 0
-        && snap.hunger != null
-        && snap.hunger <= lowFoodHunger
-        && (
-            (prev.foodCount ?? 0) > 0
-            || prev.hunger == null
-            || prev.hunger > lowFoodHunger
-        )
-    ) {
-        return { id: 'no_food', text: 'Out of food', priority: 2 };
-    }
-
-    if (
-        snap.torchCount === 0
-        && (prev.torchCount ?? 0) > 0
-    ) {
-        return {
-            id: 'no_torch',
-            text: 'Out of torches',
-            priority: snap.isNight ? 2 : 1
-        };
     }
 
     if (

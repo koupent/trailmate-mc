@@ -18,7 +18,6 @@ export type ChatConfig = {
   idle_chance: number;
   combat_commentary_chance: number;
   low_health: number;
-  low_food_hunger: number;
   stuck_seconds: number;
   hostile_range: number;
   hostile_approach_distances: number[];
@@ -204,7 +203,6 @@ const DEFAULT_COMPANION: CompanionConfig = {
     idle_chance: 0.55,
     combat_commentary_chance: 0.6,
     low_health: 8,
-    low_food_hunger: 14,
     stuck_seconds: 5,
     hostile_range: 16,
     hostile_approach_distances: [10, 6, 3],
