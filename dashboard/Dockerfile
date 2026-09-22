@@ -18,12 +18,10 @@ RUN apt-get update \
     && rm -rf /tmp/docker /var/lib/apt/lists/*
 
 COPY package.json ./
-COPY server.mjs ./
-COPY dockerApi.mjs ./
-COPY update.mjs ./
-COPY backendReady.mjs ./
-COPY proxyRecovery.mjs ./
-COPY retentionSettings.mjs ./
+# Every .mjs at once. Naming them one by one bought no caching — nothing runs
+# between the layers — and cost a container that starts and then dies on an
+# import of the one file somebody forgot to add.
+COPY *.mjs ./
 COPY public ./public
 
 EXPOSE 8787
