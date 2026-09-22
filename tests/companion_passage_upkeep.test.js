@@ -133,7 +133,7 @@ describe('CompanionOrchestrator passage upkeep', () => {
         return ctx;
     }
 
-    it('yields normal work and waits for delayed close confirmation before resuming', async () => {
+    it('yields normal work and waits for confirmed closing before resuming', async () => {
         const world = makeWorld();
         const ctx = makeCtx(world);
         const manager = new CompanionOrchestrator(ctx, {}, [], 'follow');
@@ -164,13 +164,13 @@ describe('CompanionOrchestrator passage upkeep', () => {
         try {
             await manager.tick();
 
-            assert.equal(manager.getActiveFsmId(), 'passage_cleanup');
+            assert.equal(manager.getActiveFsmId(), 'passage_transit');
             assert.equal(world.activations.length, 0, 'detection must not close outside the FSM state');
             assert.equal(world.bot.entity.position.z, -2, 'normal movement must yield within reach');
 
             await manager.tick();
             assert.equal(world.activations.length, 1);
-            assert.equal(manager.getActiveFsmId(), 'passage_cleanup');
+            assert.equal(manager.getActiveFsmId(), 'passage_transit');
             assert.equal(resumed, false);
 
             // The first close request is not reflected by the server.
@@ -188,6 +188,8 @@ describe('CompanionOrchestrator passage upkeep', () => {
 
             await manager.tick();
             assert.equal(manager.getActiveFsmId(), 'follow');
+
+            await manager.tick();
             assert.equal(resumed, true);
         } finally {
             ctx.doors.dispose();

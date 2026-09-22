@@ -16,7 +16,7 @@ export async function prepareCompanionWorldTick(ctx) {
             at: Date.now()
         };
     }
-    // Normal states only observe/open passages. Confirmed closing belongs to
-    // the explicit passage_cleanup FSM state.
-    await ctx.doors?.tick({ allowClose: false });
+    // Detection only. Opening, crossing, and closing all belong to the
+    // explicit passage_transit FSM state.
+    await ctx.doors?.tick();
 }

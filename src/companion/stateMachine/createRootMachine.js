@@ -6,7 +6,7 @@ import { NestedStateMachine, StateTransition } from './machineApi.js';
 import { FollowBehavior } from './behaviors/FollowBehavior.js';
 import { WaitBehavior } from './behaviors/WaitBehavior.js';
 import { CombatBehavior } from './behaviors/CombatBehavior.js';
-import { PassageCleanupBehavior } from './behaviors/PassageCleanupBehavior.js';
+import { PassageTransitBehavior } from './behaviors/PassageTransitBehavior.js';
 import { DutyBehavior } from './behaviors/DutyBehavior.js';
 import {
     dutyPending,
@@ -15,7 +15,7 @@ import {
     safetyDutyPending,
     shouldEnterCombat,
     shouldEnterDuty,
-    shouldEnterPassageCleanup,
+    shouldEnterPassageTransit,
     shouldStayInCombat
 } from './transitions.js';
 
@@ -26,7 +26,7 @@ export function createRootMachine(targets) {
     const follow = new FollowBehavior(targets);
     const wait = new WaitBehavior(targets);
     const combat = new CombatBehavior(targets);
-    const passageCleanup = new PassageCleanupBehavior(targets);
+    const passageTransit = new PassageTransitBehavior(targets);
     const duty = new DutyBehavior(targets);
 
     const transitions = [
@@ -37,7 +37,7 @@ export function createRootMachine(targets) {
             name: 'follow_to_wait',
             shouldTransition: () => targets.preferredMode === 'wait'
                 && !shouldEnterCombat(targets)
-                && !shouldEnterPassageCleanup(targets)
+                && !shouldEnterPassageTransit(targets)
         }),
         new StateTransition({
             parent: wait,
@@ -45,7 +45,7 @@ export function createRootMachine(targets) {
             name: 'wait_to_follow',
             shouldTransition: () => targets.preferredMode === 'follow'
                 && !shouldEnterCombat(targets)
-                && !shouldEnterPassageCleanup(targets)
+                && !shouldEnterPassageTransit(targets)
         }),
 
         // Combat entry from upper modes / duty
@@ -68,30 +68,30 @@ export function createRootMachine(targets) {
             shouldTransition: () => shouldEnterCombat(targets)
         }),
         new StateTransition({
-            parent: passageCleanup,
+            parent: passageTransit,
             child: combat,
-            name: 'passage_cleanup_to_combat',
+            name: 'passage_transit_to_combat',
             shouldTransition: () => shouldEnterCombat(targets)
         }),
 
-        // Passage cleanup outranks normal movement and duty work.
+        // A passage transaction outranks normal movement and duty work.
         new StateTransition({
             parent: follow,
-            child: passageCleanup,
-            name: 'follow_to_passage_cleanup',
-            shouldTransition: () => shouldEnterPassageCleanup(targets)
+            child: passageTransit,
+            name: 'follow_to_passage_transit',
+            shouldTransition: () => shouldEnterPassageTransit(targets)
         }),
         new StateTransition({
             parent: wait,
-            child: passageCleanup,
-            name: 'wait_to_passage_cleanup',
-            shouldTransition: () => shouldEnterPassageCleanup(targets)
+            child: passageTransit,
+            name: 'wait_to_passage_transit',
+            shouldTransition: () => shouldEnterPassageTransit(targets)
         }),
         new StateTransition({
             parent: duty,
-            child: passageCleanup,
-            name: 'duty_to_passage_cleanup',
-            shouldTransition: () => shouldEnterPassageCleanup(targets)
+            child: passageTransit,
+            name: 'duty_to_passage_transit',
+            shouldTransition: () => shouldEnterPassageTransit(targets)
         }),
 
         // Leave combat
@@ -103,10 +103,10 @@ export function createRootMachine(targets) {
         }),
         new StateTransition({
             parent: combat,
-            child: passageCleanup,
-            name: 'combat_to_passage_cleanup',
+            child: passageTransit,
+            name: 'combat_to_passage_transit',
             shouldTransition: () => !shouldStayInCombat(targets)
-                && shouldEnterPassageCleanup(targets)
+                && shouldEnterPassageTransit(targets)
         }),
         new StateTransition({
             parent: combat,
@@ -133,27 +133,28 @@ export function createRootMachine(targets) {
                 && resumeUpperMode(targets) === 'wait'
         }),
 
-        // Safety work may interrupt cleanup; otherwise leave only after confirmation/failure.
+        // Safety work may interrupt a transaction; otherwise leave only after
+        // the final block state is confirmed, or the transaction failed.
         new StateTransition({
-            parent: passageCleanup,
+            parent: passageTransit,
             child: duty,
-            name: 'passage_cleanup_to_duty',
+            name: 'passage_transit_to_duty',
             shouldTransition: () => !shouldEnterCombat(targets)
                 && dutyPending(targets)
                 && (!passagePending(targets) || safetyDutyPending(targets))
         }),
         new StateTransition({
-            parent: passageCleanup,
+            parent: passageTransit,
             child: follow,
-            name: 'passage_cleanup_to_follow',
+            name: 'passage_transit_to_follow',
             shouldTransition: () => !passagePending(targets)
                 && !dutyPending(targets)
                 && resumeUpperMode(targets) === 'follow'
         }),
         new StateTransition({
-            parent: passageCleanup,
+            parent: passageTransit,
             child: wait,
-            name: 'passage_cleanup_to_wait',
+            name: 'passage_transit_to_wait',
             shouldTransition: () => !passagePending(targets)
                 && !dutyPending(targets)
                 && resumeUpperMode(targets) === 'wait'
@@ -196,6 +197,6 @@ export function createRootMachine(targets) {
     root.stateName = 'companionRoot';
     return {
         root,
-        states: { follow, wait, combat, passageCleanup, duty }
+        states: { follow, wait, combat, passageTransit, duty }
     };
 }

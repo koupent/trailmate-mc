@@ -107,7 +107,9 @@ export function analyzePassageRoute(bot, path, start = bot?.entity?.position) {
                 passagePos,
                 facing: block._properties?.facing,
                 approachSide: crossing.approachSide,
-                exitSide: crossing.exitSide
+                exitSide: crossing.exitSide,
+                approachPoint: crossing.approachPoint,
+                exitPoint: crossing.exitPoint
             });
         }
     }
@@ -122,7 +124,13 @@ export function analyzePassageRoute(bot, path, start = bot?.entity?.position) {
  * @param {{ x:number,y:number,z:number }} passagePos
  * @param {string|undefined} facing
  * @param {number} actionPointIndex Index within `points`
- * @returns {{ approachSide:-1|1, exitSide:-1|1, afterIndex:number }|null}
+ * @returns {{
+ *   approachSide:-1|1,
+ *   exitSide:-1|1,
+ *   afterIndex:number,
+ *   approachPoint:{x:number,y:number,z:number},
+ *   exitPoint:{x:number,y:number,z:number}
+ * }|null}
  */
 function findPassageCrossing(
     points,
@@ -132,7 +140,7 @@ function findPassageCrossing(
 ) {
     const before = findSidePoint(points, passagePos, facing, actionPointIndex - 1, -1);
     const after = findSidePoint(points, passagePos, facing, actionPointIndex + 1, 1);
-    return crossingFromPoints(before, after, passagePos, facing);
+    return crossingFromPoints(points, before, after, passagePos, facing);
 }
 
 /**
@@ -141,7 +149,9 @@ function findPassageCrossing(
  *   passagePos:{x:number,y:number,z:number},
  *   facing?:string,
  *   approachSide:-1|1,
- *   exitSide:-1|1
+ *   exitSide:-1|1,
+ *   approachPoint:{x:number,y:number,z:number},
+ *   exitPoint:{x:number,y:number,z:number}
  * }} RoutePassagePlan
  */
 
@@ -165,7 +175,7 @@ function findSidePoint(points, passagePos, facing, startIndex, step) {
     return null;
 }
 
-function crossingFromPoints(before, after, passagePos, facing) {
+function crossingFromPoints(points, before, after, passagePos, facing) {
     if (!before || !after || before.side === after.side) return null;
     if (!isNearPassage(before.point, passagePos, facing)
         || !isNearPassage(after.point, passagePos, facing)) {
@@ -174,8 +184,49 @@ function crossingFromPoints(before, after, passagePos, facing) {
     return {
         approachSide: before.side,
         exitSide: after.side,
-        afterIndex: after.index
+        afterIndex: after.index,
+        // Both stand points come from the validated route, so passage_transit
+        // walks to positions A* already proved reachable.
+        approachPoint: routeStandPoint(before.point),
+        exitPoint: routeStandPoint(
+            lastCorridorPoint(points, after, passagePos, facing)
+        )
     };
+}
+
+/**
+ * Farthest consecutive route point that still describes this crossing on the
+ * exit side. Stopping at the first one can leave the bot inside the door swing.
+ */
+function lastCorridorPoint(points, after, passagePos, facing) {
+    let farthest = after.point;
+    for (let i = after.index + 1; i < points.length; i++) {
+        const point = points[i];
+        if (!isFinitePoint(point)) continue;
+        if (clearSide(point, passagePos, facing) !== after.side) break;
+        if (!isNearPassage(point, passagePos, facing)) break;
+        farthest = point;
+    }
+    return farthest;
+}
+
+/**
+ * Pathfinder nodes address block corners; standing targets address centers.
+ * @param {{ x:number, y:number, z:number }} point
+ */
+export function routeStandPoint(point) {
+    return {
+        x: Number.isInteger(point.x) ? point.x + 0.5 : point.x,
+        y: point.y,
+        z: Number.isInteger(point.z) ? point.z + 0.5 : point.z
+    };
+}
+
+/**
+ * @param {{ x:number, y:number, z:number }} passagePos
+ */
+export function passageCenter(passagePos) {
+    return { x: passagePos.x + 0.5, y: passagePos.y, z: passagePos.z + 0.5 };
 }
 
 /**
