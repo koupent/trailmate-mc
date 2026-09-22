@@ -4,6 +4,7 @@ import { Vec3 } from 'vec3';
 import {
     ColumnClimber,
     findClimbPushDirection,
+    findNearbyClimbColumn,
     findStandingClimbColumn,
     isClimbableColumnBlock,
     yawTowardDirection
@@ -112,6 +113,64 @@ describe('findStandingClimbColumn', () => {
     });
 });
 
+describe('findNearbyClimbColumn', () => {
+    /** Vines at x=0, held by the wall at x=1; the bot waits one cell east. */
+    const WALL = {
+        '0,64,0': 'vine',
+        '0,65,0': 'vine',
+        '1,64,0': 'stone',
+        '1,65,0': 'stone'
+    };
+
+    it('reports the foot cell of a column the bot is standing next to', () => {
+        const column = findNearbyClimbColumn(makeBot(WALL), new Vec3(0.5, 64, 1.5));
+
+        assert.ok(column, 'expected the vine column one cell north');
+        assert.deepEqual(
+            { x: column.cell.x, y: column.cell.y, z: column.cell.z },
+            { x: 0, y: 64, z: 0 }
+        );
+        assert.deepEqual(column.push, { x: 1, z: 0 });
+    });
+
+    it('reaches a column several cells away, and stops beyond that', () => {
+        const bot = makeBot(WALL);
+        assert.ok(findNearbyClimbColumn(bot, new Vec3(0.5, 64, 3.5)), 'within reach');
+        assert.equal(findNearbyClimbColumn(bot, new Vec3(0.5, 64, 9.5)), null);
+    });
+
+    it('only looks at the bot own feet level', () => {
+        assert.equal(findNearbyClimbColumn(makeBot(WALL), new Vec3(0.5, 70, 1.5)), null);
+    });
+
+    it('refuses a column with nothing to press against', () => {
+        const hanging = makeBot({ '0,64,0': 'vine', '0,65,0': 'vine' });
+        assert.equal(findNearbyClimbColumn(hanging, new Vec3(0.5, 64, 1.5)), null);
+    });
+
+    it('refuses a lone climbable block, which can gain no height', () => {
+        const single = makeBot({ '0,64,0': 'vine', '1,64,0': 'stone' });
+        assert.equal(findNearbyClimbColumn(single, new Vec3(0.5, 64, 1.5)), null);
+    });
+
+    it('reports nothing when there is no column around at all', () => {
+        const bare = makeBot({ '0,63,0': 'stone', '1,64,0': 'stone' });
+        assert.equal(findNearbyClimbColumn(bare, new Vec3(0.5, 64, 1.5)), null);
+    });
+
+    it('picks the nearest column when several are in reach', () => {
+        const twoWalls = makeBot({
+            ...WALL,
+            '0,64,4': 'vine',
+            '0,65,4': 'vine',
+            '1,64,4': 'stone'
+        });
+        const column = findNearbyClimbColumn(twoWalls, new Vec3(0.5, 64, 3.5));
+
+        assert.equal(column?.cell.z, 4, 'z=4 is one cell away, z=0 is three');
+    });
+});
+
 describe('yawTowardDirection', () => {
     it('yields the yaw whose forward vector is the push direction', () => {
         assertFacing(yawTowardDirection({ x: 0, z: -1 }), { x: 0, z: -1 }, 'north');
@@ -162,8 +221,16 @@ function makeClimbCtx(blocks, position, ownerPosition) {
         looks,
         movement: {
             stops: 0,
+            /** @type {Array<{ pos: object, range: number }>} */
+            goals: [],
+            isBlocked: false,
+            isUnreachable: false,
             stop() {
                 this.stops += 1;
+            },
+            goToward(pos, range) {
+                this.goals.push({ pos, range });
+                return true;
             }
         },
         ownerEntity: { id: 7, position: ownerPosition },
@@ -217,6 +284,206 @@ describe('ColumnClimber start conditions', () => {
         assert.equal(climber.tick(ctx), true);
         assert.equal(ctx.movement.stops, 1, 'the goal is dropped only on the first tick');
         assert.equal(ctx.bot.getControlState('forward'), true);
+    });
+});
+
+describe('ColumnClimber approach', () => {
+    /**
+     * The companion parked one cell short of the vines, which is where every
+     * follow route actually leaves it: GoalNear counts the four horizontal
+     * neighbours of its target as arrived, and the column is never one of them.
+     */
+    function makeApproachCtx(ownerPosition = new Vec3(1.5, 67, 0.5)) {
+        return makeClimbCtx(VINE_WALL, new Vec3(0.5, 64, 1.5), ownerPosition);
+    }
+
+    it('walks into the column instead of standing beside it', () => {
+        const ctx = makeApproachCtx();
+        const climber = new ColumnClimber({ now: makeClock().read });
+
+        assert.equal(climber.tick(ctx), true, 'the approach must own the tick');
+        assert.equal(climber.phase, 'approaching');
+        assert.equal(ctx.movement.goals.length, 1);
+        assert.deepEqual(
+            { ...ctx.movement.goals[0].pos },
+            { x: 0.5, y: 64, z: 0.5 },
+            'the goal is the column cell itself, not a cell beside it'
+        );
+    });
+
+    it('asks for the column cell exactly, with range 0', () => {
+        const ctx = makeApproachCtx();
+        new ColumnClimber({ now: makeClock().read }).tick(ctx);
+
+        // GoalNear squares this range: anything above 0 also accepts the four
+        // horizontal neighbours, and A* stops at the first one it reaches.
+        assert.equal(ctx.movement.goals[0].range, 0);
+    });
+
+    it('leaves the walking to the pathfinder and presses nothing', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read });
+
+        climber.tick(ctx);
+        clock.now += 250;
+        ctx.bot.entity.position = new Vec3(0.5, 64, 1.1);
+        climber.tick(ctx);
+
+        assert.equal(ctx.controls.size, 0, 'forward belongs to the climb, not the walk');
+        assert.equal(ctx.movement.stops, 0, 'the approach route must survive');
+    });
+
+    it('stays idle while the owner is on the same level', () => {
+        const ctx = makeApproachCtx(new Vec3(1.5, 64, 0.5));
+        const climber = new ColumnClimber({ now: makeClock().read });
+
+        assert.equal(climber.tick(ctx), false);
+        assert.equal(climber.phase, 'idle');
+        assert.deepEqual(ctx.movement.goals, []);
+    });
+
+    it('hands the tick back when the owner comes down mid-approach', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read });
+
+        assert.equal(climber.tick(ctx), true);
+
+        clock.now += 250;
+        ctx.ownerEntity.position = new Vec3(1.5, 64, 2.5);
+        assert.equal(climber.tick(ctx), false);
+        assert.equal(climber.phase, 'idle');
+        // Nothing was wrong with the wall, so follow gets the tick right back.
+        clock.now += 250;
+        ctx.ownerEntity.position = new Vec3(1.5, 67, 0.5);
+        assert.equal(climber.tick(ctx), true);
+    });
+
+    it('climbs the moment the feet land in the column', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read });
+
+        climber.tick(ctx);
+        assert.equal(climber.phase, 'approaching');
+
+        clock.now += 250;
+        ctx.bot.entity.position = new Vec3(0.5, 64, 0.5);
+        assert.equal(climber.tick(ctx), true);
+        assert.equal(climber.phase, 'climbing');
+        assert.equal(ctx.movement.stops, 1, 'pathfinder must lose the path before the push');
+        assert.equal(ctx.bot.getControlState('forward'), true);
+        assertFacing(ctx.looks.at(-1).yaw, { x: 1, z: 0 }, 'must face the supporting wall');
+    });
+
+    it('gives up and cools down when A* refuses to route into the column', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read, retryCooldownMs: 3000 });
+
+        assert.equal(climber.tick(ctx), true);
+
+        clock.now += 250;
+        ctx.movement.isBlocked = true;
+        assert.equal(climber.tick(ctx), false, 'ordinary follow takes the tick back');
+        assert.equal(climber.phase, 'idle');
+
+        clock.now += 250;
+        ctx.movement.isBlocked = false;
+        assert.equal(climber.tick(ctx), false, 'no doomed retry on the very next tick');
+        assert.equal(ctx.movement.goals.length, 1);
+
+        clock.now += 3000;
+        assert.equal(climber.tick(ctx), true, 'the column is tried again after the cooldown');
+        assert.equal(ctx.movement.goals.length, 2);
+    });
+
+    it('treats an unreachable follow route the same way', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read });
+
+        // The stale `unreachable` left by the failed route onto the owner cell
+        // must not abort the approach before its own goal has been issued.
+        ctx.movement.isUnreachable = true;
+        assert.equal(climber.tick(ctx), true);
+        assert.equal(ctx.movement.goals.length, 1);
+
+        clock.now += 250;
+        assert.equal(climber.tick(ctx), false);
+        assert.equal(climber.phase, 'idle');
+    });
+
+    it('gives up once the walk stops making ground', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read, stallMs: 1500 });
+
+        assert.equal(climber.tick(ctx), true);
+
+        clock.now += 1000;
+        assert.equal(climber.tick(ctx), true, 'still inside the stall window');
+
+        clock.now += 600;
+        assert.equal(climber.tick(ctx), false);
+        assert.equal(climber.phase, 'idle');
+    });
+
+    it('keeps walking while the gap to the column keeps shrinking', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read, stallMs: 1500 });
+
+        climber.tick(ctx);
+        for (const z of [1.2, 0.9, 0.7]) {
+            clock.now += 1000;
+            ctx.bot.entity.position = new Vec3(0.5, 64, z);
+            assert.equal(climber.tick(ctx), true, `still closing in at z=${z}`);
+        }
+    });
+
+    it('gives up once the overall time limit is spent', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read, timeoutMs: 1000, stallMs: 10_000 });
+
+        assert.equal(climber.tick(ctx), true);
+
+        clock.now += 500;
+        ctx.bot.entity.position = new Vec3(0.5, 64, 1.2);
+        assert.equal(climber.tick(ctx), true);
+
+        clock.now += 600;
+        ctx.bot.entity.position = new Vec3(0.5, 64, 1.0);
+        assert.equal(climber.tick(ctx), false);
+        assert.equal(climber.phase, 'idle');
+    });
+
+    it('hands movement back the moment combat takes ownership', () => {
+        const ctx = makeApproachCtx();
+        const { clock, read } = makeClock();
+        const climber = new ColumnClimber({ now: read });
+
+        assert.equal(climber.tick(ctx), true);
+
+        clock.now += 250;
+        ctx.agent.reflexes = { wantsCombat: true };
+        assert.equal(climber.tick(ctx), false);
+        assert.equal(climber.phase, 'idle');
+        assert.equal(ctx.movement.goals.length, 1, 'no new goal is asked for');
+    });
+
+    it('never approaches a wall it cannot press against', () => {
+        const ctx = makeClimbCtx(
+            { '0,64,0': 'vine', '0,65,0': 'vine' },
+            new Vec3(0.5, 64, 1.5),
+            new Vec3(0.5, 68, 0.5)
+        );
+        const climber = new ColumnClimber();
+
+        assert.equal(climber.tick(ctx), false);
+        assert.deepEqual(ctx.movement.goals, []);
     });
 });
 

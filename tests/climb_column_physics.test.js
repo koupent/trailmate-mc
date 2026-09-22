@@ -125,20 +125,84 @@ function makeBot(world, position) {
 }
 
 /**
- * Step physics at 20 tps and let `decide` run on the companion tick boundary.
+ * Step physics at 20 tps and let `decide` run on the companion tick boundary,
+ * while the stand-in pathfinder steers on every physics tick, as the real one
+ * does.
+ *
  * @returns {{ bot: object, simTime: number }}
  */
-async function simulate(world, bot, seconds, decide) {
+async function simulate(world, bot, seconds, decide, movement = null) {
     const physics = Physics(registry, world);
     let simTime = 0;
     const totalTicks = Math.round((seconds * 1000) / PHYSICS_TICK_MS);
     for (let tick = 0; tick < totalTicks; tick += 1) {
         if (simTime % COMPANION_TICK_MS === 0) await decide(simTime);
+        movement?.steer?.();
         const state = new PlayerState(bot, bot.controlState);
         physics.simulatePlayer(state, world).apply(bot);
         simTime += PHYSICS_TICK_MS;
     }
     return { bot, simTime };
+}
+
+/** Released this close to the goal, the body coasts the rest of the way in. */
+const WALK_RELEASE_DISTANCE = 0.45;
+
+/**
+ * The smallest thing that stands in for mineflayer-pathfinder: take a goal,
+ * face it, hold forward, and let go in time to coast onto it. Enough to prove
+ * the companion can walk itself into the column — which is the whole defect —
+ * without a server behind a real pathfinder.
+ *
+ * @param {object} bot
+ */
+function makeWalkerMovement(bot) {
+    return {
+        stops: 0,
+        /** @type {string[]} */
+        calls: [],
+        /** @type {Array<{ pos: object, range: number }>} */
+        goals: [],
+        /** @type {{ x: number, y: number, z: number }|null} */
+        target: null,
+        isBlocked: false,
+        isUnreachable: false,
+        stop() {
+            this.stops += 1;
+            this.calls.push('stop');
+            this.hasGoal = false;
+            this.clearRoute();
+        },
+        goToward(pos, range) {
+            this.calls.push('goToward');
+            this.hasGoal = true;
+            // The real controller keeps a route it is already running, so a
+            // goal re-asserted every tick still counts as one route here.
+            const unchanged = this.target
+                && this.target.x === pos.x
+                && this.target.y === pos.y
+                && this.target.z === pos.z;
+            this.target = pos;
+            if (unchanged) return false;
+            this.goals.push({ pos: { x: pos.x, y: pos.y, z: pos.z }, range });
+            return true;
+        },
+        clearRoute() {
+            this.target = null;
+            bot.setControlState('forward', false);
+        },
+        steer() {
+            if (!this.target) return;
+            const dx = this.target.x - bot.entity.position.x;
+            const dz = this.target.z - bot.entity.position.z;
+            if (Math.hypot(dx, dz) <= WALK_RELEASE_DISTANCE) {
+                bot.setControlState('forward', false);
+                return;
+            }
+            bot.entity.yaw = Math.atan2(-dx, -dz);
+            bot.setControlState('forward', true);
+        }
+    };
 }
 
 /** Vines on the west face (x=0) of a stone wall whose top is walkable at y=70. */
@@ -158,10 +222,9 @@ function ladderWall() {
 }
 
 function makeClimbCtx(bot, ownerPosition) {
-    const movement = { stops: 0, stop() { this.stops += 1; } };
     return {
         bot,
-        movement,
+        movement: makeWalkerMovement(bot),
         ownerEntity: { id: 7, position: ownerPosition },
         deathRecovery: { active: false },
         agent: { reflexes: null }
@@ -171,6 +234,10 @@ function makeClimbCtx(bot, ownerPosition) {
 /**
  * Drive one climb with a simulated clock, and report whether the climber ever
  * claimed a tick.
+ *
+ * Every start position here is OUTSIDE the column. Dropping the body straight
+ * into the vines is what let the previous round of these tests pass while the
+ * companion never once reached them in a real world.
  */
 async function runClimb(world, start, owner, seconds = 12) {
     const bot = makeBot(world, start);
@@ -182,19 +249,29 @@ async function runClimb(world, start, owner, seconds = 12) {
     await simulate(world, bot, seconds, (now) => {
         simTime = now;
         if (climber.tick(ctx)) engaged = true;
-    });
+    }, ctx.movement);
 
     return { bot, ctx, climber, engaged };
 }
 
+/** Open ground two cells south of the vines: where a follow route leaves the bot. */
+const BESIDE_VINES = new Vec3(0.5, 64, 2.5);
+/** The same, for the ladder wall, whose open face points south. */
+const BESIDE_LADDER = new Vec3(0.5, 64, -1.5);
+
 describe('column climb against real physics', () => {
-    it('carries the companion up a vine wall and onto the top', async () => {
+    it('walks into the vines from open ground, climbs, and tops out', async () => {
         const { bot, ctx, climber } = await runClimb(
             vineWall(),
-            new Vec3(0.5, 64, 0.5),
+            BESIDE_VINES,
             new Vec3(2.5, 70, 0.5)
         );
 
+        assert.deepEqual(
+            ctx.movement.goals.map((goal) => goal.range),
+            [0],
+            'the column cell is asked for exactly, and only while approaching'
+        );
         assert.ok(
             bot.entity.position.y >= 70,
             `expected the wall top at y=70, ended at y=${bot.entity.position.y}`
@@ -206,12 +283,13 @@ describe('column climb against real physics', () => {
     });
 
     it('carries the companion up a ladder the same way', async () => {
-        const { bot } = await runClimb(
+        const { bot, ctx } = await runClimb(
             ladderWall(),
-            new Vec3(0.5, 64, 0.5),
+            BESIDE_LADDER,
             new Vec3(0.5, 70, 2.5)
         );
 
+        assert.equal(ctx.movement.goals.length, 1, 'the ladder is walked into too');
         assert.ok(
             bot.entity.position.y >= 70,
             `expected the wall top at y=70, ended at y=${bot.entity.position.y}`
@@ -223,15 +301,19 @@ describe('column climb against real physics', () => {
     it('never moves while the owner stands on the same level', async () => {
         const { bot, ctx, engaged } = await runClimb(
             vineWall(),
-            new Vec3(0.5, 64, 0.5),
+            BESIDE_VINES,
             new Vec3(-2.5, 64, 0.5),
             3
         );
 
         assert.equal(engaged, false);
         assert.equal(ctx.movement.stops, 0);
+        assert.deepEqual(ctx.movement.goals, [], 'no approach either');
         assert.equal(bot.getControlState('forward'), false);
-        assert.equal(bot.entity.position.y, 64);
+        assert.deepEqual(
+            { x: bot.entity.position.x, z: bot.entity.position.z },
+            { x: BESIDE_VINES.x, z: BESIDE_VINES.z }
+        );
     });
 
     it('never engages on a vine with no wall behind it', async () => {
@@ -240,13 +322,14 @@ describe('column climb against real physics', () => {
             .fill('vine', { x: [0, 0], y: [64, 69], z: [0, 0] });
         const { ctx, engaged } = await runClimb(
             hanging,
-            new Vec3(0.5, 64, 0.5),
+            BESIDE_VINES,
             new Vec3(0.5, 70, 0.5),
             3
         );
 
         assert.equal(engaged, false);
         assert.equal(ctx.movement.stops, 0);
+        assert.deepEqual(ctx.movement.goals, []);
     });
 
     it('gives up on a vine that breaks halfway instead of hanging on the wall', async () => {
@@ -254,7 +337,7 @@ describe('column climb against real physics', () => {
         // the bot above the last vine without ever landing anywhere.
         const { bot, ctx, climber } = await runClimb(
             vineWall({ vineTop: 66 }),
-            new Vec3(0.5, 64, 0.5),
+            BESIDE_VINES,
             new Vec3(2.5, 70, 0.5),
             10
         );
@@ -271,38 +354,31 @@ describe('column climb against real physics', () => {
 });
 
 function makeFollowCtx(bot, ownerPosition) {
-    const calls = [];
     const ownerEntity = { id: 7, position: ownerPosition, yaw: 0, height: 1.8 };
     bot.players = { Steve: { entity: ownerEntity } };
     bot.world = { raycast: () => null };
+    const movement = Object.assign(makeWalkerMovement(bot), {
+        isHeld: false,
+        hasGoal: false,
+        isMoving: false,
+        status: 'idle',
+        tickHoldWatchdog() {},
+        followEntity() {
+            this.calls.push('followEntity');
+            this.hasGoal = true;
+            // A follow route replaces whatever the approach was running.
+            this.clearRoute();
+            return true;
+        }
+    });
     return {
-        calls,
+        calls: movement.calls,
+        movement,
         ctx: {
             bot,
             ownerName: 'Steve',
             ownerEntity,
-            movement: {
-                isHeld: false,
-                hasGoal: false,
-                isMoving: false,
-                isBlocked: false,
-                status: 'idle',
-                tickHoldWatchdog() {},
-                stop() {
-                    calls.push('stop');
-                    this.hasGoal = false;
-                },
-                followEntity() {
-                    calls.push('followEntity');
-                    this.hasGoal = true;
-                    return true;
-                },
-                goToward() {
-                    calls.push('goToward');
-                    this.hasGoal = true;
-                    return true;
-                }
-            },
+            movement,
             config: {
                 follow_distance: 3,
                 follow_min_distance: 2,
@@ -319,13 +395,13 @@ function makeFollowCtx(bot, ownerPosition) {
 }
 
 describe('FollowMode column climb against real physics', () => {
-    it('climbs the wall, then hands the tick back to ordinary follow', async () => {
+    it('approaches, climbs, then hands the tick back to ordinary follow', async () => {
         const world = vineWall({ plateauZ: 10 });
-        const bot = makeBot(world, new Vec3(0.5, 64, 0.5));
-        const { ctx, calls } = makeFollowCtx(bot, new Vec3(2.5, 70, 9.5));
+        const bot = makeBot(world, BESIDE_VINES.clone());
+        const { ctx, movement, calls } = makeFollowCtx(bot, new Vec3(2.5, 70, 9.5));
         const mode = new FollowMode();
 
-        await simulate(world, bot, 5, () => mode.tick(ctx));
+        await simulate(world, bot, 6, () => mode.tick(ctx), movement);
 
         assert.ok(bot.entity.position.y >= 70, 'expected to reach the wall top');
         assert.equal(bot.entity.onGround, true);
@@ -335,25 +411,30 @@ describe('FollowMode column climb against real physics', () => {
         assert.notEqual(firstFollow, -1, 'ordinary follow must resume once on top');
         assert.deepEqual(
             [...new Set(calls.slice(0, firstFollow))],
-            ['stop'],
-            'pathfinder must not be asked for a route mid-climb'
+            ['goToward', 'stop'],
+            'the climb walks itself in; follow never gets a say before the top'
+        );
+        assert.deepEqual(
+            movement.goals.map((goal) => goal.range),
+            [0],
+            'one approach, asking for the column cell exactly'
         );
     });
 
     it('lets go of forward the moment combat takes the tick over', async () => {
         const world = vineWall();
-        const bot = makeBot(world, new Vec3(0.5, 64, 0.5));
-        const { ctx } = makeFollowCtx(bot, new Vec3(2.5, 70, 0.5));
+        const bot = makeBot(world, BESIDE_VINES.clone());
+        const { ctx, movement } = makeFollowCtx(bot, new Vec3(2.5, 70, 0.5));
         const mode = new FollowMode();
         let heldForwardAfterCombat = false;
         let climbedBeforeCombat = 64;
 
-        await simulate(world, bot, 4, async (now) => {
-            if (now === 1000) climbedBeforeCombat = bot.entity.position.y;
-            if (now >= 1000) ctx.agent.reflexes = { wantsCombat: true };
+        await simulate(world, bot, 5, async (now) => {
+            if (now === 2000) climbedBeforeCombat = bot.entity.position.y;
+            if (now >= 2000) ctx.agent.reflexes = { wantsCombat: true };
             await mode.tick(ctx);
-            if (now >= 1000 && bot.getControlState('forward')) heldForwardAfterCombat = true;
-        });
+            if (now >= 2000 && bot.getControlState('forward')) heldForwardAfterCombat = true;
+        }, movement);
 
         assert.ok(climbedBeforeCombat > 64, 'the climb must have been under way');
         assert.equal(heldForwardAfterCombat, false, 'forward must never stay pressed');

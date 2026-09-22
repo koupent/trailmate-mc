@@ -160,9 +160,11 @@ export class FollowMode extends Mode {
         }
         this._plantingTargetKey = null;
 
-        // A* generates no upward move for this companion, so a ladder or vine
-        // wall is climbed by hand from the foot the follow route already
-        // reached. Everything below stays untouched when it does not apply.
+        // A* plans no usable upward move over vines, so the wall is climbed by
+        // hand. The follow route never reaches the foot of it either — it stops
+        // beside the column, or fails outright on the owner's cell up on top —
+        // so the climb owns the walk into the column as well, and holds the
+        // tick for it. Everything below stays untouched when it does not apply.
         this._climbConsulted = true;
         if (this._climb.tick(ctx)) return;
 

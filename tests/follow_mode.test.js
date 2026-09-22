@@ -262,9 +262,14 @@ describe('FollowMode unified owner follow', () => {
 });
 
 describe('FollowMode column climb', () => {
+    /** The cell the vines stand in, one north of where the follow route stops. */
+    const COLUMN = new Vec3(0.5, 64, 0.5);
+    /** Where a follow route actually leaves the companion: beside the column. */
+    const BESIDE_COLUMN = new Vec3(0.5, 64, 1.5);
+
     /** Vines on the west face of a wall, with the owner waiting on top. */
-    function makeVineWallCtx() {
-        const ctx = makeFollowCtx(new Vec3(0.5, 64, 0.5), new Vec3(1.5, 67, 0.5), {
+    function makeVineWallCtx(botPosition = BESIDE_COLUMN.clone()) {
+        const ctx = makeFollowCtx(botPosition, new Vec3(1.5, 67, 0.5), {
             blockAt: ({ x, y, z }) => {
                 if (x === 0 && z === 0 && y >= 64 && y <= 66) {
                     return { name: 'vine', boundingBox: 'empty' };
@@ -282,8 +287,25 @@ describe('FollowMode column climb', () => {
         return ctx;
     }
 
-    it('climbs the wall instead of handing the owner back to pathfinder', async () => {
+    it('walks into the column rather than letting follow own the tick', async () => {
         const ctx = makeVineWallCtx();
+
+        await new FollowMode().tick(ctx);
+
+        assert.equal(
+            ctx.movement.calls.some((call) => call.type === 'followEntity'),
+            false,
+            'follow would stop one cell short of the column, as it always has'
+        );
+        const goal = ctx.movement.calls.at(-1);
+        assert.equal(goal?.type, 'goToward');
+        assert.deepEqual({ ...goal.pos }, { x: 0.5, y: 64, z: 0.5 });
+        assert.equal(goal.range, 0);
+        assert.equal(ctx.bot.getControlState('forward'), false, 'the walk is not ours');
+    });
+
+    it('climbs the wall instead of handing the owner back to pathfinder', async () => {
+        const ctx = makeVineWallCtx(COLUMN.clone());
 
         await new FollowMode().tick(ctx);
 
@@ -300,6 +322,8 @@ describe('FollowMode column climb', () => {
         const ctx = makeVineWallCtx();
         const mode = new FollowMode();
 
+        await mode.tick(ctx);
+        ctx.bot.entity.position = COLUMN.clone();
         await mode.tick(ctx);
         assert.equal(ctx.bot.getControlState('forward'), true);
 
