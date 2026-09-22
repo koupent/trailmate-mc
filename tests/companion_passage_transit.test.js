@@ -1,6 +1,11 @@
 /**
- * End-to-end passage transit: a closed gate between the companion and its
- * target must be opened, crossed, and confirmed closed by one FSM state.
+ * End-to-end passage transit against the real orchestrator.
+ *
+ * The reported failure was a route through two gates: the companion opened the
+ * first without closing it, walked to the second, turned back to close the
+ * first, shut the second in its own face on the way, and stalled for seconds at
+ * every step. The two-gate case is therefore the headline test here, and what
+ * it asserts is that the bot only ever moves forward.
  */
 
 import { describe, it } from 'node:test';
@@ -8,39 +13,49 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import {
     DoorTracker,
-    PASSAGE_RETRY_COOLDOWN_MS,
-    PASSAGE_STAGE,
-    PASSAGE_TIMEOUT_MS
+    PASSAGE_FAIL_COOLDOWN_MS,
+    PASSAGE_JOB_TIMEOUT_MS
 } from '../src/companion/movement/DoorTracker.js';
 import { NearbyLootInterrupt } from '../src/companion/interrupts/NearbyLootInterrupt.js';
 import { CompanionOrchestrator } from '../src/companion/stateMachine/CompanionOrchestrator.js';
 
-/** Everything happens in a one-block corridor along z, with a gate at z=0. */
+/** Everything happens in a one-block corridor along z. */
 const GATE_POS = { x: 0, y: 64, z: 0 };
-const GATE_CENTER_Z = GATE_POS.z + 0.5;
-/** Route stand point on the approach side, as the analyzer derives it. */
+/** Second gate of the reported route, far enough to need its own approach. */
+const FAR_GATE_POS = { x: 0, y: 64, z: -6 };
+/** Where a closed gate stops the walk, and so where it is operated from. */
 const APPROACH_Z = 1.5;
-/** Route stand point past the gate, far enough to close it safely. */
-const EXIT_Z = -1.5;
+/** One tick of walking. A bot that teleports past a gate proves nothing. */
+const WALK_STEP = 2;
+/** Milliseconds one orchestrator tick stands for. */
+const TICK_MS = 50;
 
 function blockKey(pos) {
     return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
 }
 
 /**
- * Minimal but faithful world: pathfinder-shaped routes, a gate that only lets
- * the bot through while open, and block state that follows activation.
+ * Minimal but faithful world: pathfinder-shaped routes whose nodes are consumed
+ * as the bot walks them, gates that only let the bot through while open, and
+ * block state that follows activation.
  */
 function makePassageWorld(options = {}) {
     const blocks = new Map();
     const activations = [];
+    const gates = options.gates || [GATE_POS];
     let now = 100_000;
 
     const world = {
         activations,
+        gates,
+        /** Every position the bot has stood at, oldest first. */
+        track: [],
+        /** How often anything stopped ordinary movement. */
+        stops: 0,
         /** Drop block-state updates so an activation stays unconfirmed. */
         suspendBlockUpdates: false,
-        activationFailures: 0,
+        /** The live route array, exactly as mineflayer-pathfinder holds it. */
+        route: [],
         now: () => now,
         advance(ms) { now += ms; }
     };
@@ -65,57 +80,70 @@ function makePassageWorld(options = {}) {
         blocks.set(blockKey(pos), block);
         return block;
     };
-    world.gate = () => blocks.get(blockKey(GATE_POS));
-    world.isGateOpen = () => world.gate()?._properties?.open === true;
-    world.setGateOpen = (open) => {
-        const gate = world.gate();
-        if (gate) gate._properties.open = open;
+    world.blockFor = (pos) => blocks.get(blockKey(pos));
+    world.isOpen = (pos) => world.blockFor(pos)?._properties?.open === true;
+    world.setOpen = (pos, open) => {
+        const block = world.blockFor(pos);
+        if (block) block._properties.open = open;
     };
-    world.setBlock(options.gateName || 'oak_fence_gate', GATE_POS, {
-        facing: 'north',
-        open: false
-    });
+    world.openGates = () => gates.filter((pos) => world.isOpen(pos));
+    for (const pos of gates) {
+        world.setBlock(options.gateName || 'oak_fence_gate', pos, {
+            facing: 'north',
+            open: false
+        });
+    }
 
     bot.activateBlock = (block) => {
-        activations.push({ name: block.name, open: block._properties?.open === true });
-        if (world.activationFailures > 0) {
-            world.activationFailures -= 1;
-            return Promise.reject(new Error('activation failed'));
-        }
+        activations.push({ name: block.name, at: blockKey(block.position) });
         if (!world.suspendBlockUpdates) {
-            world.setGateOpen(!world.isGateOpen());
+            block._properties.open = block._properties.open !== true;
         }
         return Promise.resolve();
     };
 
-    /** Pathfinder-shaped corridor route, with the door action a closed gate gets. */
-    function buildPath(from, to) {
-        const startZ = Math.floor(from.z);
-        const endZ = Math.floor(to.z);
+    /** Pathfinder-shaped corridor, with the door action a closed gate gets. */
+    function buildPath(fromZ, toZ) {
+        const startZ = Math.floor(fromZ);
+        const endZ = Math.floor(toZ);
         if (startZ === endZ) return [];
         const step = endZ > startZ ? 1 : -1;
         const path = [];
         for (let z = startZ + step; ; z += step) {
             const node = { x: GATE_POS.x, y: GATE_POS.y, z, toPlace: [] };
-            if (z === GATE_POS.z && !world.isGateOpen()) {
-                node.toPlace.push({ ...GATE_POS, useOne: true });
-            }
+            const gate = gates.find((pos) => pos.z === z);
+            if (gate && !world.isOpen(gate)) node.toPlace.push({ ...gate, useOne: true });
             path.push(node);
             if (z === endZ) break;
         }
         return path;
     }
 
-    /** A closed gate stops the walk on its near side; an open one lets it pass. */
+    /**
+     * One tick of walking: a couple of blocks toward the goal, stopping on the
+     * near side of the first closed gate. Consumed nodes leave the live route,
+     * which is how the tracker learns a passage is behind the bot.
+     */
     function walkTo(target) {
-        const from = bot.entity.position;
-        const crossesGate = (from.z - GATE_CENTER_Z) * (target.z - GATE_CENTER_Z) < 0;
-        if (crossesGate && !world.isGateOpen()) {
-            const side = Math.sign(from.z - GATE_CENTER_Z) || 1;
-            bot.entity.position = { x: 0.5, y: 64, z: GATE_CENTER_Z + side };
-            return;
+        const from = bot.entity.position.z;
+        const direction = Math.sign(target.z - from);
+        if (direction === 0) return;
+        const short = (a, b) => (direction > 0 ? a < b : a > b);
+
+        let z = from + direction * WALK_STEP;
+        if (short(target.z, z)) z = target.z;
+        for (const gate of gates) {
+            if (world.isOpen(gate)) continue;
+            const center = gate.z + 0.5;
+            if (!short(from, center)) continue;
+            const nearSide = center - direction;
+            if (short(nearSide, z)) z = nearSide;
         }
-        bot.entity.position = { x: 0.5, y: 64, z: target.z };
+
+        bot.entity.position = { x: 0.5, y: 64, z };
+        world.track.push(z);
+        const passed = (nodeZ) => (direction > 0 ? nodeZ + 0.5 <= z : nodeZ + 0.5 >= z);
+        while (world.route.length && passed(world.route[0].z)) world.route.shift();
     }
 
     const movement = {
@@ -128,6 +156,7 @@ function makePassageWorld(options = {}) {
         get isTryingToMove() { return this.goal != null; },
         tickHoldWatchdog() {},
         stop() {
+            world.stops += 1;
             this.goal = null;
             this.status = 'idle';
             bot.emit('goal_updated', null);
@@ -139,8 +168,11 @@ function makePassageWorld(options = {}) {
             bot.emit('path_reset', 'goal_updated');
             if (this.status === 'noPath') return true;
             this.status = 'searching';
-            const path = buildPath(bot.entity.position, pos);
-            if (path.length > 0) bot.emit('path_update', { status: 'success', path });
+            const path = buildPath(bot.entity.position.z, pos.z);
+            if (path.length > 0) {
+                world.route = path;
+                bot.emit('path_update', { status: 'success', path });
+            }
             walkTo(pos);
             return true;
         }
@@ -208,21 +240,121 @@ function makePassageWorld(options = {}) {
         return manager;
     };
 
+    /** Ordinary follow: walk toward a fixed point, tick after tick. */
+    world.followToward = (z) => {
+        world.manager.fsmStates.follow.runTick = async () => {
+            movement.goToward({ x: 0.5, y: 64, z }, 1);
+        };
+    };
+
     world.dispose = () => ctx.doors.dispose();
-    world.transaction = () => ctx.doors.passageTransaction;
+    world.job = () => ctx.doors.passageJob;
     return world;
 }
 
 /** Run ticks until `done()` holds, so a test never depends on a tick count. */
-async function tickUntil(world, done, limit = 12) {
+async function tickUntil(world, done, limit = 20) {
     for (let i = 0; i < limit; i++) {
         await world.manager.tick();
+        world.advance(TICK_MS);
         if (done()) return i + 1;
     }
     assert.fail(`condition not reached after ${limit} ticks`);
 }
 
 describe('passage transit', () => {
+    it('crosses two gates in order, closing each behind it, never turning back', async () => {
+        const world = makePassageWorld({ gates: [GATE_POS, FAR_GATE_POS] });
+        const manager = world.start();
+        world.followToward(-10);
+
+        const logs = [];
+        const originalLog = console.log;
+        console.log = (...args) => logs.push(args.join(' '));
+        try {
+            await tickUntil(world, () => world.ctx.bot.entity.position.z <= -10, 60);
+
+            // Both gates were opened and closed again, and nothing else was.
+            assert.deepEqual(world.activations.map((entry) => entry.at), [
+                '0,64,0', '0,64,0', '0,64,-6', '0,64,-6'
+            ]);
+            assert.deepEqual(world.openGates(), []);
+
+            // The first gate is shut before the bot reaches the second one.
+            const closedFirst = logs.findIndex((l) => /passage close done at 0,64,0/.test(l));
+            const openedSecond = logs.findIndex((l) => /passage open done at 0,64,-6/.test(l));
+            assert.ok(closedFirst >= 0 && openedSecond > closedFirst, logs.join('\n'));
+
+            // No step of the walk ever went back the way the bot came.
+            const backwards = world.track.filter((z, i) => i > 0 && z > world.track[i - 1]);
+            assert.deepEqual(backwards, [], `walked backwards to ${backwards.join(', ')}`);
+        } finally {
+            console.log = originalLog;
+            world.dispose();
+        }
+    });
+
+    it('takes on every gate of the route, so a stripped door action is never a wall', async () => {
+        const world = makePassageWorld({ gates: [GATE_POS, FAR_GATE_POS] });
+        world.start();
+        world.followToward(-10);
+
+        try {
+            await tickUntil(world, () => world.ctx.doors.neededPassages.length === 2);
+            assert.deepEqual(world.ctx.doors.neededPassages.sort(), ['0,64,-6', '0,64,0']);
+            assert.deepEqual(
+                world.route.flatMap((node) => node.toPlace),
+                [],
+                'the pathfinder opens nothing itself'
+            );
+        } finally {
+            world.dispose();
+        }
+    });
+
+    it('stops ordinary movement only to activate a passage', async () => {
+        const world = makePassageWorld();
+        world.start();
+        world.followToward(-6);
+
+        try {
+            await tickUntil(world, () => world.ctx.bot.entity.position.z <= -6, 30);
+            assert.equal(world.activations.length, 2, 'one open and one close');
+            // A stop resets the pathfinder, so it happens once per activation
+            // and never on a tick that is merely waiting for the server.
+            assert.equal(world.stops, world.activations.length);
+        } finally {
+            world.dispose();
+        }
+    });
+
+    it('does not fail on a route that died before the job started', async () => {
+        const world = makePassageWorld();
+        const manager = world.start();
+        world.followToward(-6);
+        // Hold the gate unconfirmed so the job is still running below.
+        world.suspendBlockUpdates = true;
+
+        const warnings = [];
+        const originalWarn = console.warn;
+        console.warn = (...args) => warnings.push(args.join(' '));
+        try {
+            await tickUntil(world, () => world.activations.length === 1);
+            assert.equal(manager.getActiveFsmId(), 'passage_transit');
+            // The follow route that ran before the job left this behind. The
+            // job never issued a move of its own, so this is not its failure.
+            world.movement.status = 'noPath';
+
+            await manager.tick();
+            assert.equal(world.ctx.doors.passagePending, true, 'the job survives');
+            assert.deepEqual(warnings, []);
+            assert.equal(world.activations.length, 1, 'still inside the confirm window');
+        } finally {
+            console.warn = originalWarn;
+            world.dispose();
+        }
+    });
+
     it('opens a closed gate, crosses it, and confirms the close before pickup resumes', async () => {
         const world = makePassageWorld();
         world.addDrop(1, -3);
@@ -233,47 +365,28 @@ describe('passage transit', () => {
             await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
             assert.equal(world.ctx.bot.entity.position.z, APPROACH_Z);
             assert.equal(world.activations.length, 0, 'no door is operated outside the state');
-            assert.equal(world.transaction().stage, PASSAGE_STAGE.approach);
+            assert.deepEqual(world.job(), {
+                key: '0,64,0',
+                intent: 'open',
+                reason: 'needed',
+                passagePos: GATE_POS,
+                facing: 'north'
+            });
 
-            // Open, confirm the open state, then cross to the far stand point.
-            await tickUntil(world, () => world.transaction()?.stage === PASSAGE_STAGE.crossing);
-            assert.equal(world.isGateOpen(), true);
-            assert.equal(world.ctx.bot.entity.position.z, EXIT_Z);
+            // Open, confirm the open state, then hand movement straight back:
+            // there is no crossing stage for the state to drive.
+            await tickUntil(world, () => world.isOpen(GATE_POS));
+            await tickUntil(world, () => manager.getActiveFsmId() !== 'passage_transit');
 
-            // Close, then wait for the confirmed closed state before leaving.
-            await tickUntil(world, () => world.isGateOpen() === false);
-            assert.equal(manager.getActiveFsmId(), 'passage_transit');
+            // Pickup owns movement again, walks the bot through, and the gate
+            // is shut from the far side without pickup ever backtracking.
+            await tickUntil(world, () => world.ctx.bot.entity.position.z < 0, 20);
+            await tickUntil(
+                world,
+                () => !world.isOpen(GATE_POS) && world.ctx.doors.passagePending === false,
+                20
+            );
             assert.equal(world.activations.length, 2);
-
-            await tickUntil(world, () => manager.getActiveFsmId() === 'duty');
-            assert.equal(world.ctx.doors.passagePending, false);
-
-            // Normal pickup owns movement again and reaches the drop.
-            await tickUntil(world, () => world.ctx.bot.entity.position.z === -3);
-        } finally {
-            world.dispose();
-        }
-    });
-
-    it('keeps the transaction when stopping normal work resets the route', async () => {
-        const world = makePassageWorld();
-        world.addDrop(1, -3);
-        const manager = world.start([new NearbyLootInterrupt()]);
-
-        try {
-            await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
-            const acquired = world.transaction();
-            assert.equal(acquired.claimed, true);
-
-            // Exactly the events a stop produces, before and after the transition.
-            world.bot.emit('path_reset', 'goal_updated');
-            world.bot.emit('goal_updated', null);
-            world.ctx.movement.stop();
-
-            assert.equal(world.ctx.doors.passagePending, true);
-            assert.equal(world.transaction().key, acquired.key);
-
-            await tickUntil(world, () => world.isGateOpen());
         } finally {
             world.dispose();
         }
@@ -281,52 +394,51 @@ describe('passage transit', () => {
 
     it('waits at the gate and retries while the open state is delayed', async () => {
         const world = makePassageWorld();
-        world.addDrop(1, -3);
-        const manager = world.start([new NearbyLootInterrupt()]);
+        const manager = world.start();
+        world.followToward(-6);
         world.suspendBlockUpdates = true;
 
         try {
             await tickUntil(world, () => world.activations.length === 1);
             assert.equal(manager.getActiveFsmId(), 'passage_transit');
-            assert.equal(world.isGateOpen(), false);
+            assert.equal(world.isOpen(GATE_POS), false);
 
-            // Confirmation window plus retry backoff, without walking away.
-            world.advance(2501);
-            await manager.tick();
-            world.advance(600);
+            // The confirmation window passes without the bot walking away.
+            world.advance(1201);
             await tickUntil(world, () => world.activations.length === 2);
             assert.equal(world.ctx.bot.entity.position.z, APPROACH_Z);
 
             world.suspendBlockUpdates = false;
-            world.setGateOpen(true);
-            await tickUntil(world, () => world.transaction()?.stage === PASSAGE_STAGE.crossing);
+            world.setOpen(GATE_POS, true);
+            await tickUntil(world, () => manager.getActiveFsmId() !== 'passage_transit');
         } finally {
             world.dispose();
         }
     });
 
-    it('suspends for combat and resumes at the same stage afterwards', async () => {
+    it('suspends for combat and resumes the same job afterwards', async () => {
         const world = makePassageWorld();
-        world.addDrop(1, -3);
-        const manager = world.start([new NearbyLootInterrupt()]);
+        const manager = world.start();
+        world.followToward(-6);
+        world.suspendBlockUpdates = true;
 
         try {
-            await tickUntil(world, () => world.transaction()?.stage === PASSAGE_STAGE.crossing);
+            await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
+            const job = world.job();
 
             world.agent.reflexes.wantsCombat = true;
             await tickUntil(world, () => manager.getActiveFsmId() === 'combat');
-            const stage = world.transaction().stage;
 
-            // A long fight must not consume the transaction deadline.
-            world.advance(PASSAGE_TIMEOUT_MS * 3);
+            // A long fight must not consume the job deadline.
+            world.advance(PASSAGE_JOB_TIMEOUT_MS * 3);
             await manager.tick();
             assert.equal(world.ctx.doors.passagePending, true);
-            assert.equal(world.transaction().stage, stage);
+            assert.deepEqual(world.job(), job);
 
             world.agent.reflexes.wantsCombat = false;
+            world.suspendBlockUpdates = false;
             await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
-            await tickUntil(world, () => world.isGateOpen() === false);
-            assert.equal(world.ctx.bot.entity.position.z, EXIT_Z);
+            await tickUntil(world, () => world.isOpen(GATE_POS));
         } finally {
             world.dispose();
         }
@@ -334,8 +446,8 @@ describe('passage transit', () => {
 
     it('records a reason and returns control when the deadline expires', async () => {
         const world = makePassageWorld();
-        world.addDrop(1, -3);
-        const manager = world.start([new NearbyLootInterrupt()]);
+        const manager = world.start();
+        world.followToward(-6);
         world.suspendBlockUpdates = true;
 
         const warnings = [];
@@ -343,12 +455,12 @@ describe('passage transit', () => {
         console.warn = (...args) => warnings.push(args.join(' '));
         try {
             await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
-            world.advance(PASSAGE_TIMEOUT_MS + 1);
+            world.advance(PASSAGE_JOB_TIMEOUT_MS + 1);
 
             await tickUntil(world, () => manager.getActiveFsmId() !== 'passage_transit');
             assert.equal(world.ctx.doors.passagePending, false);
             assert.ok(
-                warnings.some((line) => /passage transit failed \(timeout\)/.test(line)),
+                warnings.some((line) => /passage open failed \(timeout\)/.test(line)),
                 'expected a recorded failure reason'
             );
         } finally {
@@ -357,116 +469,46 @@ describe('passage transit', () => {
         }
     });
 
-    it('returns control when the passage cannot be reached', async () => {
+    it('comes back to close a gate it opened but never went through', async () => {
         const world = makePassageWorld();
-        world.addDrop(1, -3);
-        const manager = world.start([new NearbyLootInterrupt()]);
+        const manager = world.start();
+        world.followToward(-6);
 
         const warnings = [];
         const originalWarn = console.warn;
         console.warn = (...args) => warnings.push(args.join(' '));
         try {
-            await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
-            world.movement.status = 'noPath';
-
-            await tickUntil(world, () => manager.getActiveFsmId() !== 'passage_transit');
-            assert.equal(world.ctx.doors.passagePending, false);
-            assert.ok(warnings.some((line) => /passage transit failed \(unreachable\)/.test(line)));
-        } finally {
-            console.warn = originalWarn;
-            world.dispose();
-        }
-    });
-
-    it('comes back to close a gate it opened but never crossed', async () => {
-        const world = makePassageWorld();
-        world.addDrop(1, -3);
-        const manager = world.start([new NearbyLootInterrupt()]);
-
-        const warnings = [];
-        const originalWarn = console.warn;
-        console.warn = (...args) => warnings.push(args.join(' '));
-        try {
-            await tickUntil(world, () => world.isGateOpen());
+            await tickUntil(world, () => world.isOpen(GATE_POS));
             assert.equal(world.ctx.bot.entity.position.z, APPROACH_Z);
 
-            // The route dies between the open and the crossing.
-            world.movement.status = 'noPath';
-            await tickUntil(world, () => manager.getActiveFsmId() !== 'passage_transit');
-            assert.equal(world.ctx.doors.passagePending, false);
-            assert.equal(world.isGateOpen(), true, 'the failure hands back an open gate');
-            assert.ok(warnings.some((line) => /\(unreachable\) at 0,64,0, left open/.test(line)));
-
             // Nothing pulls the bot through any more: it turns back and leaves.
-            // An open gate emits no pathfinder door action, so no route
-            // transaction can compete with the one the departure rule creates.
-            world.removeDrop(1);
-            world.movement.status = 'idle';
-            world.bot.entity.position = { x: 0.5, y: 64, z: 6.5 };
-            world.advance(PASSAGE_RETRY_COOLDOWN_MS + 1);
+            world.followToward(8);
+            await tickUntil(world, () => world.ctx.bot.entity.position.z >= 5, 20);
 
-            await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
-            assert.equal(world.transaction().stage, PASSAGE_STAGE.closing);
-
-            await tickUntil(world, () => world.isGateOpen() === false);
-            await tickUntil(world, () => world.ctx.doors.passagePending === false);
+            // The gate is behind the bot on a route that no longer uses it, so
+            // the debt comes due and is walked back to.
+            await tickUntil(world, () => world.isOpen(GATE_POS) === false, 30);
+            assert.deepEqual(warnings, []);
+            assert.equal(world.activations.length, 2);
         } finally {
             console.warn = originalWarn;
             world.dispose();
         }
     });
 
-    it('enters the same state for normal movement that is not item pickup', async () => {
+    it('never touches a gate the route does not reach', async () => {
         const world = makePassageWorld();
-        const manager = world.start([]);
-        let walks = 0;
-        manager.fsmStates.follow.runTick = async () => {
-            walks += 1;
-            if (walks === 1) world.ctx.movement.goToward({ x: 0.5, y: 64, z: -3 }, 1);
-        };
+        world.start();
+        world.followToward(8);
 
         try {
-            await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
-            await tickUntil(world, () => world.isGateOpen() === false && world.activations.length === 2);
-            assert.equal(world.ctx.bot.entity.position.z, EXIT_Z);
-
-            await tickUntil(world, () => manager.getActiveFsmId() === 'follow');
-        } finally {
-            world.dispose();
-        }
-    });
-
-    it('completes the acquired transaction even if the drop disappears', async () => {
-        const world = makePassageWorld();
-        world.addDrop(1, -3);
-        const manager = world.start([new NearbyLootInterrupt()]);
-
-        try {
-            await tickUntil(world, () => world.transaction()?.stage === PASSAGE_STAGE.crossing);
-            world.removeDrop(1);
-
-            await tickUntil(world, () => world.isGateOpen() === false);
-            assert.equal(world.ctx.doors.passagePending, true, 'close is confirmed by the state');
-
-            await tickUntil(world, () => manager.getActiveFsmId() === 'follow');
-            assert.equal(world.ctx.doors.passagePending, false);
-        } finally {
-            world.dispose();
-        }
-    });
-
-    it('never touches a gate the route does not cross', async () => {
-        const world = makePassageWorld();
-        world.addDrop(1, 6);
-        const manager = world.start([new NearbyLootInterrupt()]);
-
-        try {
-            for (let i = 0; i < 4; i++) {
-                await manager.tick();
-                assert.notEqual(manager.getActiveFsmId(), 'passage_transit');
+            for (let i = 0; i < 6; i++) {
+                await world.manager.tick();
+                world.advance(TICK_MS);
+                assert.notEqual(world.manager.getActiveFsmId(), 'passage_transit');
             }
             assert.equal(world.activations.length, 0);
-            assert.equal(world.isGateOpen(), false);
+            assert.equal(world.isOpen(GATE_POS), false);
         } finally {
             world.dispose();
         }
@@ -475,18 +517,45 @@ describe('passage transit', () => {
     it('never touches iron doors or trapdoors on the route', async () => {
         for (const gateName of ['iron_door', 'oak_trapdoor']) {
             const world = makePassageWorld({ gateName });
-            world.addDrop(1, -3);
-            const manager = world.start([new NearbyLootInterrupt()]);
+            world.start();
+            world.followToward(-6);
 
             try {
-                for (let i = 0; i < 4; i++) {
-                    await manager.tick();
-                    assert.notEqual(manager.getActiveFsmId(), 'passage_transit', gateName);
+                for (let i = 0; i < 6; i++) {
+                    await world.manager.tick();
+                    world.advance(TICK_MS);
+                    assert.notEqual(world.manager.getActiveFsmId(), 'passage_transit', gateName);
                 }
                 assert.equal(world.activations.length, 0, gateName);
             } finally {
                 world.dispose();
             }
+        }
+    });
+
+    it('backs off a failed passage instead of retrying it every tick', async () => {
+        const world = makePassageWorld();
+        const manager = world.start();
+        world.followToward(-6);
+        world.suspendBlockUpdates = true;
+
+        const originalWarn = console.warn;
+        console.warn = () => {};
+        try {
+            await tickUntil(world, () => manager.getActiveFsmId() === 'passage_transit');
+            world.advance(PASSAGE_JOB_TIMEOUT_MS + 1);
+            await tickUntil(world, () => world.ctx.doors.passagePending === false);
+            const attempts = world.activations.length;
+
+            await manager.tick();
+            assert.equal(world.activations.length, attempts, 'still on cooldown');
+
+            world.advance(PASSAGE_FAIL_COOLDOWN_MS + 1);
+            world.suspendBlockUpdates = false;
+            await tickUntil(world, () => world.activations.length > attempts);
+        } finally {
+            console.warn = originalWarn;
+            world.dispose();
         }
     });
 });

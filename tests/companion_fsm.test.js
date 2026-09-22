@@ -90,7 +90,7 @@ describe('companion fsm transitions', () => {
         const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
         const base = makeTargets().ctx;
         base.movement = { stop() {} };
-        base.doors = { claimPassage() {}, resumePassage() {}, suspendPassage() {} };
+        base.doors = { resumePassage() {}, suspendPassage() {} };
         const mode = { onEnter() {}, onExit() {}, tick() {} };
         const targets = createCompanionTargets({
             ctx: base,
