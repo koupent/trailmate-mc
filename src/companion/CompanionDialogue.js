@@ -23,6 +23,9 @@ import { tCommand } from '../i18n/index.js';
 import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
 
+/** Repeat window for a capability notice with the same key. */
+export const DEFAULT_NOTICE_COOLDOWN_MS = 30000;
+
 export const DEFAULT_CHAT_CONFIG = {
     enabled: true,
     min_interval_ms: 45000,
@@ -66,6 +69,8 @@ export class CompanionDialogue {
         this._lastInventoryFillMessage = '';
         this._prev = null;
         this._actionBusy = false;
+        /** @type {Record<string, number>} last time each capability notice was spoken */
+        this._lastNoticeAt = {};
         console.log('[companion] dialogue ready (keyword commands + rule commentary)');
     }
 
@@ -333,6 +338,30 @@ export class CompanionDialogue {
             console.warn('[companion] spawnpoint command failed:', err.message || err);
             await this._say(tCommand(language, 'spawnpoint_failed'));
         }
+    }
+
+    /**
+     * Speak on behalf of another capability (chest transfer, ...). Capabilities
+     * report outcomes that can repeat for as long as their cause lasts, so the
+     * same key is held back until its cooldown passes.
+     *
+     * @param {string} key command locale key
+     * @param {import('../i18n/index.js').CommentaryVars} [vars]
+     * @param {{ now?: number, cooldownMs?: number }} [options]
+     * @returns {Promise<boolean>} whether the line was spoken
+     */
+    async speakNotice(key, vars = {}, options = {}) {
+        if (!this.enabled || this.agent.shut_up) return false;
+        const now = options.now ?? Date.now();
+        const cooldownMs = options.cooldownMs ?? DEFAULT_NOTICE_COOLDOWN_MS;
+        const lastAt = this._lastNoticeAt[key];
+        if (lastAt != null && now - lastAt < cooldownMs) return false;
+
+        const message = tCommand(this.agent.language || 'ja', key, vars);
+        if (!message || message === key) return false;
+        this._lastNoticeAt[key] = now;
+        await this._say(message);
+        return true;
     }
 
     /**

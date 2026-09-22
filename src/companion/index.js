@@ -163,6 +163,12 @@ export async function startCompanion(agent, companionConfig = {}) {
             await manager.tick();
             await autoEquip.maybeRun(ctx);
             try {
+                // Pick an interrupted chest deposit back up once control returns.
+                await itemTransfer.maybeResume(ctx);
+            } catch (err) {
+                console.error('[companion] chest item-share resume error:', err);
+            }
+            try {
                 await dialogue.maybeSpeak();
             } catch (err) {
                 console.error('[companion] dialogue loop error:', err);

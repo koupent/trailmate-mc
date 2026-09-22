@@ -217,6 +217,16 @@ function applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots) {
 }
 
 /**
+ * Slot numbers that mineflayer's player inventory reserves for worn armor and
+ * the off-hand. No container window maps them, so they are read from
+ * `bot.inventory` even while a chest is open.
+ */
+export const ARMOR_AND_OFFHAND_SLOTS = Object.freeze([5, 6, 7, 8, 45]);
+
+/** First and last (exclusive) player-inventory slot inside a container window. */
+export const PLAYER_INVENTORY_SLOT_RANGE = Object.freeze({ start: 9, end: 45 });
+
+/**
  * @param {import('mineflayer').Bot} bot
  * @param {{ foodsByName?: object, bannedFood?: string[] }} options
  * @param {Set<number>} keepSlots
@@ -282,6 +292,90 @@ export function equippedItemSlots(bot) {
 }
 
 /**
+ * Retention policy over an explicit stack list. Nothing here reads the bot, so
+ * the same rules can be applied to `bot.inventory` or to the live contents of
+ * an open container window.
+ *
+ * @param {Array<{ slot: number, name: string, count: number, attackDamage?: number }>} stacks
+ * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {{
+ *   equippedSlots?: Iterable<number>,
+ *   foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>,
+ *   bannedFood?: Iterable<string>
+ * }} [options]
+ * @returns {Set<number>}
+ */
+export function retainedSlots(stacks, policy = {}, options = {}) {
+    const equippedSlots = new Set(options.equippedSlots || []);
+    const keepSlots = new Set(equippedSlots);
+    const context = {
+        foodsByName: options.foodsByName || {},
+        bannedFood: options.bannedFood instanceof Set
+            ? options.bannedFood
+            : new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS),
+        keepSlots
+    };
+    applyRetentionRules(stacks, policy, context, COMMON_STACK_RETENTION_RULES);
+    applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots);
+    return keepSlots;
+}
+
+/**
+ * Group the surplus into one deposit order per item type.
+ *
+ * `container.deposit` moves whichever same-type stack the window finds first,
+ * so a per-slot plan cannot say *which* item leaves — only how many. Planning
+ * by type keeps the amount exact, and the ranking above orders items by name
+ * alone, which makes same-named items interchangeable. If ranking ever grows
+ * enchantment awareness, the deposit mechanism has to be reworked too: a
+ * per-slot move needs click-level window control instead of `deposit`.
+ *
+ * @param {Array<{ slot: number, type: number, name: string, count: number, attackDamage?: number }>} stacks
+ * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {{
+ *   equippedSlots?: Iterable<number>,
+ *   foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>,
+ *   bannedFood?: Iterable<string>,
+ *   isDepositable?: (slot: number) => boolean
+ * }} [options]
+ * @returns {Array<{ type: number, name: string, count: number, slots: number[] }>}
+ */
+export function planDepositByType(stacks, policy = {}, options = {}) {
+    const keepSlots = retainedSlots(stacks, policy, options);
+    const isDepositable = typeof options.isDepositable === 'function'
+        ? options.isDepositable
+        : isPlayerInventorySlot;
+    /** @type {Map<number, { type: number, name: string, count: number, slots: number[] }>} */
+    const plan = new Map();
+    for (const stack of stacks) {
+        if (keepSlots.has(stack.slot)) continue;
+        if (!isDepositable(stack.slot)) continue;
+        const entry = plan.get(stack.type);
+        if (entry) {
+            entry.count += stack.count;
+            entry.slots.push(stack.slot);
+            continue;
+        }
+        plan.set(stack.type, {
+            type: stack.type,
+            name: stack.name,
+            count: stack.count,
+            slots: [stack.slot]
+        });
+    }
+    return [...plan.values()];
+}
+
+/**
+ * Armor and off-hand slots are never mapped into a container window, so a
+ * deposit cannot reach them.
+ * @param {number} slot
+ */
+export function isPlayerInventorySlot(slot) {
+    return slot >= PLAYER_INVENTORY_SLOT_RANGE.start && slot < PLAYER_INVENTORY_SLOT_RANGE.end;
+}
+
+/**
  * Shared retention policy for chest deposits and ordinary surplus transfers.
  * @param {import('mineflayer').Bot} bot
  * @param {ReturnType<typeof listOccupiedStacks>} stacks
@@ -289,12 +383,11 @@ export function equippedItemSlots(bot) {
  * @param {{ foodsByName?: object, bannedFood?: string[] }} options
  */
 function retainedItemSlots(bot, stacks, policy, options) {
-    const equippedSlots = equippedItemSlots(bot);
-    const keepSlots = new Set(equippedSlots);
-    const context = createRetentionContext(bot, options, keepSlots);
-    applyRetentionRules(stacks, policy, context, COMMON_STACK_RETENTION_RULES);
-    applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots);
-    return keepSlots;
+    return retainedSlots(stacks, policy, {
+        equippedSlots: equippedItemSlots(bot),
+        foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
+        bannedFood: options.bannedFood
+    });
 }
 
 /**
@@ -323,6 +416,24 @@ export function listChestDepositStacks(bot, policy = {}, options = {}) {
             count,
             name
         }));
+}
+
+/**
+ * Per-item-type deposit orders for an owner-placed handoff chest, read from
+ * `bot.inventory`. Used before a container is open and as the fallback for
+ * containers that do not expose their window slots.
+ *
+ * @param {import('mineflayer').Bot} bot
+ * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
+ * @param {{ foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>, bannedFood?: string[] }} [options]
+ * @returns {ReturnType<typeof planDepositByType>}
+ */
+export function listChestDepositPlan(bot, policy = {}, options = {}) {
+    return planDepositByType(listOccupiedStacks(bot), policy, {
+        equippedSlots: equippedItemSlots(bot),
+        foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
+        bannedFood: options.bannedFood
+    });
 }
 
 /**
