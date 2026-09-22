@@ -522,12 +522,12 @@ ul.inv {
   font-size: 0.88rem;
 }
 
+/* 内側のスクロール枠は持たない。チェックを外した行が枠の外へ流れて消えるより、
+   ページごと縦に伸びるほうが、どこを触ったかを見失わない。 */
 .retention-items {
   list-style: none;
   margin: 10px 0 0;
   padding: 0;
-  max-height: 340px;
-  overflow: auto;
   border: 1px solid var(--border);
   border-radius: 8px;
 }
