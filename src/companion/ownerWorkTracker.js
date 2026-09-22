@@ -3,28 +3,13 @@
  * one equipped, follow movement stays outside that player's current view.
  */
 
+import { isWorkItemCategoryName } from './utils/itemClassify.js';
+
 export const OWNER_WORK_PHASES = Object.freeze({
     idle: 'idle',
     deferring: 'deferring',
     cooldown: 'cooldown'
 });
-
-const EXACT_WORK_ITEMS = new Set([
-    'bow',
-    'crossbow',
-    'trident',
-    'mace',
-    'spear',
-    'shears'
-]);
-
-const WORK_ITEM_SUFFIXES = [
-    '_sword',
-    '_axe',
-    '_pickaxe',
-    '_shovel',
-    '_hoe'
-];
 
 /**
  * @typedef {{
@@ -38,8 +23,7 @@ const WORK_ITEM_SUFFIXES = [
  * @param {string|null|undefined} itemName
  */
 export function isWorkItemName(itemName) {
-    const name = String(itemName || '');
-    return EXACT_WORK_ITEMS.has(name) || WORK_ITEM_SUFFIXES.some((suffix) => name.endsWith(suffix));
+    return isWorkItemCategoryName(itemName);
 }
 
 /**

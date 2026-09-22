@@ -1,9 +1,23 @@
 /**
  * Decide which inventory stacks the companion should keep vs give away.
- * Retention rules live here so future keep-categories can extend one place.
+ *
+ * Retention is an allow-list over the categories in `itemClassify`: a stack is
+ * kept only when its category appears in `RETENTION_LIMIT_KEY_BY_CATEGORY` and
+ * it ranks inside that category's limit. Everything else goes back to the
+ * owner, so a classification rule this repo has not written yet costs an item
+ * handed over — never an item stuck in the companion's inventory forever.
  */
 
 import { UNSAFE_OR_SPECIAL_FOODS } from '../../host/autoEat.js';
+import {
+    classifyItemName,
+    classifyOptionsFromBot,
+    isEquipmentCategory,
+    isRetainedCategory,
+    ITEM_CATEGORY,
+    materialScore,
+    RETENTION_LIMIT_KEY_BY_CATEGORY
+} from './itemClassify.js';
 
 export const DEFAULT_RETENTION = {
     keep_torch_stacks: 2,
@@ -12,49 +26,22 @@ export const DEFAULT_RETENTION = {
     keep_weapon_stacks: 2
 };
 
-const TIER_SCORE = {
-    wood: 1,
-    wooden: 1,
-    leather: 1,
-    gold: 2,
-    golden: 2,
-    stone: 3,
-    chainmail: 3,
-    iron: 4,
-    diamond: 5,
-    netherite: 6
-};
-
 /** Prefer attackDamage over material tier when ranking weapons. */
 const WEAPON_DAMAGE_WEIGHT = 10;
-
-/** Equipment categories in request order, each with its retention limit. */
-const EQUIPMENT_RETENTION_RULES = Object.freeze([
-    { id: 'helmet', limitKey: 'keep_equipment_sets' },
-    { id: 'chestplate', limitKey: 'keep_equipment_sets' },
-    { id: 'leggings', limitKey: 'keep_equipment_sets' },
-    { id: 'boots', limitKey: 'keep_equipment_sets' },
-    { id: 'shield', limitKey: 'keep_equipment_sets' },
-    { id: 'weapon', limitKey: 'keep_weapon_stacks' }
-]);
 
 /**
  * @param {string} name
  * @returns {number}
  */
 export function tierOf(name) {
-    const n = String(name || '');
-    for (const [key, score] of Object.entries(TIER_SCORE)) {
-        if (n.includes(key)) return score;
-    }
-    return 0;
+    return materialScore(name, classifyItemName(name));
 }
 
 /**
  * @param {string} name
  */
 export function isTorch(name) {
-    return name === 'torch' || name === 'soul_torch';
+    return classifyItemName(name) === ITEM_CATEGORY.torch;
 }
 
 /**
@@ -63,36 +50,36 @@ export function isTorch(name) {
  * @param {Set<string>} bannedFood
  */
 export function isKeepableFood(name, foodsByName, bannedFood) {
-    if (!name || bannedFood.has(name)) return false;
-    return Boolean(foodsByName?.[name]);
+    return classifyItemName(name, {
+        foodsByName,
+        excludedFoods: bannedFood
+    }) === ITEM_CATEGORY.food;
 }
 
 /**
  * Equipment slot group for retention (null = not equipment).
  * @param {string} name
+ * @param {import('./itemClassify.js').ClassifyOptions} [options]
  * @returns {'helmet'|'chestplate'|'leggings'|'boots'|'shield'|'weapon'|null}
  */
-export function equipmentGroup(name) {
-    const n = String(name || '');
-    if (n === 'shield') return 'shield';
-    if (n.includes('helmet')) return 'helmet';
-    if (n.includes('chestplate') || n.includes('tunic') || n === 'elytra') return 'chestplate';
-    if (n.includes('leggings') || n.includes('pants')) return 'leggings';
-    if (n.includes('boots')) return 'boots';
-    if (n.includes('sword')) return 'weapon';
-    if (n.includes('axe') && !n.includes('pickaxe')) return 'weapon';
-    if (n === 'trident' || n === 'mace') return 'weapon';
-    return null;
+export function equipmentGroup(name, options = {}) {
+    const category = classifyItemName(name, options);
+    return isEquipmentCategory(category)
+        ? /** @type {'helmet'|'chestplate'|'leggings'|'boots'|'shield'|'weapon'} */ (category)
+        : null;
 }
 
 /**
  * @param {{ name: string, attackDamage?: number }} item
+ * @param {import('./itemClassify.js').ClassifyOptions} [options]
  */
-export function equipmentScore(item) {
-    if (equipmentGroup(item.name) === 'weapon') {
-        return (item.attackDamage || 0) * WEAPON_DAMAGE_WEIGHT + tierOf(item.name);
+export function equipmentScore(item, options = {}) {
+    const category = classifyItemName(item.name, options);
+    const score = materialScore(item.name, category);
+    if (category === ITEM_CATEGORY.weapon) {
+        return (item.attackDamage || 0) * WEAPON_DAMAGE_WEIGHT + score;
     }
-    return tierOf(item.name);
+    return score;
 }
 
 /**
@@ -122,47 +109,45 @@ function compareFoodDesc(a, b, foodsByName) {
     return (fb.saturation || 0) - (fa.saturation || 0);
 }
 
-const COMMON_STACK_RETENTION_RULES = Object.freeze([
-    {
-        id: 'food',
-        limitKey: 'keep_food_stacks',
-        matches: (stack, context) => isKeepableFood(
-            stack.name,
-            context.foodsByName,
-            context.bannedFood
-        ),
-        compare: (a, b, context) => compareFoodDesc(a, b, context.foodsByName)
-    },
-    {
-        id: 'torch',
-        limitKey: 'keep_torch_stacks',
-        matches: (stack) => isTorch(stack.name),
-        compare: (a, b) => b.count - a.count
+/**
+ * How a category ranks its own stacks when only some of them fit the limit.
+ * @param {string} category
+ * @returns {(a: any, b: any, context: any) => number}
+ */
+function comparatorFor(category) {
+    if (category === ITEM_CATEGORY.food) {
+        return (a, b, context) => compareFoodDesc(a, b, context.foodsByName);
     }
-]);
+    if (category === ITEM_CATEGORY.torch) return (a, b) => b.count - a.count;
+    return (a, b, context) => equipmentScore(b, context) - equipmentScore(a, context);
+}
 
 /**
  * Every retention category in a fixed request order, with the setting that
- * defines its target count. Keep decisions and shortage requests share this
- * list so neither can drift from the other.
+ * defines its target count. Built straight from the classifier's allow-list,
+ * so keep decisions and shortage requests cannot drift from each other — or
+ * from what the classifier thinks an item is.
+ *
  * @type {ReadonlyArray<{
  *   id: string,
  *   limitKey: keyof typeof DEFAULT_RETENTION,
- *   matches: (stack: any, context: any) => boolean
+ *   equipment: boolean,
+ *   matches: (stack: any, context: any) => boolean,
+ *   compare: (a: any, b: any, context: any) => number
  * }>}
  */
-export const RETENTION_CATEGORIES = Object.freeze([
-    ...EQUIPMENT_RETENTION_RULES.map((rule) => Object.freeze({
-        id: rule.id,
-        limitKey: rule.limitKey,
-        matches: (stack) => equipmentGroup(stack.name) === rule.id
-    })),
-    ...COMMON_STACK_RETENTION_RULES.map((rule) => Object.freeze({
-        id: rule.id,
-        limitKey: rule.limitKey,
-        matches: rule.matches
+export const RETENTION_CATEGORIES = Object.freeze(
+    Object.entries(RETENTION_LIMIT_KEY_BY_CATEGORY).map(([category, limitKey]) => Object.freeze({
+        id: category,
+        limitKey,
+        /** Worn and wielded pieces count against their own limit. */
+        equipment: isEquipmentCategory(category),
+        matches: (/** @type {any} */ stack, /** @type {any} */ context) => (
+            classifyItemName(stack.name, context) === category
+        ),
+        compare: comparatorFor(category)
     }))
-]);
+);
 
 /**
  * @param {Partial<typeof DEFAULT_RETENTION>} policy
@@ -174,43 +159,29 @@ function retentionLimit(policy, key) {
 }
 
 /**
- * @param {Array<{ slot: number }>} stacks
- * @param {Partial<typeof DEFAULT_RETENTION>} policy
- * @param {{ foodsByName: object, bannedFood: Set<string>, keepSlots: Set<number> }} context
- * @param {ReadonlyArray<{
- *   limitKey: keyof typeof DEFAULT_RETENTION,
- *   matches: (stack: any, context: any) => boolean,
- *   compare: (a: any, b: any, context: any) => number
- * }>} rules
- */
-function applyRetentionRules(stacks, policy, context, rules) {
-    for (const rule of rules) {
-        const keepCount = retentionLimit(policy, rule.limitKey);
-        keepTopStacks(
-            stacks.filter((stack) => rule.matches(stack, context)),
-            keepCount,
-            (a, b) => rule.compare(a, b, context),
-            context.keepSlots
-        );
-    }
-}
-
-/**
  * Keep equipped items plus the best spares up to each category's total limit.
- * @param {Array<{ slot: number, name: string }>} stacks
+ * Stacked categories (food, torches) have no equipped notion and simply keep
+ * their best N.
+ *
+ * @param {Array<{ slot: number, name: string, count: number }>} stacks
  * @param {Partial<typeof DEFAULT_RETENTION>} policy
+ * @param {{ foodsByName: object, excludedFoods: Set<string>, itemsByName?: object }} context
  * @param {Set<number>} equippedSlots
  * @param {Set<number>} keepSlots
  */
-function applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots) {
-    for (const { id: group, limitKey } of EQUIPMENT_RETENTION_RULES) {
-        const groupStacks = stacks.filter((stack) => equipmentGroup(stack.name) === group);
+function applyRetention(stacks, policy, context, equippedSlots, keepSlots) {
+    for (const rule of RETENTION_CATEGORIES) {
+        const groupStacks = stacks.filter((stack) => rule.matches(stack, context));
+        const limit = retentionLimit(policy, rule.limitKey);
+        if (!rule.equipment) {
+            keepTopStacks(groupStacks, limit, (a, b) => rule.compare(a, b, context), keepSlots);
+            continue;
+        }
         const equippedCount = groupStacks.filter((stack) => equippedSlots.has(stack.slot)).length;
-        const spareCount = Math.max(0, retentionLimit(policy, limitKey) - equippedCount);
         keepTopStacks(
             groupStacks.filter((stack) => !equippedSlots.has(stack.slot)),
-            spareCount,
-            (a, b) => equipmentScore(b) - equipmentScore(a),
+            Math.max(0, limit - equippedCount),
+            (a, b) => rule.compare(a, b, context),
             keepSlots
         );
     }
@@ -218,25 +189,66 @@ function applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots) {
 
 /**
  * Slot numbers that mineflayer's player inventory reserves for worn armor and
- * the off-hand. No container window maps them, so they are read from
- * `bot.inventory` even while a chest is open.
+ * the off-hand, with the equip destination each one answers to. No container
+ * window maps them, so they are read from `bot.inventory` even while a chest
+ * is open — and a deposit cannot reach them at all.
  */
-export const ARMOR_AND_OFFHAND_SLOTS = Object.freeze([5, 6, 7, 8, 45]);
+const EQUIPMENT_DESTINATION_SLOTS = Object.freeze([
+    Object.freeze({ destination: 'head', slot: 5 }),
+    Object.freeze({ destination: 'torso', slot: 6 }),
+    Object.freeze({ destination: 'legs', slot: 7 }),
+    Object.freeze({ destination: 'feet', slot: 8 }),
+    Object.freeze({ destination: 'off-hand', slot: 45 })
+]);
+
+export const ARMOR_AND_OFFHAND_SLOTS = Object.freeze(
+    EQUIPMENT_DESTINATION_SLOTS.map((entry) => entry.slot)
+);
 
 /** First and last (exclusive) player-inventory slot inside a container window. */
 export const PLAYER_INVENTORY_SLOT_RANGE = Object.freeze({ start: 9, end: 45 });
 
 /**
+ * Armor / off-hand destinations for this bot. Mineflayer's answer wins when it
+ * has one; the layout above is the fallback, which also makes the policy
+ * usable in deterministic tests whose Bot stub does not expose the helper.
  * @param {import('mineflayer').Bot} bot
- * @param {{ foodsByName?: object, bannedFood?: string[] }} options
- * @param {Set<number>} keepSlots
+ * @returns {Array<{ destination: string, slot: number }>}
  */
-function createRetentionContext(bot, options, keepSlots = new Set()) {
-    return {
-        foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
-        bannedFood: new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS),
-        keepSlots
-    };
+function equipmentDestinations(bot) {
+    return EQUIPMENT_DESTINATION_SLOTS.map(({ destination, slot }) => {
+        try {
+            const reported = bot?.getEquipmentDestSlot?.(destination);
+            if (Number.isInteger(reported)) return { destination, slot: reported };
+        } catch {
+            /* Version without this equipment destination. */
+        }
+        return { destination, slot };
+    });
+}
+
+/**
+ * @param {import('mineflayer').Bot} bot
+ * @returns {Set<number>}
+ */
+function armorAndOffhandSlots(bot) {
+    const slots = new Set(ARMOR_AND_OFFHAND_SLOTS);
+    for (const { slot } of equipmentDestinations(bot)) slots.add(slot);
+    return slots;
+}
+
+/**
+ * Classification inputs for a bot, honouring the caller's overrides.
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ foodsByName?: object, bannedFood?: Iterable<string>, itemsByName?: object }} [options]
+ * @returns {import('./itemClassify.js').ClassifyOptions}
+ */
+function classifyOptions(bot, options = {}) {
+    return classifyOptionsFromBot(bot, {
+        itemsByName: options.itemsByName,
+        foodsByName: options.foodsByName,
+        excludedFoods: options.bannedFood
+    });
 }
 
 /**
@@ -264,31 +276,55 @@ export function listOccupiedStacks(bot) {
 }
 
 /**
- * Resolve the slots that are genuinely equipped right now. Inventory hotbar
- * contents are not equipment unless the selected item is a weapon.
+ * Resolve the slots that are genuinely equipped right now.
+ *
+ * A worn slot counts only while it holds something the companion keeps: a
+ * bucket parked in the off-hand is surplus, and `listUnequipTargets` is what
+ * gets it out. Inventory hotbar contents are not equipment either, unless the
+ * selected item is gear.
+ *
  * @param {import('mineflayer').Bot} bot
+ * @param {{ foodsByName?: object, bannedFood?: Iterable<string>, itemsByName?: object }} [options]
  * @returns {Set<number>}
  */
-export function equippedItemSlots(bot) {
+export function equippedItemSlots(bot, options = {}) {
+    const classify = classifyOptions(bot, options);
     const slots = new Set();
-    for (const destination of ['head', 'torso', 'legs', 'feet', 'off-hand']) {
-        try {
-            const slot = bot?.getEquipmentDestSlot?.(destination);
-            if (Number.isInteger(slot) && bot?.inventory?.slots?.[slot]) slots.add(slot);
-        } catch {
-            /* Version without this equipment destination. */
-        }
-    }
 
-    // Mineflayer's stable player-inventory layout. This also makes the policy
-    // usable in deterministic tests whose Bot stub does not expose the helper.
-    for (const slot of [5, 6, 7, 8, 45]) {
-        if (bot?.inventory?.slots?.[slot]) slots.add(slot);
+    for (const slot of armorAndOffhandSlots(bot)) {
+        const item = bot?.inventory?.slots?.[slot];
+        if (!item?.name) continue;
+        if (isRetainedCategory(classifyItemName(item.name, classify))) slots.add(slot);
     }
 
     const held = bot?.heldItem;
-    if (held?.slot != null && equipmentGroup(held.name)) slots.add(held.slot);
+    if (held?.slot != null && isEquipmentCategory(classifyItemName(held.name, classify))) {
+        slots.add(held.slot);
+    }
     return slots;
+}
+
+/**
+ * Armor and off-hand slots holding something the companion does not keep.
+ *
+ * No container window maps these slots, so `deposit` cannot reach them: an
+ * item that ends up there stays in the companion's hands forever unless it is
+ * unequipped back into the inventory proper first.
+ *
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ foodsByName?: object, bannedFood?: Iterable<string>, itemsByName?: object }} [options]
+ * @returns {Array<{ slot: number, destination: string, name: string }>}
+ */
+export function listUnequipTargets(bot, options = {}) {
+    const classify = classifyOptions(bot, options);
+    const targets = [];
+    for (const { destination, slot } of equipmentDestinations(bot)) {
+        const item = bot?.inventory?.slots?.[slot];
+        if (!item?.name) continue;
+        if (isRetainedCategory(classifyItemName(item.name, classify))) continue;
+        targets.push({ slot, destination, name: item.name });
+    }
+    return targets;
 }
 
 /**
@@ -300,6 +336,7 @@ export function equippedItemSlots(bot) {
  * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
  * @param {{
  *   equippedSlots?: Iterable<number>,
+ *   itemsByName?: Record<string, { enchantCategories?: string[] }>,
  *   foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>,
  *   bannedFood?: Iterable<string>
  * }} [options]
@@ -309,14 +346,13 @@ export function retainedSlots(stacks, policy = {}, options = {}) {
     const equippedSlots = new Set(options.equippedSlots || []);
     const keepSlots = new Set(equippedSlots);
     const context = {
+        itemsByName: options.itemsByName,
         foodsByName: options.foodsByName || {},
-        bannedFood: options.bannedFood instanceof Set
+        excludedFoods: options.bannedFood instanceof Set
             ? options.bannedFood
-            : new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS),
-        keepSlots
+            : new Set(options.bannedFood || UNSAFE_OR_SPECIAL_FOODS)
     };
-    applyRetentionRules(stacks, policy, context, COMMON_STACK_RETENTION_RULES);
-    applyEquipmentRetention(stacks, policy, equippedSlots, keepSlots);
+    applyRetention(stacks, policy, context, equippedSlots, keepSlots);
     return keepSlots;
 }
 
@@ -334,6 +370,7 @@ export function retainedSlots(stacks, policy = {}, options = {}) {
  * @param {Partial<typeof DEFAULT_RETENTION>} [policy]
  * @param {{
  *   equippedSlots?: Iterable<number>,
+ *   itemsByName?: Record<string, { enchantCategories?: string[] }>,
  *   foodsByName?: Record<string, { foodPoints?: number, saturation?: number }>,
  *   bannedFood?: Iterable<string>,
  *   isDepositable?: (slot: number) => boolean
@@ -384,10 +421,23 @@ export function isPlayerInventorySlot(slot) {
  */
 function retainedItemSlots(bot, stacks, policy, options) {
     return retainedSlots(stacks, policy, {
-        equippedSlots: equippedItemSlots(bot),
-        foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
-        bannedFood: options.bannedFood
+        ...retentionOptionsFromBot(bot, options),
+        equippedSlots: equippedItemSlots(bot, options)
     });
+}
+
+/**
+ * Registry-backed classification inputs in the shape `retainedSlots` takes.
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ foodsByName?: object, bannedFood?: Iterable<string>, itemsByName?: object }} [options]
+ */
+export function retentionOptionsFromBot(bot, options = {}) {
+    const classify = classifyOptions(bot, options);
+    return {
+        itemsByName: classify.itemsByName,
+        foodsByName: classify.foodsByName,
+        bannedFood: options.bannedFood
+    };
 }
 
 /**
@@ -430,9 +480,8 @@ export function listChestDepositStacks(bot, policy = {}, options = {}) {
  */
 export function listChestDepositPlan(bot, policy = {}, options = {}) {
     return planDepositByType(listOccupiedStacks(bot), policy, {
-        equippedSlots: equippedItemSlots(bot),
-        foodsByName: options.foodsByName || bot?.registry?.foodsByName || {},
-        bannedFood: options.bannedFood
+        ...retentionOptionsFromBot(bot, options),
+        equippedSlots: equippedItemSlots(bot, options)
     });
 }
 
@@ -465,7 +514,7 @@ export function listGiveableStacks(bot, policy = {}, options = {}) {
  */
 export function listRetentionStock(bot, policy = {}, options = {}) {
     const stacks = listOccupiedStacks(bot);
-    const context = createRetentionContext(bot, options);
+    const context = classifyOptions(bot, options);
 
     return RETENTION_CATEGORIES.map(({ id, limitKey, matches }) => {
         const current = stacks.filter((stack) => matches(stack, context)).length;

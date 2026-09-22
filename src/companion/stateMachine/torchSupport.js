@@ -4,6 +4,7 @@
  */
 
 import { Vec3 } from 'vec3';
+import { isTorchItemName } from '../utils/itemClassify.js';
 import {
     estimateBrightness,
     nearestTorchDistance,
@@ -56,7 +57,7 @@ export async function maybePlaceSupportTorch(ctx, _agent) {
     const last = lastTorchAtByCtx.get(ctx) || 0;
     if (now - last < TORCH_PLACE_COOLDOWN_MS) return;
 
-    const torch = bot.inventory.items().find((i) => i.name === 'torch');
+    const torch = bot.inventory.items().find((i) => isTorchItemName(i.name));
     if (!torch) return;
 
     const threshold = ctx.config?.torch_light_threshold ?? 7;

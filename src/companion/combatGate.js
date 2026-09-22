@@ -14,8 +14,21 @@ import {
   DEFAULT_PROTECT_RANGES,
   isProtectThreat
 } from '../world/threatPolicy.js';
+import {
+  classifyOptionsFromBot,
+  isCombatWeaponName
+} from './utils/itemClassify.js';
 
-const WEAPON_NAME_RE = /sword|axe|trident|bow|crossbow|mace|spear/;
+/**
+ * 近接・遠隔の武器を「武装済み」と数える。弓とクロスボウを含めるのは
+ * 装備回収の判定に効くため。以前の正規表現は `axe` が `pickaxe` にも当たり、
+ * ツルハシを武器として数えていた。分類器はこれを道具として扱う。
+ * @param {import('mineflayer').Bot | null | undefined} bot
+ * @param {{ name?: string }|null|undefined} item
+ */
+function isWeaponItem(bot, item) {
+  return isCombatWeaponName(item?.name, classifyOptionsFromBot(bot));
+}
 
 /**
  * @param {import('./CompanionContext.js').CompanionContext} ctx
@@ -34,7 +47,7 @@ function resolveProtectRanges(ctx) {
 export function needsGearRecovery(bot) {
   try {
     const items = bot?.inventory?.items?.() || [];
-    return !items.some((item) => WEAPON_NAME_RE.test(String(item?.name || '')));
+    return !items.some((item) => isWeaponItem(bot, item));
   } catch {
     return false;
   }
@@ -42,7 +55,7 @@ export function needsGearRecovery(bot) {
 
 /** AutoEquipが使用可能な武器を手に装備できた場合だけ true。 */
 export function hasEssentialWeaponEquipped(bot) {
-  return WEAPON_NAME_RE.test(String(bot?.heldItem?.name || ''));
+  return isWeaponItem(bot, bot?.heldItem);
 }
 
 /**

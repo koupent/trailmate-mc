@@ -2,7 +2,12 @@
  * Equip better armor/weapons when inventory changes (e.g. player gave gear).
  */
 
-import { tierOf } from './itemRetention.js';
+import {
+    classifyItemName,
+    classifyOptionsFromBot,
+    ITEM_CATEGORY,
+    materialScore
+} from './itemClassify.js';
 
 export class AutoEquip {
     /**
@@ -80,28 +85,34 @@ export async function equipShield(bot) {
     if (shield) await bot.equip(shield, 'off-hand');
 }
 
-async function equipHighestAttack(bot) {
-    let weapons = bot.inventory.items().filter(
-        (item) => item.name.includes('sword') || (item.name.includes('axe') && !item.name.includes('pickaxe'))
+export async function equipHighestAttack(bot) {
+    const options = classifyOptionsFromBot(bot);
+    const categoryOf = (/** @type {{ name: string }} */ item) => (
+        classifyItemName(item.name, options)
     );
+    const tierOf = (/** @type {{ name: string }} */ item) => (
+        materialScore(item.name, categoryOf(item))
+    );
+
+    const items = bot.inventory.items();
+    let weapons = items.filter((item) => categoryOf(item) === ITEM_CATEGORY.weapon);
     if (weapons.length === 0) {
-        weapons = bot.inventory.items().filter(
-            (item) => item.name.includes('pickaxe') || item.name.includes('shovel')
-        );
+        // Nothing to fight with: a mining tool still swings harder than a fist.
+        weapons = items.filter((item) => categoryOf(item) === ITEM_CATEGORY.tool);
     }
     if (weapons.length === 0) return;
 
     weapons.sort((a, b) => {
         const dmg = (b.attackDamage || 0) - (a.attackDamage || 0);
         if (dmg !== 0) return dmg;
-        return tierOf(b.name) - tierOf(a.name);
+        return tierOf(b) - tierOf(a);
     });
 
     const best = weapons[0];
     const held = bot.heldItem;
     if (held && held.name === best.name) return;
     if (held && (held.attackDamage || 0) > (best.attackDamage || 0)) return;
-    if (held && tierOf(held.name) > tierOf(best.name)) return;
+    if (held && tierOf(held) > tierOf(best)) return;
 
     await bot.equip(best, 'hand');
     console.log(`[companion] equipped weapon: ${best.name}`);
