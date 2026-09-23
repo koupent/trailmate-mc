@@ -284,11 +284,34 @@ export function applySafeMovementFlags(movements, options = {}) {
     movements.allowParkour = options.allowParkour !== false;
     movements.allowSprinting = options.allowSprinting === true;
     movements.maxDropDown = options.maxDropDown ?? DEFAULT_SAFE_MAX_DROP_DOWN;
-    // Library typo: scafoldingBlocks. Empty = never place bridge/tower blocks.
+    // Library typo: scafoldingBlocks. Empty = no blocks to place.
     movements.scafoldingBlocks = [];
+    configureNoBlockPlacement(movements);
     configureDamageBlockAvoidance(movements);
     configureFarmlandJumpAvoidance(movements);
     configureDoorAwareMovements(movements);
+    return movements;
+}
+
+/**
+ * Keep A* from planning any move that places a block. Door and gate actions
+ * (`useOne`) stay, since opening a passage places nothing.
+ *
+ * An empty `scafoldingBlocks` alone does not do this. The library tracks the
+ * blocks left to place per node and only refuses a placement when that count
+ * is exactly 0 or 1, while a door action is subtracted from it too. One closed
+ * door on the way leaves the count at -1, and from there every bridge and
+ * tower passes the check: A* reports routes to owners that only building
+ * could reach. `getNeighbors` is the single place A* gets its moves from.
+ * @param {import('mineflayer-pathfinder').Movements} movements
+ */
+export function configureNoBlockPlacement(movements) {
+    if (movements._trailmateNoBlockPlacement) return movements;
+    movements._trailmateNoBlockPlacement = true;
+
+    const originalGetNeighbors = movements.getNeighbors.bind(movements);
+    movements.getNeighbors = (node) => originalGetNeighbors(node)
+        .filter((move) => !move.toPlace.some((action) => !action.useOne));
     return movements;
 }
 
