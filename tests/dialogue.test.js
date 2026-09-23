@@ -668,3 +668,51 @@ describe('capability notices', () => {
     }
   });
 });
+
+describe('eye-contact dialogue', () => {
+  function makeEyeContactDialogue() {
+    const said = [];
+    const ctx = {
+      ownerName: 'Alice',
+      itemTransfer: { active: false }
+    };
+    const agent = {
+      language: 'ja',
+      shut_up: false,
+      bot: { inventory: { slots: [] } },
+      companion: { ctx },
+      async openChat(text) { said.push(text); }
+    };
+    const manager = { getModeCatalog: () => [], interrupts: [] };
+    const dialogue = new CompanionDialogue(agent, manager, {
+      chat: {
+        min_interval_ms: 1000,
+        event_cooldown_ms: 5000
+      }
+    });
+    agent.companion.dialogue = dialogue;
+    return { agent, dialogue, said };
+  }
+
+  it('respects global and eye-contact cooldowns', async () => {
+    const { dialogue, said } = makeEyeContactDialogue();
+    const now = Date.now();
+
+    dialogue.lastChatAt = now;
+    assert.equal(await dialogue.speakEyeContact(), false);
+
+    dialogue.lastChatAt = 0;
+    dialogue.lastEventAt.eye_contact = now;
+    assert.equal(await dialogue.speakEyeContact(), false);
+    assert.equal(said.length, 0);
+  });
+
+  it('renders an eye-contact line with the owner name', async () => {
+    const { dialogue, said } = makeEyeContactDialogue();
+
+    assert.equal(await dialogue.speakEyeContact(), true);
+    assert.equal(said.length, 1);
+    assert.notEqual(said[0], 'eye_contact');
+    assert.equal(dialogue.lastEventAt.eye_contact > 0, true);
+  });
+});

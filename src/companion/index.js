@@ -25,6 +25,10 @@ import {
 import { attachOwnerWorkTracker } from './ownerWorkTracker.js';
 import { tCommand } from '../i18n/index.js';
 import { attachOwnerThreatTracker } from './ownerThreatTracker.js';
+import {
+    DEFAULT_EYE_CONTACT_CONFIG,
+    EyeContactReaction
+} from './eyeContact.js';
 
 const DEFAULT_CONFIG = {
     scan_radius: 48,
@@ -41,6 +45,7 @@ const DEFAULT_CONFIG = {
         all_players: true,
         fov_degrees: 100
     },
+    eye_contact: { ...DEFAULT_EYE_CONTACT_CONFIG },
     death_return: {
         enabled: true,
         arrive_range: 3,
@@ -135,6 +140,10 @@ export async function startCompanion(agent, companionConfig = {}) {
             ...DEFAULT_CONFIG.owner_work,
             ...(companionConfig.owner_work || {})
         },
+        eye_contact: {
+            ...DEFAULT_CONFIG.eye_contact,
+            ...(companionConfig.eye_contact || {})
+        },
         item_share: createChestTransferConfig(companionConfig.item_share)
     };
 
@@ -156,6 +165,10 @@ export async function startCompanion(agent, companionConfig = {}) {
     const manager = new CompanionOrchestrator(ctx, agent, interrupts, 'follow');
     const autoEquip = new AutoEquip(agent);
     const dialogue = new CompanionDialogue(agent, manager, config);
+    const eyeContact = new EyeContactReaction(config.eye_contact, {
+        manager,
+        dialogue
+    });
     const itemTransfer = new ChestItemTransfer(config.item_share, {
         manager,
         autoEquip,
@@ -169,6 +182,7 @@ export async function startCompanion(agent, companionConfig = {}) {
         orchestrator: manager,
         autoEquip,
         dialogue,
+        eyeContact,
         itemTransfer,
         _loopBusy: false
     };
@@ -188,6 +202,9 @@ export async function startCompanion(agent, companionConfig = {}) {
         try {
             // Single orchestrator: NestedStateMachine owns follow/wait/combat/duty.
             await manager.tick();
+            // Follow may stop pathfinder and clear control states during its tick.
+            // Apply the bow afterward so each sneak stage survives until the next tick.
+            await eyeContact.tick(ctx);
             await autoEquip.maybeRun(ctx);
             try {
                 // Pick an interrupted chest deposit back up once control returns.

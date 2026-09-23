@@ -341,6 +341,32 @@ export class CompanionDialogue {
     }
 
     /**
+     * Speak after an eye-contact bow, subject to the ordinary chat gates.
+     * @returns {Promise<boolean>} whether the line was spoken
+     */
+    async speakEyeContact() {
+        if (!this.enabled || this.agent.shut_up) return false;
+        if (this._actionBusy || this._isItemTransferActive()) return false;
+
+        const now = Date.now();
+        if (now - this.lastChatAt < this.config.min_interval_ms) return false;
+        if (now - this.lastPlayerChatAt < this.config.min_interval_ms) return false;
+        if (now - (this.lastEventAt.eye_contact || 0) < this.config.event_cooldown_ms) return false;
+
+        const owner = this.agent.companion?.ctx?.ownerName;
+        const message = renderCommentary(
+            this.agent.language || 'ja',
+            'eye_contact',
+            { owner }
+        );
+        if (!message) return false;
+
+        await this._say(message);
+        this.lastEventAt.eye_contact = now;
+        return true;
+    }
+
+    /**
      * Speak on behalf of another capability (chest transfer, ...). Capabilities
      * report outcomes that can repeat for as long as their cause lasts, so the
      * same key is held back until its cooldown passes.
