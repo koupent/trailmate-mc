@@ -24,6 +24,13 @@
     "boot_ready": "{name} trailmate ready"
   },
   "events": {
+    "eye_contact": [
+      "ん？どうしたの？",
+      "{owner}、なあに？",
+      "見てた？",
+      "呼んだ？",
+      "目が合ったね"
+    ],
     "idle_follow_near": [
       "オーナーまで{distance}m。のんびりついてくよ",
       "{owner}の後ろ、ふわっとついてくよ",

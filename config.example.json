@@ -17,6 +17,13 @@
       "all_players": true,
       "fov_degrees": 100
     },
+    "eye_contact": {
+      "enabled": true,
+      "max_distance": 8,
+      "dwell_ms": 500,
+      "cooldown_ms": 15000,
+      "chat_chance": 0.3
+    },
     "death_return": {
       "enabled": true,
       "arrive_range": 3,

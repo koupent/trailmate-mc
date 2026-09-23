@@ -85,6 +85,14 @@ export type OwnerWorkConfig = {
   fov_degrees: number;
 };
 
+export type EyeContactConfig = {
+  enabled: boolean;
+  max_distance: number;
+  dwell_ms: number;
+  cooldown_ms: number;
+  chat_chance: number;
+};
+
 /**
  * One retention category: how many stacks it keeps in total, and the per-item
  * exceptions inside that budget. `0` strikes an item off the list; an item that
@@ -139,6 +147,7 @@ export type CompanionConfig = {
   torch_light_threshold: number;
   awareness_radius: number;
   owner_work: OwnerWorkConfig;
+  eye_contact: EyeContactConfig;
   death_return: DeathReturnConfig;
   own_grave: OwnGraveConfig;
   nearby_loot: NearbyLootConfig;
@@ -172,6 +181,13 @@ const DEFAULT_COMPANION: CompanionConfig = {
     enabled: true,
     all_players: true,
     fov_degrees: 100
+  },
+  eye_contact: {
+    enabled: true,
+    max_distance: 8,
+    dwell_ms: 500,
+    cooldown_ms: 15000,
+    chat_chance: 0.3
   },
   death_return: {
     enabled: true,
@@ -289,6 +305,10 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.owner_work,
     ...(companionFile.owner_work || {})
   };
+  const eye_contact = {
+    ...DEFAULT_COMPANION.eye_contact,
+    ...(companionFile.eye_contact || {})
+  };
   const item_share = {
     ...DEFAULT_COMPANION.item_share,
     ...(companionFile.item_share || {})
@@ -311,6 +331,7 @@ export function loadConfig(): AppConfig {
       own_grave,
       nearby_loot,
       owner_work,
+      eye_contact,
       item_share
     }
   };
