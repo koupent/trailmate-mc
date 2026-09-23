@@ -141,6 +141,55 @@ describe('passage detection with the real MovementController', () => {
         harness.doors.dispose();
     });
 
+    it('does not close a gate it opened when the follow route that comes next is emptied', async () => {
+        const harness = makeHarness();
+        const { bot, doors } = harness;
+        // The owner stands on solid ground beyond the gate.
+        harness.setBlock('stone', { x: 0, y: 63, z: -6 }, {});
+        harness.setBlock('air', { x: 0, y: 64, z: -6 }, {}).boundingBox = 'empty';
+        harness.setBlock('air', { x: 0, y: 65, z: -6 }, {}).boundingBox = 'empty';
+        const owner = { id: 7, position: new Vec3(0.5, 64, -5.5) };
+        harness.movement.followEntity(owner, 1);
+
+        bot.emit('path_update', { status: 'success', path: crossingPath() });
+        await doors.tick();
+        assert.equal(doors.passageJob?.intent, 'open');
+
+        // Open it the way PassageTransitBehavior does, stop included.
+        harness.movement.stop();
+        assert.equal(doors.advancePassage().action, 'activate');
+        await doors.activatePassage();
+        harness.setBlock('oak_fence_gate', GATE_POS, { facing: 'north', open: true });
+        assert.equal(doors.advancePassage().action, 'done');
+        doors.finishPassage();
+
+        // Follow resumes and replans; A* reports partial first, which movement
+        // empties before the tracker ever sees it.
+        harness.movement.followEntity(owner, 1);
+        const partial = { status: 'partial', path: crossingPath().slice(0, 2) };
+        bot.emit('path_update', partial);
+        await doors.tick();
+
+        assert.equal(partial.path.length, 0, 'movement still refuses the partial route');
+        assert.equal(doors.passagePending, false, 'no close for a gate never walked through');
+        assert.deepEqual(doors.neededPassages, ['0,64,0']);
+
+        // A route that does walk through it, then the bot on the far side.
+        const route = crossingPath();
+        bot.emit('path_update', { status: 'success', path: route });
+        await doors.tick();
+        assert.equal(doors.passagePending, false);
+
+        bot.entity.position = new Vec3(0.5, 64, -1.5);
+        while (route.length && route[0].z + 0.5 >= -1.5) route.shift();
+        await doors.tick();
+
+        assert.equal(doors.passageJob?.intent, 'close');
+        assert.equal(doors.passageJob.reason, 'crossed');
+
+        doors.dispose();
+    });
+
     it('gives a route drawn from the closing stand point back to the tracker', async () => {
         const harness = makeHarness();
         harness.setBlock('oak_fence_gate', GATE_POS, { facing: 'north', open: true });

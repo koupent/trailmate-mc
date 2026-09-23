@@ -258,9 +258,10 @@ export class DoorTracker {
          */
         this._owed = new Map();
         /**
-         * The live remaining path. mineflayer-pathfinder shifts nodes off this
-         * very array as the bot walks it, so holding the reference keeps saying
-         * what is still ahead without anything here tracking progress.
+         * The live remaining path of the last route with any nodes in it.
+         * mineflayer-pathfinder shifts nodes off this very array as the bot
+         * walks it, so holding the reference keeps saying what is still ahead
+         * without anything here tracking progress.
          * @type {Array<any>}
          */
         this._route = [];
@@ -633,7 +634,8 @@ export class DoorTracker {
             openObserved,
             // The route that asked for this passage stopped on its near side, so
             // it cannot say whether the bot has been through yet. Hold the debt
-            // as needed until a route emitted after the open answers that.
+            // as needed until a route emitted after the open answers that; an
+            // empty path walks nowhere and is no answer.
             awaitingRoute: true,
             via: 'bot'
         });
@@ -750,11 +752,15 @@ export class DoorTracker {
     /**
      * Adopt a freshly planned route: it names every passage the bot has to get
      * through, and the array itself keeps reporting which ones are still ahead.
+     *
+     * A route is whatever pathfinder will actually walk, which is any path with
+     * at least one node, whatever its status: a noPath or timeout result still
+     * walks toward the nearest point it found. An empty path walks nowhere, so
+     * it says nothing about any passage and changes nothing here.
      * @param {{ status?: string, path?: Array<any> }} result
      */
     _handlePathUpdate(result) {
-        if (!Array.isArray(result?.path)) return;
-        if (result.status !== 'success' && result.status !== 'partial') return;
+        if (!Array.isArray(result?.path) || result.path.length === 0) return;
 
         this._routePlans = analyzePassageRoute(this.bot, result.path);
         this._removePathfinderPassageActions(result.path);
