@@ -513,6 +513,42 @@ describe('DoorTracker passage jobs', () => {
         assert.equal(tracker.trackedCount, 0, 'the debt is settled');
     });
 
+    it('keeps a gate it just opened needed across a route that walks nowhere', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        gateAt(gatePos);
+        emitRoute(2.5, -3, [gatePos]);
+        await tracker.tick();
+        await runStep();
+        setBlock('oak_fence_gate', gatePos, { facing: 'north', open: true });
+        assert.equal((await runStep()).action, 'done');
+
+        // MovementController empties a route it will not let the bot walk. An
+        // empty array says nothing about the gate, so the debt stays as it was.
+        for (const status of ['partial', 'success']) {
+            route = [];
+            bot.emit('path_update', { status, path: route });
+            await tracker.tick();
+
+            assert.deepEqual(tracker.neededPassages, ['0,64,0'], status);
+            assert.equal(tracker.passagePending, false, `${status}: not closed untraversed`);
+        }
+    });
+
+    it('takes on the passages of a noPath route it will still walk', async () => {
+        const gatePos = { x: 0, y: 64, z: 0 };
+        gateAt(gatePos);
+        // Pathfinder walks the nodes of a noPath or timeout result toward the
+        // nearest point it found, so its door actions are stripped like any other.
+        for (const status of ['noPath', 'timeout']) {
+            const path = emitRoute(2.5, -3, [gatePos], status);
+            await tracker.tick();
+
+            assert.deepEqual(path.find((node) => node.z === 0).toPlace, [], status);
+            assert.equal(tracker.passageJob?.intent, 'open', status);
+            assert.equal(tracker.passageJob.reason, 'needed', status);
+        }
+    });
+
     it('logs the completion of every open and close', async () => {
         const gatePos = { x: 0, y: 64, z: 0 };
         gateAt(gatePos);
