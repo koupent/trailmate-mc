@@ -275,7 +275,8 @@ function makePluginMovements(blocks) {
         },
         getMoveDiagonal: (node, dir, neighbors) => {
             neighbors.push({ x: node.x + dir.x, y: node.y, z: node.z + dir.z });
-        }
+        },
+        getNeighbors: () => []
     };
 }
 
