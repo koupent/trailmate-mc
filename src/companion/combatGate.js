@@ -14,6 +14,7 @@ import {
   DEFAULT_PROTECT_RANGES,
   isProtectThreat
 } from '../world/threatPolicy.js';
+import { hasLineOfSight } from '../world/lineOfSight.js';
 import {
   classifyOptionsFromBot,
   isCombatWeaponName
@@ -81,7 +82,9 @@ export function hasProtectThreats(ctx) {
   const ownerPos = ctx.ownerEntity?.position;
   const botPos = bot.entity.position;
   for (const entity of Object.values(bot.entities || {})) {
-    if (isProtectThreat(botPos, ownerPos, entity, ranges)) return true;
+    if (!isProtectThreat(botPos, ownerPos, entity, ranges)) continue;
+    // 壁の向こうの敵では戦闘へ入らない（Reflexes も視線なしでは新しく狙わない）。
+    if (hasLineOfSight(bot, entity)) return true;
   }
   return false;
 }

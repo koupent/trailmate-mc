@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { Reflexes } from '../src/reflexes/Reflexes.js';
 import { FollowMode } from '../src/companion/modes/FollowMode.js';
 import { WaitMode } from '../src/companion/modes/WaitMode.js';
+import { getActiveOwnerThreat } from '../src/companion/ownerThreatTracker.js';
 import { hasLineOfSight } from '../src/world/lineOfSight.js';
 import { computeThreatArc } from '../src/combat/threatArc.js';
 import {
@@ -340,6 +341,29 @@ describe('Reflexesの戦闘判断', () => {
     const stats = bot._stats();
     assert.equal(stats.attackCount, 0);
     assert.equal(stats.attackTarget, null);
+  });
+
+  it('オーナーを襲った敵が壁の向こうに残っても、被弾から時間が経てば狙い続けない', async () => {
+    // 洞窟でオーナーが殴られた後、襲撃者が岩の向こうに残り続けたケース。
+    const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
+    const owner = makeOwner('Alice', 1, 64, 0, skeleton);
+    const { bot, track } = makeBot({
+      blockedNames: ['skeleton'],
+      hostiles: [skeleton]
+    });
+    track(owner, skeleton);
+    const reflexes = new Reflexes(bot as any, CONFIG, 7);
+    const ctx = { bot, ownerThreat: { attackerId: skeleton.id, seenAt: Date.now() - 5000 } };
+
+    await reflexes.tick({
+      movementHeld: false,
+      isIdleish: true,
+      owner,
+      ownerThreat: getActiveOwnerThreat(ctx as any)
+    });
+
+    assert.equal(bot._stats().attackTarget, null);
+    assert.equal(reflexes.wantsCombat, false);
   });
 
   it('同じ位置にいる見える敵を攻撃する', async () => {

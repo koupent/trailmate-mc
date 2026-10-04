@@ -552,6 +552,7 @@ describe('NearbyLootInterrupt', () => {
             entities: {
                 1: { name: 'item', position: itemPos }
             },
+            world: { raycast: () => null },
             inventory: {
                 emptySlotCount: () => 1,
                 items: () => []
@@ -1047,6 +1048,7 @@ describe('recovery combat defer', () => {
             bot: {
                 entity: { position: new Vec3(0, 64, 0) },
                 entities: { 12: { type: 'hostile', name: 'zombie', position: new Vec3(3, 64, 0) } },
+                world: { raycast: () => null },
                 inventory: { items: () => [{ name: 'iron_sword' }] }
             },
             agent: { reflexes: {} },
@@ -1078,6 +1080,7 @@ describe('recovery combat defer', () => {
             bot: {
                 entity: { position: new Vec3(0, 64, 0) },
                 entities: { 12: { type: 'hostile', name: 'zombie', position: new Vec3(3, 64, 0) } },
+                world: { raycast: () => null },
                 inventory: { items: () => [{ name: 'iron_sword' }] }
             },
             agent: { reflexes: {} },

@@ -40,10 +40,8 @@ export function getActiveOwnerThreat(ctx, now = Date.now()) {
 
     const attacker = resolveThreatEntity(ctx.bot, threat.attackerId);
     if (attacker && isHostile(attacker)) {
-        // 襲撃者がまだ存在する間は優先度を維持する。
-        if (now - threat.seenAt > OWNER_THREAT_TTL_MS) {
-            threat.seenAt = now;
-        }
+        // 襲撃者がまだ存在する間は優先度を維持する。seenAt は被弾時刻のまま残す。
+        // 書き換えると Reflexes がオーナーの被弾直後と見なし続け、戦闘から抜けなくなる。
         return threat;
     }
 
