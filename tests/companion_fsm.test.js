@@ -4,6 +4,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { Vec3 } from 'vec3';
 import {
     dutyPending,
     passagePending,
@@ -56,6 +57,19 @@ describe('companion fsm transitions', () => {
         targets.ctx.agent.reflexes.wantsCombat = true;
         assert.equal(shouldEnterCombat(targets), true);
         assert.equal(shouldStayInCombat(targets), true);
+    });
+
+    it('does not enter combat for a hostile behind a wall', () => {
+        const targets = makeTargets();
+        const bot = targets.ctx.bot;
+        bot.entity.position = new Vec3(0, 64, 0);
+        bot.entities = { 12: { id: 12, type: 'hostile', name: 'zombie', position: new Vec3(3, 64, 0) } };
+
+        bot.world = { raycast: () => ({ name: 'stone' }) };
+        assert.equal(shouldEnterCombat(targets), false);
+
+        bot.world = { raycast: () => null };
+        assert.equal(shouldEnterCombat(targets), true);
     });
 
     it('shouldEnterDuty when duty pending and no combat', () => {
