@@ -2,6 +2,28 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import { FollowMode } from '../src/companion/modes/FollowMode.js';
+import { CropPlanter, createPlantingTree } from '../src/companion/planting/CropPlanter.js';
+import { runTree } from '../src/companion/behaviorTree/bt.js';
+
+/**
+ * Follow mode with planting, as the state machine runs them: the planting
+ * state while there is planting work, the follow tree otherwise.
+ */
+function followWithPlanting() {
+    const follow = new FollowMode();
+    const planter = new CropPlanter();
+    const planting = createPlantingTree(planter);
+    return {
+        async tick(ctx) {
+            if (planter.findWork(ctx)) {
+                follow.trackOwner(ctx);
+                await runTree(planting, ctx);
+            } else {
+                await follow.tick(ctx);
+            }
+        }
+    };
+}
 import {
     canPlaceUnderProtection,
     disableCompanionBlockProtection,
@@ -139,7 +161,7 @@ describe('follow crop planting', () => {
         try {
             for (const [itemName, cropName] of CROP_BY_ITEM) {
                 const world = makeCtx({ itemName });
-                await new FollowMode().tick(world.ctx);
+                await followWithPlanting().tick(world.ctx);
                 assert.equal(world.planted.length, 1, itemName);
                 assert.equal(world.equipped[0].selected.name, itemName);
                 assert.equal(world.equipped[0].destination, 'hand');
@@ -157,7 +179,7 @@ describe('follow crop planting', () => {
             farmland: [new Vec3(3, 63, 0), new Vec3(1, 63, 0), new Vec3(2, 63, 0)]
         });
 
-        await new FollowMode().tick(world.ctx);
+        await followWithPlanting().tick(world.ctx);
 
         assert.equal(world.planted.length, 1);
         assert.equal(world.item.count, 3);
@@ -168,7 +190,7 @@ describe('follow crop planting', () => {
     it('walks toward farmland outside placement range', async () => {
         const world = makeCtx({ farmland: [new Vec3(6, 63, 0)] });
 
-        await new FollowMode().tick(world.ctx);
+        await followWithPlanting().tick(world.ctx);
 
         assert.equal(world.planted.length, 0);
         assert.equal(world.calls.length, 1);
@@ -179,7 +201,7 @@ describe('follow crop planting', () => {
 
     it('completes approach then planting across consecutive follow ticks', async () => {
         const world = makeCtx({ farmland: [new Vec3(6, 63, 0)] });
-        const mode = new FollowMode();
+        const mode = followWithPlanting();
 
         await mode.tick(world.ctx);
         assert.equal(world.calls.at(-1).type, 'goToward');
@@ -195,7 +217,7 @@ describe('follow crop planting', () => {
 
     it('continues planting beyond owner_near_radius up to the planting owner limit', async () => {
         const world = makeCtx({ farmland: [new Vec3(6, 63, 0)] });
-        const mode = new FollowMode();
+        const mode = followWithPlanting();
 
         await mode.tick(world.ctx);
         world.ctx.ownerEntity.position = new Vec3(20, 64, 0);
@@ -207,35 +229,35 @@ describe('follow crop planting', () => {
 
     it('skips occupied or out-of-range farmland and does nothing without a supported item', async () => {
         const occupied = makeCtx({ occupied: ['1,64,0'] });
-        await new FollowMode().tick(occupied.ctx);
+        await followWithPlanting().tick(occupied.ctx);
         assert.equal(occupied.planted.length, 0);
 
         const outOfRange = makeCtx({ farmland: [new Vec3(17, 63, 0)] });
-        await new FollowMode().tick(outOfRange.ctx);
+        await followWithPlanting().tick(outOfRange.ctx);
         assert.equal(outOfRange.planted.length, 0);
         assert.equal(outOfRange.calls.some((call) => call.type === 'goToward'), false);
 
         const noSeed = makeCtx({ itemName: null });
-        await new FollowMode().tick(noSeed.ctx);
+        await followWithPlanting().tick(noSeed.ctx);
         assert.equal(noSeed.planted.length, 0);
         assert.equal(noSeed.findCalls, 0);
     });
 
     it('does not plant while the owner is far or a higher-priority action owns the bot', async () => {
         const ownerFar = makeCtx({ ownerPos: new Vec3(33, 64, 0) });
-        await new FollowMode().tick(ownerFar.ctx);
+        await followWithPlanting().tick(ownerFar.ctx);
         assert.equal(ownerFar.findCalls, 0);
 
         const combat = makeCtx({ fsmId: 'normal', reflexes: { wantsCombat: true } });
-        await new FollowMode().tick(combat.ctx);
+        await followWithPlanting().tick(combat.ctx);
         assert.equal(combat.findCalls, 0);
 
         const recovery = makeCtx({ fsmId: 'normal', recoveryActive: true });
-        await new FollowMode().tick(recovery.ctx);
+        await followWithPlanting().tick(recovery.ctx);
         assert.equal(recovery.findCalls, 0);
 
         const pickupPending = makeCtx({ dutyPending: true });
-        await new FollowMode().tick(pickupPending.ctx);
+        await followWithPlanting().tick(pickupPending.ctx);
         assert.equal(pickupPending.findCalls, 0);
     });
 
@@ -244,7 +266,7 @@ describe('follow crop planting', () => {
             ownerPos: new Vec3(0, 64, 0),
             farmland: [new Vec3(15, 63, 0), new Vec3(28, 63, 0)]
         });
-        const mode = new FollowMode();
+        const mode = followWithPlanting();
 
         await mode.tick(world.ctx);
         assert.equal(world.calls.at(-1).pos.x, 15);
@@ -267,7 +289,7 @@ describe('follow crop planting', () => {
             farmland: [new Vec3(15, 63, 0)]
         });
 
-        await new FollowMode().tick(world.ctx);
+        await followWithPlanting().tick(world.ctx);
 
         assert.equal(world.findCalls, 1);
         assert.equal(world.planted.length, 0);
@@ -285,7 +307,7 @@ describe('follow crop planting', () => {
             world.ctx.ownerEntity.position = new Vec3(-32, 64, 0);
         };
 
-        await new FollowMode().tick(world.ctx);
+        await followWithPlanting().tick(world.ctx);
 
         assert.equal(world.equipped.length, 1);
         assert.equal(world.planted.length, 0);
@@ -296,7 +318,7 @@ describe('follow crop planting', () => {
             ownerPos: new Vec3(10, 64, 0),
             farmland: [new Vec3(15, 63, 0)]
         });
-        const mode = new FollowMode();
+        const mode = followWithPlanting();
 
         await mode.tick(world.ctx);
         assert.equal(world.calls.at(-1).pos.x, 15);
@@ -322,7 +344,7 @@ describe('follow crop planting', () => {
         const world = makeCtx({
             farmland: [new Vec3(6, 63, 0), new Vec3(7, 63, 0)]
         });
-        const mode = new FollowMode();
+        const mode = followWithPlanting();
 
         await mode.tick(world.ctx);
         assert.equal(world.calls.at(-1).pos.x, 6);
@@ -338,7 +360,7 @@ describe('follow crop planting', () => {
             ownerPos: new Vec3(10, 64, 0),
             placeError: true
         });
-        const mode = new FollowMode();
+        const mode = followWithPlanting();
 
         await assert.doesNotReject(() => mode.tick(world.ctx));
         await mode.tick(world.ctx);

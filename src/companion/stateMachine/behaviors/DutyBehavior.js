@@ -6,27 +6,31 @@ import {
     selector,
     sequence
 } from '../../behaviorTree/bt.js';
+import { refreshDutyPending } from '../transitions.js';
 
 /** Dashboard names for the interrupts; unknown ones show their raw name. */
 const INTERRUPT_LABELS = {
-    nearby_loot: '近くのアイテム回収',
-    own_grave: '自分の墓を回収',
-    death_return: '死亡地点から戻る',
-    recovery: 'スタックから復帰'
+    nearby_loot: '落ちているアイテムを拾いに行く',
+    own_grave: '墓から装備を回収',
+    death_return: '死亡地点へ戻る',
+    recovery: '穴や詰まりから抜け出す'
 };
 
 /**
- * Runs the first matching interrupt (NearbyLoot / Grave / DeathReturn / Recovery).
+ * One kind of interrupt work (item pickup, death recovery, getting unstuck).
+ * Runs the first of its interrupts that still needs to run.
  */
 export class DutyBehavior extends AsyncTickBehavior {
     /**
      * @param {object} targets
+     * @param {{ id: string, label: string, interrupts: Array<{ name: string, shouldRun: Function, run: Function }> }} spec
      */
-    constructor(targets) {
-        super('duty');
+    constructor(targets, spec) {
+        super(spec.id);
         this.targets = targets;
+        this.interrupts = spec.interrupts;
 
-        this.tree = sequence('割り込み作業', [
+        this.tree = sequence(spec.label, [
             selector('死亡復帰中の自衛', [
                 sequence('復帰中なら最低限の自衛', [
                     condition('死亡からの復帰中', (ctx) => Boolean(ctx.deathRecovery?.active)),
@@ -35,7 +39,7 @@ export class DutyBehavior extends AsyncTickBehavior {
                 condition('自衛は不要', () => true)
             ]),
             selector('優先順に1つ実行', [
-                ...targets.interrupts.map((interrupt) => sequence(
+                ...spec.interrupts.map((interrupt) => sequence(
                     INTERRUPT_LABELS[interrupt.name] || interrupt.name,
                     [
                         // refreshDutyFlags の結果を優先し、実行直前に再判定して陳腐化を防ぐ。
@@ -51,9 +55,9 @@ export class DutyBehavior extends AsyncTickBehavior {
                         })
                     ]
                 )),
-                // shouldRun が実行前に false になった場合、同 tick で duty を抜ける。
+                // shouldRun が実行前に false になった場合、同 tick で抜けられるようにする。
                 action('やることがなければ終える', () => {
-                    targets._dutyPending = false;
+                    refreshDutyPending(targets);
                     return true;
                 })
             ])
@@ -62,7 +66,7 @@ export class DutyBehavior extends AsyncTickBehavior {
 
     onStateEntered() {
         super.onStateEntered();
-        this.targets.activeId = 'duty';
+        this.targets.activeId = this.stateName;
     }
 
     async runTick() {

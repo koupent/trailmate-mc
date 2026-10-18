@@ -165,10 +165,75 @@ describe('companion fsm transitions', () => {
             'wait:enter',
             'wait:tick'
         ]);
-        const branches = Object.fromEntries(
-            states.normal.tree.children.map((branch) => [branch.mode, branch.status])
-        );
-        assert.deepEqual(branches, { follow: 'failure', wait: 'success' });
+        // The normal state shows and runs only the selected mode's tree.
+        assert.equal(states.normal.tree.mode, 'wait');
+        assert.equal(states.normal.tree.status, 'success');
+    });
+
+    it('routes interrupt work to the state of the first pending interrupt', async () => {
+        const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
+        const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
+        const base = makeTargets().ctx;
+        const loot = { name: 'nearby_loot', _lastShouldRun: false };
+        const grave = { name: 'own_grave', _lastShouldRun: false };
+        const stuck = { name: 'recovery', _lastShouldRun: false };
+        const targets = createCompanionTargets({
+            ctx: base,
+            agent: base.agent,
+            followMode: fakeMode('follow'),
+            waitMode: fakeMode('wait'),
+            interrupts: [loot, grave, stuck]
+        });
+        const { root, states } = createRootMachine(targets);
+        root.active = true;
+        root.onStateEntered();
+
+        stuck._lastShouldRun = true;
+        targets._dutyPending = true;
+        root.update();
+        assert.equal(root.activeState, states.stuck_recovery);
+
+        grave._lastShouldRun = true;
+        root.update();
+        assert.equal(root.activeState, states.death_recovery, 'an earlier-listed interrupt takes over');
+
+        grave._lastShouldRun = false;
+        stuck._lastShouldRun = false;
+        targets._dutyPending = false;
+        root.update();
+        assert.equal(root.activeState, states.normal);
+    });
+
+    it('plants only in follow mode, below every other job', async () => {
+        const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
+        const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
+        const base = makeTargets().ctx;
+        const planter = { work: { key: '1,63,0' }, release() {} };
+        const targets = createCompanionTargets({
+            ctx: base,
+            agent: base.agent,
+            followMode: fakeMode('follow'),
+            waitMode: fakeMode('wait'),
+            interrupts: [],
+            planter
+        });
+        const { root, states } = createRootMachine(targets);
+        root.active = true;
+        root.onStateEntered();
+
+        root.update();
+        assert.equal(root.activeState, states.planting);
+
+        base.agent.reflexes.wantsCombat = true;
+        root.update();
+        assert.equal(root.activeState, states.combat);
+        base.agent.reflexes.wantsCombat = false;
+        root.update();
+        assert.equal(root.activeState, states.normal);
+
+        targets.preferredMode = 'wait';
+        root.update();
+        assert.equal(root.activeState, states.normal, 'wait mode never plants');
     });
 
     it('a switch made during combat takes effect on return to normal', async () => {

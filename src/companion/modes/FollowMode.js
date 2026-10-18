@@ -1,7 +1,7 @@
 import { Mode } from '../Mode.js';
 import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
 import { applyOwnerWorkRetreat } from '../ownerWorkMovement.js';
-import { currentControlOwner, yieldsOutsideMachine } from '../ControlPriority.js';
+import { yieldsOutsideMachine } from '../ControlPriority.js';
 import {
     FOLLOW_GOAL_RANGE,
     LAST_KNOWN_ARRIVE_RANGE
@@ -10,26 +10,7 @@ import { resolveFollowPhase } from '../movement/followPhase.js';
 import { ColumnClimber } from '../movement/climbColumn.js';
 import { wouldPathPassNearPlayer } from '../movement/playerPathClearance.js';
 import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
-import { canPlaceUnderProtection } from '../blockProtection.js';
-import { Vec3 } from 'vec3';
 import { action, condition, FAILURE, runTree, selector, sequence } from '../behaviorTree/bt.js';
-
-const CROP_SEARCH_RADIUS = 16;
-const CROP_OWNER_MAX_DISTANCE = 32;
-const CROP_PLACE_DISTANCE = 4;
-const CROP_APPROACH_RANGE = 2;
-const UNREACHABLE_CROP_RETRY_MS = 5000;
-
-const CROP_BY_ITEM = new Map([
-    ['wheat_seeds', 'wheat'],
-    ['beetroot_seeds', 'beetroots'],
-    ['pumpkin_seeds', 'pumpkin_stem'],
-    ['melon_seeds', 'melon_stem'],
-    ['torchflower_seeds', 'torchflower_crop'],
-    ['pitcher_pod', 'pitcher_crop'],
-    ['carrot', 'carrots'],
-    ['potato', 'potatoes']
-]);
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -53,14 +34,9 @@ export class FollowMode extends Mode {
         this._lastOwnerDim = null;
         /** True after reaching last-known pos while owner is still missing. */
         this._waitingAtLastKnown = false;
-        /** @type {string|null} */
-        this._plantingTargetKey = null;
-        /** @type {Map<string, number>} */
-        this._unreachableFarmlandUntil = new Map();
         /** Manual ladder / vine climb; pathfinder never moves vertically here. */
         this._climb = new ColumnClimber();
         this._climbConsulted = false;
-        this._keepPlantingTarget = false;
         this.tree = this._buildTree();
     }
 
@@ -69,7 +45,6 @@ export class FollowMode extends Mode {
     }
 
     async onExit(ctx) {
-        this._plantingTargetKey = null;
         this._climb.release(ctx);
         // FSM では combat/duty へ一瞬でも遷移するたびに呼ばれる。
         // ここで stop すると追従ゴールが毎回消え、棒立ち・duty 往復の原因になる。
@@ -85,7 +60,6 @@ export class FollowMode extends Mode {
      */
     async tick(ctx) {
         this._climbConsulted = false;
-        this._keepPlantingTarget = false;
         try {
             ctx.movement.tickHoldWatchdog();
             if (yieldsOutsideMachine(ctx, 'follow')) {
@@ -95,8 +69,6 @@ export class FollowMode extends Mode {
             }
             return await runTree(this.tree, ctx);
         } finally {
-            // Only a tick that is still walking to farmland keeps its target.
-            if (!this._keepPlantingTarget) this._plantingTargetKey = null;
             // Every branch that ends before the climb node — the owner
             // disappearing, a pickup, a boat — must let go of forward.
             if (!this._climbConsulted) this._climb.release(ctx);
@@ -137,15 +109,7 @@ export class FollowMode extends Mode {
                     // Skip follow only while a climb hold is still making progress.
                     condition('登り動作を続けている', (ctx) => Boolean(ctx.movement.isHeld)),
                     action('作業中のプレイヤーから離れる', (ctx) => Boolean(applyOwnerWorkRetreat(ctx))),
-                    action('落ちているアイテムを拾う', (ctx) => Boolean(tryOpportunisticCollect(ctx))),
-                    sequence('作物を植える', [
-                        condition('割り込み待ちがなくオーナーが近い', (ctx) => this._canPlant(ctx)),
-                        action('空いた畑に種を植える', async (ctx) => {
-                            const acted = await this._tryPlantNearbyCrop(ctx);
-                            if (acted) this._keepPlantingTarget = true;
-                            return acted;
-                        })
-                    ]),
+                    action('手が届くアイテムを拾う（歩かない）', (ctx) => Boolean(tryOpportunisticCollect(ctx))),
                     // A* plans no usable upward move over vines, so the wall is
                     // climbed by hand. The climb owns the walk into the column
                     // as well, and holds the tick for it.
@@ -172,81 +136,13 @@ export class FollowMode extends Mode {
         ]);
     }
 
-    /** @param {import('../CompanionContext.js').CompanionContext} ctx */
-    _canPlant(ctx) {
-        const dutyPending = Boolean(
-            ctx.agent?.companion?.manager?.targets?._dutyPending
-        );
-        return !dutyPending
-            && currentControlOwner(ctx, 'follow') === 'follow'
-            && ctx.bot.entity.position.distanceTo(ctx.ownerEntity.position) <= CROP_OWNER_MAX_DISTANCE;
-    }
-
     /**
-     * Plant at most one crop, or reserve this tick while approaching farmland.
+     * Keep the last-known owner position current while another follow-mode
+     * job (planting) owns the tick, so losing the owner then still leads back.
      * @param {import('../CompanionContext.js').CompanionContext} ctx
-     * @returns {Promise<boolean>}
      */
-    async _tryPlantNearbyCrop(ctx) {
-        const bot = ctx.bot;
-        const item = findPlantableItem(bot);
-        if (!item || typeof bot.findBlock !== 'function') return false;
-
-        const now = Date.now();
-        for (const [key, until] of this._unreachableFarmlandUntil) {
-            if (until <= now) this._unreachableFarmlandUntil.delete(key);
-        }
-
-        if (this._plantingTargetKey && plantingRouteFailed(ctx.movement)) {
-            this._unreachableFarmlandUntil.set(
-                this._plantingTargetKey,
-                now + UNREACHABLE_CROP_RETRY_MS
-            );
-            this._plantingTargetKey = null;
-        }
-
-        const farmland = findNearestEmptyFarmland(
-            bot,
-            this._unreachableFarmlandUntil,
-            now,
-            ctx.ownerEntity.position
-        );
-        if (!farmland) return false;
-
-        const cropName = CROP_BY_ITEM.get(item.name);
-        if (!canPlaceUnderProtection(cropName)) return false;
-
-        const key = blockKey(farmland.position);
-        const cropPosition = farmland.position.offset(0, 1, 0);
-        if (bot.entity.position.distanceTo(cropPosition) > CROP_PLACE_DISTANCE) {
-            this._plantingTargetKey = key;
-            ctx.movement.goToward(cropPosition, CROP_APPROACH_RANGE);
-            return true;
-        }
-
-        this._plantingTargetKey = null;
-        ctx.movement.stop();
-        try {
-            await bot.equip(item, 'hand');
-            const currentFarmland = bot.blockAt(farmland.position);
-            const currentCrop = bot.blockAt(cropPosition);
-            const owner = ctx.ownerEntity;
-            if (currentFarmland?.name !== 'farmland'
-                || currentCrop?.name !== 'air'
-                || !owner
-                || bot.entity.position.distanceTo(owner.position) > CROP_OWNER_MAX_DISTANCE
-                || farmland.position.distanceTo(owner.position) > CROP_OWNER_MAX_DISTANCE
-                || currentControlOwner(ctx, 'follow') !== 'follow') {
-                return false;
-            }
-            await bot.placeBlock(currentFarmland, new Vec3(0, 1, 0));
-        } catch {
-            this._unreachableFarmlandUntil.set(
-                key,
-                Date.now() + UNREACHABLE_CROP_RETRY_MS
-            );
-        }
-        return true;
+    trackOwner(ctx) {
+        if (ctx.ownerEntity) this._rememberOwner(ctx, ctx.ownerEntity);
     }
 
     /**
@@ -316,39 +212,4 @@ export class FollowMode extends Mode {
  */
 function createPushGuard(ctx) {
     return (target) => () => wouldPathPassNearPlayer(ctx, target);
-}
-
-function findPlantableItem(bot) {
-    try {
-        return bot.inventory?.items?.().find((item) => CROP_BY_ITEM.has(item.name)) || null;
-    } catch {
-        return null;
-    }
-}
-
-function findNearestEmptyFarmland(bot, excludedUntil, now, ownerPosition) {
-    try {
-        return bot.findBlock({
-            matching: (block) => block?.name === 'farmland',
-            maxDistance: CROP_SEARCH_RADIUS,
-            useExtraInfo: (block) => {
-                if (bot.entity.position.distanceTo(block.position) > CROP_SEARCH_RADIUS) return false;
-                if (block.position.distanceTo(ownerPosition) > CROP_OWNER_MAX_DISTANCE) return false;
-                if ((excludedUntil.get(blockKey(block.position)) || 0) > now) return false;
-                return bot.blockAt(block.position.offset(0, 1, 0))?.name === 'air';
-            }
-        });
-    } catch {
-        return null;
-    }
-}
-
-function plantingRouteFailed(movement) {
-    return movement?.isBlocked
-        || movement?.isUnreachable
-        || movement?.status === 'partial';
-}
-
-function blockKey(pos) {
-    return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
 }

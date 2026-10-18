@@ -594,7 +594,23 @@ button.small { padding: 2px 10px; font-size: 13px; }
 .fsm-node:hover rect,
 .fsm-node:focus-visible rect { stroke: var(--primary); }
 .fsm-node.is-active rect { fill: var(--primary); stroke: var(--primary); }
-.fsm-node.is-selected rect { stroke: var(--orange); stroke-width: 2.4; stroke-dasharray: none; }
+.fsm-node.is-selected rect { stroke: var(--ink-secondary); stroke-width: 2.4; stroke-dasharray: none; }
+
+.fsm-node.is-safety rect { stroke: var(--orange); }
+.fsm-node.is-safety.is-active rect { fill: var(--orange); stroke: var(--orange); }
+.fsm-any rect { fill: var(--canvas-soft); stroke: #c9c4be; }
+.fsm-any .fsm-label { font-size: 12px; }
+
+.fsm-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.fsm-mode:empty { display: none; }
+.fsm-mode-label { margin-right: 4px; font-size: 13px; font-weight: 700; }
+.fsm-mode-label small { font-weight: 400; color: var(--ink-muted); }
 
 .fsm-bt {
   text-anchor: end;
@@ -602,7 +618,23 @@ button.small { padding: 2px 10px; font-size: 13px; }
   font-weight: 700;
   fill: var(--ink-faint);
 }
-.fsm-node.is-active .fsm-bt { fill: rgba(255, 255, 255, 0.8); }
+.fsm-node.is-active .fsm-node.is-safety rect { stroke: var(--orange); }
+.fsm-node.is-safety.is-active rect { fill: var(--orange); stroke: var(--orange); }
+.fsm-any rect { fill: var(--canvas-soft); stroke: #c9c4be; }
+.fsm-any .fsm-label { font-size: 12px; }
+
+.fsm-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.fsm-mode:empty { display: none; }
+.fsm-mode-label { margin-right: 4px; font-size: 13px; font-weight: 700; }
+.fsm-mode-label small { font-weight: 400; color: var(--ink-muted); }
+
+.fsm-bt { fill: rgba(255, 255, 255, 0.8); }
 
 .fsm-label {
   text-anchor: middle;
@@ -642,7 +674,8 @@ button.small { padding: 2px 10px; font-size: 13px; }
 
 .swatch-auto { border-style: dashed; border-color: #bdb8b2; }
 .swatch-active { background: var(--primary); border-color: var(--primary); }
-.swatch-selected { border-color: var(--orange); border-width: 2px; }
+.swatch-selected { border-color: var(--ink-secondary); border-width: 2px; }
+.swatch-safety { border-color: var(--orange); }
 
 /* ===== behavior tree ===== */
 .bt-legend {

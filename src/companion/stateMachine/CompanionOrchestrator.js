@@ -11,6 +11,7 @@ import { prepareCompanionWorldTick } from './prepareTick.js';
 import { startPassageUpkeep, syncPassageTransit } from './passageUpkeep.js';
 import { refreshDutyFlags, shouldEnterPassageTransit } from './transitions.js';
 import { describeTree } from '../behaviorTree/bt.js';
+import { CropPlanter } from '../planting/CropPlanter.js';
 
 /** Recent transitions kept for the dashboard timeline. */
 const HISTORY_LIMIT = 12;
@@ -41,7 +42,8 @@ export class CompanionOrchestrator {
             agent,
             followMode: this.followMode,
             waitMode: this.waitMode,
-            interrupts: this.interrupts
+            interrupts: this.interrupts,
+            planter: new CropPlanter()
         });
         // Long-running normal actions use one common cooperative-yield signal.
         ctx.shouldYieldNormalAction = () => shouldEnterPassageTransit(this.targets);
@@ -50,6 +52,7 @@ export class CompanionOrchestrator {
         const built = createRootMachine(this.targets);
         this.root = built.root;
         this.fsmStates = built.states;
+        this.safetyStates = built.safetyStates;
         this.root.active = true;
         this.root.onStateEntered();
         /** @type {Array<{ kind: 'state'|'mode', name: string, from: string, to: string, at: number }>} newest last */
@@ -83,7 +86,8 @@ export class CompanionOrchestrator {
     }
 
     /**
-     * Active NestedStateMachine leaf id (normal|combat|passage_transit|duty).
+     * Active state id: normal | planting | combat | passage_transit | loot |
+     * death_recovery | stuck_recovery | hazard_escape | boat_passenger | item_transfer.
      */
     getActiveFsmId() {
         return this.targets.activeId;
@@ -94,24 +98,32 @@ export class CompanionOrchestrator {
      * from the live transitions so added or removed states show up as-is.
      */
     describeFsm() {
+        const all = [...this.safetyStates, ...Object.values(this.fsmStates)];
         return {
             active: this.targets.activeId,
             preferredMode: this.targets.preferredMode,
             modes: [...this.modes.keys()],
-            states: Object.values(this.fsmStates).map((state) => state.stateName),
-            transitions: (this.root.transitions || []).map((transition) => ({
-                name: transition.name,
-                from: transition.parentState?.stateName,
-                to: transition.childState?.stateName
-            })),
+            states: all.map((state) => state.stateName),
+            // Safety states are entered from any state and return to normal.
+            safetyStates: this.safetyStates.map((state) => state.stateName),
+            transitions: [
+                ...this.safetyStates.flatMap((state) => [
+                    { name: `any_to_${state.stateName}`, from: 'any', to: state.stateName },
+                    { name: `${state.stateName}_to_normal`, from: state.stateName, to: 'normal' }
+                ]),
+                ...(this.root.transitions || []).map((transition) => ({
+                    name: transition.name,
+                    from: transition.parentState?.stateName,
+                    to: transition.childState?.stateName
+                }))
+            ],
             duties: this.interrupts.map((interrupt) => ({
                 name: interrupt.name,
                 pending: interrupt._lastShouldRun === true
             })),
             // Each state's behavior tree with the result of its last tick.
-            trees: Object.fromEntries(
-                Object.values(this.fsmStates).map((state) => [state.stateName, describeTree(state.tree)])
-            ),
+            // The normal state shows the tree of the selected mode only.
+            trees: Object.fromEntries(all.map((state) => [state.stateName, describeTree(state.tree)])),
             history: this.transitionHistory
         };
     }
@@ -142,17 +154,23 @@ export class CompanionOrchestrator {
         if (this._busy) return;
         this._busy = true;
         try {
-            // Environmental damage can happen in every FSM state, including
-            // wait and paused item-transfer work. Safety owns this tick until
-            // the bot reaches a clear standable position.
-            if (this.ctx.hazardEscape?.tick?.()) return;
-            // A second-seat passenger must not issue pathfinder, combat, or
-            // vehicle inputs. Invalid seat ownership requests a clean dismount.
-            if (this.ctx.boatPassenger?.maintain?.(this.ctx.ownerEntity)) return;
-            if (this.targets.paused) return;
+            // Safety states can take over from any state, in every tick:
+            // environmental damage, riding as a passenger, an item hand-over.
+            // The first that claims the tick owns it.
+            for (const state of this.safetyStates) {
+                if (await state.claim()) {
+                    this._switchTo(state, `any_to_${state.stateName}`);
+                    return;
+                }
+            }
+            if (this.safetyStates.includes(this.root.activeState)) {
+                this._switchTo(this.fsmStates.normal, `${this.root.activeState.stateName}_to_normal`);
+            }
+
             await prepareCompanionWorldTick(this.ctx);
             await refreshDutyFlags(this.targets);
             syncPassageTransit(this.ctx, this.targets);
+            this._refreshPlanting();
 
             // A requested passage must take control before another
             // normal-state tick walks away from the door. Also let safety work
@@ -194,6 +212,35 @@ export class CompanionOrchestrator {
         if (this.transitionHistory.length > HISTORY_LIMIT) this.transitionHistory.shift();
     }
 
+    /** Planting work is looked up once per tick, only where it can matter. */
+    _refreshPlanting() {
+        const { targets } = this;
+        if (targets.preferredMode === 'follow'
+            && (targets.activeId === 'normal' || targets.activeId === 'planting')) {
+            targets.planter.findWork(this.ctx);
+        } else {
+            targets.planter.work = null;
+        }
+    }
+
+    /**
+     * Move to `next`, recording the change for the dashboard.
+     * @param {object} next
+     * @param {string} name
+     */
+    _switchTo(next, name) {
+        const nested = this.root;
+        const current = nested.activeState;
+        if (current === next) return;
+        this._recordHistory({ kind: 'state', name, from: current.stateName, to: next.stateName });
+        current.active = false;
+        current.onStateExited?.();
+        nested.activeState = next;
+        next.active = true;
+        next.onStateEntered?.();
+        nested.emit?.('stateChanged');
+    }
+
     /**
      * NestedStateMachine.update() runs behavior then transitions without awaiting.
      * We await runTick ourselves, then only evaluate transitions here.
@@ -206,19 +253,8 @@ export class CompanionOrchestrator {
             if (transition.parentState !== nested.activeState) continue;
             if (!(transition.isTriggered() || transition.shouldTransition())) continue;
             transition.resetTrigger();
-            this._recordHistory({
-                kind: 'state',
-                name: transition.name,
-                from: nested.activeState.stateName,
-                to: transition.childState.stateName
-            });
-            nested.activeState.active = false;
-            nested.activeState.onStateExited?.();
             transition.onTransition();
-            nested.activeState = transition.childState;
-            nested.activeState.active = true;
-            nested.activeState.onStateEntered?.();
-            nested.emit?.('stateChanged');
+            this._switchTo(transition.childState, transition.name);
             return;
         }
     }

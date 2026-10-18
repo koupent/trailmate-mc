@@ -2,17 +2,15 @@ import { AsyncTickBehavior } from './AsyncTickBehavior.js';
 import { maybePlaceSupportTorch } from '../torchSupport.js';
 import {
     action,
-    condition,
     runTree,
-    selector,
     sequence,
     subtree
 } from '../../behaviorTree/bt.js';
 
 /**
  * Normal state: nothing urgent owns the bot, so it does what the
- * player-selected mode asks. The mode is a setting, not a state — switching
- * it only changes which branch of this tree runs.
+ * player-selected mode asks. The mode is a setting above the state machine —
+ * switching it swaps the tree this state runs, not the state.
  */
 export class NormalBehavior extends AsyncTickBehavior {
     /** @param {object} targets */
@@ -23,9 +21,10 @@ export class NormalBehavior extends AsyncTickBehavior {
         this._mode = null;
 
         const { followMode, waitMode } = targets;
-        this.tree = selector('モードで分岐', [
-            sequence('追従モード時の動作', [
-                condition('モードが追従', () => this._mode === 'follow'),
+        // One tree per mode. The mode is chosen above the state machine, so
+        // the normal state simply runs (and shows) the tree of that mode.
+        this.trees = {
+            follow: sequence('追従モードの平常時', [
                 subtree('オーナーについていく', followMode.tree, (ctx) => followMode.tick(ctx)),
                 action('暗ければ松明を置く', async (ctx) => {
                     try {
@@ -36,11 +35,13 @@ export class NormalBehavior extends AsyncTickBehavior {
                     return true;
                 })
             ], { mode: 'follow' }),
-            sequence('待機モード時の動作', [
-                condition('モードが待機', () => this._mode === 'wait'),
-                subtree('その場で待つ', waitMode.tree, (ctx) => waitMode.tick(ctx))
-            ], { mode: 'wait' })
-        ]);
+            wait: subtree('待機モードの平常時', waitMode.tree, (ctx) => waitMode.tick(ctx), { mode: 'wait' })
+        };
+    }
+
+    /** The tree of the mode the player has selected (what the dashboard shows). */
+    get tree() {
+        return this.trees[this.targets.preferredMode === 'wait' ? 'wait' : 'follow'];
     }
 
     onStateEntered() {
@@ -63,7 +64,7 @@ export class NormalBehavior extends AsyncTickBehavior {
             this._exitMode();
             this._enterMode(targets.preferredMode);
         }
-        await runTree(this.tree, targets.ctx);
+        await runTree(this.trees[this._mode], targets.ctx);
     }
 
     /** @param {'follow'|'wait'} modeId */

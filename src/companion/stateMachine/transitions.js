@@ -11,6 +11,40 @@ import {
 import { findOwnGravesNear } from '../../world/graves.js';
 
 /**
+ * Interrupt work grouped into states. Interrupts listed earlier in
+ * `targets.interrupts` still win, whichever state they belong to.
+ */
+export const DUTY_STATES = [
+    { id: 'loot', label: 'アイテム回収', interrupts: ['nearby_loot'] },
+    { id: 'death_recovery', label: '死亡からの復帰', interrupts: ['own_grave', 'death_return'] },
+    { id: 'stuck_recovery', label: 'スタック復帰', interrupts: ['recovery'] }
+];
+
+export const DUTY_STATE_IDS = new Set(DUTY_STATES.map((state) => state.id));
+
+/** @param {string} interruptName */
+export function dutyStateOf(interruptName) {
+    return DUTY_STATES.find((state) => state.interrupts.includes(interruptName))?.id ?? null;
+}
+
+/**
+ * The duty state the first pending interrupt belongs to.
+ * @param {object} targets
+ * @returns {string|null}
+ */
+export function pendingDutyState(targets) {
+    const next = (targets.interrupts || []).find((interrupt) => interrupt._lastShouldRun === true);
+    return next ? dutyStateOf(next.name) : null;
+}
+
+/** Recompute the pending flag after an interrupt turned out to be stale. */
+export function refreshDutyPending(targets) {
+    targets._dutyPending = (targets.interrupts || []).some(
+        (interrupt) => interrupt._lastShouldRun === true
+    );
+}
+
+/**
  * @param {object} targets
  */
 export function anyDutyShouldRun(targets) {

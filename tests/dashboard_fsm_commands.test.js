@@ -35,6 +35,25 @@ describe('dashboard state machine diagram', () => {
     assert.equal(svg.match(/class="fsm-bt"/g).length, 1, 'only states with a tree get the BT mark');
   });
 
+  it('puts safety states in a row with the "from any state" marker', () => {
+    const svg = renderFsmSvg(
+      {
+        active: 'hazard_escape',
+        states: ['hazard_escape', 'normal', 'combat'],
+        safetyStates: ['hazard_escape'],
+        transitions: [
+          { name: 'any_to_hazard_escape', from: 'any', to: 'hazard_escape' },
+          { name: 'hazard_escape_to_normal', from: 'hazard_escape', to: 'normal' },
+          { name: 'normal_to_combat', from: 'normal', to: 'combat' }
+        ]
+      },
+      text
+    );
+    assert.match(svg, /class="fsm-any"/);
+    assert.match(svg, /class="fsm-node is-safety is-active" data-state="hazard_escape"/);
+    assert.equal(svg.match(/<path class="fsm-edge/g).length, 3);
+  });
+
   it('follows a state that the diagram has never heard of', () => {
     const states = ['normal', 'combat', 'duty', 'passage_transit', 'mining'];
     assert.equal(layoutNodes(states).size, 5);
@@ -96,14 +115,28 @@ describe('orchestrator describes its live machine', () => {
     assert.equal(fsm.active, 'normal');
     assert.equal(fsm.preferredMode, 'wait');
     assert.deepEqual(fsm.modes, ['follow', 'wait']);
-    assert.deepEqual([...fsm.states].sort(), ['combat', 'duty', 'normal', 'passage_transit']);
-    assert.ok(fsm.transitions.every((t) => fsm.states.includes(t.from) && fsm.states.includes(t.to)));
+    assert.deepEqual([...fsm.states].sort(), [
+      'boat_passenger',
+      'combat',
+      'death_recovery',
+      'hazard_escape',
+      'item_transfer',
+      'loot',
+      'normal',
+      'passage_transit',
+      'planting',
+      'stuck_recovery'
+    ]);
+    assert.deepEqual(fsm.safetyStates, ['hazard_escape', 'boat_passenger', 'item_transfer']);
+    assert.ok(
+      fsm.transitions.every(
+        (t) => (t.from === 'any' || fsm.states.includes(t.from)) && fsm.states.includes(t.to)
+      )
+    );
+    assert.ok(fsm.transitions.some((t) => t.from === 'any' && t.to === 'hazard_escape'));
     assert.deepEqual(fsm.duties, [{ name: 'recovery', pending: false }]);
     assert.deepEqual(Object.keys(fsm.trees).sort(), [...fsm.states].sort());
-    assert.deepEqual(
-      fsm.trees.normal.children.map((branch) => branch.mode),
-      ['follow', 'wait']
-    );
+    assert.equal(fsm.trees.normal.mode, 'wait', 'normal shows only the selected mode');
     assert.equal(fsm.history.length, 1);
     assert.equal(fsm.history[0].kind, 'mode');
     assert.equal(fsm.history[0].from, 'follow');

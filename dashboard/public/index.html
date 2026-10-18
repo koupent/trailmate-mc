@@ -121,13 +121,15 @@
                   </div>
                   <div id="fsm-current" class="fsm-current"></div>
                 </div>
+                <div id="fsm-mode" class="fsm-mode"></div>
                 <div id="fsm-graph" class="fsm-graph"><div class="empty">スポーンすると表示されます</div></div>
                 <div class="fsm-legend">
                   <span><i class="swatch swatch-auto"></i>状況に応じて自動で入る状態</span>
+                  <span><i class="swatch swatch-safety"></i>どの状態からでも最優先で入る安全系</span>
                   <span><i class="swatch swatch-active"></i>現在</span>
                   <span><i class="swatch swatch-selected"></i>中身を表示中</span>
                 </div>
-                <p class="hint">追従・待機はモード（ユーザーが選ぶ設定）です。状態ではなく、「平常」の中でどちらの動作をするかを決めます。</p>
+                <p class="hint">ステートマシンは「いま何の仕事をしているか」、ビヘイビアツリーは「その仕事をこの瞬間どう進めるか」です。追従・待機はその上のモードで、「平常」で動くツリーと、作物を植えるかどうかを決めます。</p>
                 <h3 id="bt-title" class="section-title">状態の中身</h3>
                 <div class="bt-legend">
                   <span><b>どれか</b>上から試し最初に成立したもの</span>

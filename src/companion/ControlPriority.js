@@ -1,3 +1,5 @@
+import { DUTY_STATE_IDS } from './stateMachine/transitions.js';
+
 /**
  * 小さな階層型所有権方針。各Capabilityは固有の評価を維持し、ここでは
  * 移動・視線・行動を発行できるコンテキストだけを決める。
@@ -41,7 +43,7 @@ export function currentControlOwner(ctx, upperMode = 'follow', now = Date.now())
         || ctx?.bot?.pvp?.target
     );
     const recoveryActive = Boolean(ctx?.deathRecovery?.active);
-    if (fsmId === 'duty' && recoveryActive) {
+    if (DUTY_STATE_IDS.has(fsmId) && recoveryActive) {
         return selectControlOwner({
             recoveryActive: true,
             recoveryEmergency: now < (ctx.deathRecovery.emergencyUntil || 0),

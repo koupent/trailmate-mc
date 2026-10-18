@@ -56,6 +56,7 @@ const statusPanel = document.getElementById('status-panel');
 const inventoryPanel = document.getElementById('inventory-panel');
 const fsmGraphEl = document.getElementById('fsm-graph');
 const fsmCurrentEl = document.getElementById('fsm-current');
+const fsmModeEl = document.getElementById('fsm-mode');
 const fsmHistoryEl = document.getElementById('fsm-history');
 const btTitleEl = document.getElementById('bt-title');
 const btTreeEl = document.getElementById('bt-tree');
@@ -478,32 +479,31 @@ function renderStatus(status) {
  */
 const STATE_TEXT = {
   normal: ['平常', 'モードに従って動く'],
-  follow: ['追従', 'オーナーについていく'],
-  wait: ['待機', 'その場で待つ'],
+  planting: ['作物を植える', '追従モードのときだけ'],
   combat: ['戦闘', '敵に対処する'],
-  passage_transit: ['通路通過', '扉・ゲートを通る'],
-  duty: ['割り込み作業', '回収・復帰など']
+  passage_transit: ['扉・ゲート通過', '開けて通って閉める'],
+  loot: ['アイテム回収', '落ちている物を拾いに行く'],
+  death_recovery: ['死亡からの復帰', '死亡地点・墓へ戻る'],
+  stuck_recovery: ['スタック復帰', '穴や詰まりから抜ける'],
+  hazard_escape: ['危険回避', '炎・危険ブロック・水'],
+  boat_passenger: ['ボート同乗', '操作せず乗っている'],
+  item_transfer: ['受け渡し', '渡す・チェストに預ける'],
+  any: ['どの状態からでも', ''],
+  follow: ['追従', 'オーナーについていく'],
+  wait: ['待機', 'その場で待つ']
 };
 
-const DUTY_TEXT = {
-  nearby_loot: '近くのアイテム回収',
-  own_grave: '自分の墓を回収',
-  death_return: '死亡地点から戻る',
-  recovery: 'スタックから復帰'
-};
+/** Modes are chosen by the player, above the state machine. */
+const MODE_IDS = ['follow', 'wait'];
 
 function stateLabel(id) {
   return STATE_TEXT[id]?.[0] || id;
 }
 
-/** Duty says which interrupt it is actually running, when one is pending. */
+/** The normal state does what the selected mode says. */
 function stateNote(fsm, id) {
-  if (id === 'normal' && fsm.preferredMode) return `${stateLabel(fsm.preferredMode)}モード`;
-  if (id === 'duty') {
-    const pending = (fsm.duties || []).find((duty) => duty.pending);
-    if (pending) return DUTY_TEXT[pending.name] || pending.name;
-  }
-  return STATE_TEXT[id]?.[1] || id;
+  if (id === 'normal' && fsm.preferredMode) return `${stateLabel(fsm.preferredMode)}モードの動き`;
+  return STATE_TEXT[id]?.[1] ?? id;
 }
 
 function formatTime(at) {
@@ -519,6 +519,7 @@ function renderFsm(fsm) {
   lastFsm = fsm;
   if (!fsm) {
     syncHtml(fsmGraphEl, '<div class="empty">スポーンすると表示されます</div>');
+    syncHtml(fsmModeEl, '');
     syncHtml(fsmCurrentEl, '');
     syncHtml(fsmHistoryEl, '<li class="muted">まだありません</li>');
     syncText(btTitleEl, '状態の中身');
@@ -527,6 +528,15 @@ function renderFsm(fsm) {
   }
 
   const shown = btSelected && fsm.trees?.[btSelected] ? btSelected : fsm.active;
+  syncHtml(
+    fsmModeEl,
+    `<span class="fsm-mode-label">モード<small>（ユーザーが選ぶ・状態の上位）</small></span>${MODE_IDS.map(
+      (id) =>
+        `<button type="button" class="small${id === fsm.preferredMode ? ' is-active' : ''}" data-run="${id}" aria-pressed="${
+          id === fsm.preferredMode
+        }">${escapeHtml(stateLabel(id))}</button>`
+    ).join('')}`
+  );
   syncHtml(
     fsmGraphEl,
     renderFsmSvg(fsm, {
@@ -544,9 +554,10 @@ function renderFsm(fsm) {
   );
 
   const live = shown === fsm.active;
+  const modeNote = shown === 'normal' ? `・${stateLabel(fsm.preferredMode)}モード` : '';
   syncText(
     btTitleEl,
-    `「${stateLabel(shown)}」の中身${live ? '（いま動いている状態）' : '（待機中の状態・今回は未実行）'}`
+    `「${stateLabel(shown)}」の中身${modeNote}${live ? '（いま動いている状態）' : '（いまは動いていない状態）'}`
   );
   syncHtml(btTreeEl, renderBtTree(fsm.trees?.[shown], { live, mode: fsm.preferredMode }));
 

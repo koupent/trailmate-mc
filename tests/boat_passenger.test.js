@@ -480,6 +480,7 @@ describe('BoatPassengerController', () => {
         const owner = entity(7, 'player');
         const ctx = {
             ownerEntity: owner,
+            movement: { stop() {} },
             hazardEscape: { tick: () => false },
             boatPassenger: {
                 maintain(currentOwner) {
@@ -495,5 +496,6 @@ describe('BoatPassengerController', () => {
         await manager.tick();
 
         assert.deepEqual(calls, [['boat', owner]]);
+        assert.equal(manager.getActiveFsmId(), 'boat_passenger');
     });
 });

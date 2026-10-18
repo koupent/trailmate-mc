@@ -14,9 +14,9 @@ export class CombatBehavior extends AsyncTickBehavior {
     constructor(targets) {
         super('combat');
         this.targets = targets;
-        // Combat has its own utility-based planner in Reflexes; the tree only
-        // marks where it plugs in.
-        this.tree = action('戦闘処理（Reflexes）に任せる', () => this._tickReflexes());
+        // The combat decisions live in src/reflexes/Reflexes.ts (this
+        // project's own code; mineflayer-pvp only swings and chases).
+        this.tree = action('戦闘の判断と行動（Reflexes.ts）', () => this._tickReflexes());
     }
 
     onStateEntered() {
