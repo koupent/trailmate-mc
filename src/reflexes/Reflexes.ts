@@ -13,64 +13,49 @@ import {
 import { projectRoot, type ReflexConfig } from '../config.js';
 import {
   baselinePresetId,
-  blendCrowdAvoidDirection,
   classifyEnemy,
   countNearbyHostiles,
-  crowdAwayDirection,
-  decideSpacing,
   getPresetParams,
   isRangedEntity,
   type CombatContext,
   type CombatPresetParams
 } from '../combat/CombatProfiles.js';
 import {
-  chooseStackThreatPosition,
-  computeThreatArc,
   movementControlsTowardBearing,
   perpendicularDodgeBearing,
-  strafeSignForOpenArc,
-  threatBearingRad,
-  TARGET_THREAT_SPAN_RAD,
-  WIDE_THREAT_SPAN_RAD,
-  updateArcNarrowLatch,
-  shouldApplyTacticalReposition
+  threatBearingRad
 } from '../combat/threatArc.js';
 import { CombatEpisodeTracker } from '../combat/CombatEpisodeTracker.js';
-import {
-  decideCombatIntent,
-  decideRangedDodgeBurst,
-  idleRangedDodgeLatch,
-  type RangedDodgeLatch
-} from '../combat/CombatIntent.js';
-import {
-  LIVE_FOCUS_STICKY_MS,
-  LIVE_GUARD_RANGED_THREAT_THRESHOLD,
-  pickLiveFocus
-} from './combatPlanAdapter.js';
 import { CombatOptimizer } from '../combat/CombatOptimizer.js';
 import { CombatStateStore } from '../combat/CombatStateStore.js';
 import { CombatTrace } from '../combat/CombatTrace.js';
-import {
-  isCreeperIgnited,
-  CREEPER_FLEE_DISTANCE,
-  CREEPER_SAFE_DISTANCE,
-  CREEPER_MELEE_ASSIST_RANGE,
-  CREEPER_STRIKE_GAP_MS
-} from '../combat/creeperTactics.js';
+import { isCreeperIgnited, CREEPER_STRIKE_GAP_MS } from '../combat/creeperTactics.js';
 import {
   collectTacticalThreatObservations,
   DEFAULT_TACTICAL_OBSERVATION_RADIUS,
   type TacticalThreatObservation
 } from '../combat/TacticalObservation.js';
 import { jumpBlockedByFarmland } from '../companion/movement/farmland.js';
-import {
-  applyCombatStepAssist,
-  stepAheadAlongBearing
-} from '../combat/combatStepAssist.js';
+import { applyCombatStepAssist } from '../combat/combatStepAssist.js';
 import {
   combatOwnsControl,
   refreshCombatControlUntil
 } from '../combat/TacticalOwnership.js';
+import {
+  decideCombatStep,
+  type CombatMemory,
+  type CombatScene,
+  type CombatStep
+} from '../combat/CombatStep.js';
+import { FOCUS_STICKY_MS, MELEE_STRIKE_GAP_MS, STRAFE_SWITCH_MS } from '../combat/CombatParams.js';
+import { buildLiveCombatScene } from './liveCombatScene.js';
+import {
+  action,
+  condition,
+  runTree,
+  selector,
+  sequence
+} from '../companion/behaviorTree/bt.js';
 import {
   estimateBrightness,
   nearestTorchDistance,
@@ -115,41 +100,16 @@ type RecoveryContext = {
 export type EscortMode = 'follow' | 'guard';
 
 const TARGET_RANGE_BUFFER = 2;
-const RETREAT_GOAL_RANGE = 1.5;
-const RETREAT_MELEE_RANGE = 3.5;
-/** この距離内では実際に攻撃できるよう `back` 入力を解除する。 */
-const MELEE_COMMIT_RANGE = 1.8;
-const WIDE_REPOSITION_OWNER_ALLOWANCE = 2.25;
-const COMBAT_MOVE_DISPLACEMENT_WINDOW_MS = 600;
-const COMBAT_STUCK_DISPLACEMENT = 0.03;
-const COMBAT_STUCK_FLIP_MS = 350;
-const COMBAT_REPOSITION_CLIMB_HOLD_MS = 1200;
+/** 戦闘の移動目標に到着したとみなす距離。 */
+const COMBAT_GOAL_RANGE = 0.75;
+/** 相棒の1tick（companion.tick_ms と箱庭の tickMs に合わせる）。 */
+const COMBAT_TICK_MS = 250;
+/** 1tickでこれ未満しか進まなければ詰まりとみなす（箱庭と同じ）。 */
+const STUCK_PROGRESS = 0.1;
 /** 被弾後に自己防衛を維持する猶予（ms）。 */
 const RECENT_DAMAGE_GRACE_MS = 4000;
 /** オーナー被弾直後に recentDamageUntil を延長する判定窓（ms）。 */
 const OWNER_THREAT_FRESH_MS = 1500;
-
-type ThreatArcBias = {
-  sign: 1 | -1;
-  spanRad: number;
-  midRad: number;
-  destination: { x: number; z: number } | null;
-  threatCount: number;
-  rangedThreatCount: number;
-  observations: TacticalThreatObservation[];
-  selection: ReturnType<typeof chooseStackThreatPosition>;
-};
-
-type CombatMovementTrace = {
-  kind: 'none' | 'positioning' | 'dodge' | 'strafe' | 'advance' | 'retreat';
-  bearingRad: number | null;
-  destination: { x: number; y?: number; z: number } | null;
-  dodgePhase: 'idle' | 'dodge' | 'advance' | 'attack';
-  burstRemainingMs: number;
-  advanceRemainingMs: number;
-};
-
-type CombatIntentDecision = ReturnType<typeof decideCombatIntent>;
 
 type TraceEntity = {
   id: number | string | null;
@@ -160,7 +120,11 @@ type TraceEntity = {
 };
 
 /**
- * 護衛相棒のReflexes。Follow / Guard / Retreatのモード機械。
+ * 護衛相棒のReflexes。
+ *
+ * 何をするかは箱庭と共通の判断（CombatStep）が決め、ここは観測の用意と
+ * Mineflayer での実行（移動・打撃・盾・視線）を担う。戦闘中の1tickは
+ * ビヘイビアツリー `combatTree` として実行され、ダッシュボードに表示される。
  */
 export class Reflexes {
   private lastTorchAt = 0;
@@ -180,22 +144,16 @@ export class Reflexes {
     hasShield: false
   });
   private activeContextKey = '';
+  /** 護衛対象（currentTarget）を同じ優先度の別の敵へ切り替えない期間。 */
   private focusUntil = 0;
   private readonly episodeTracker = new CombatEpisodeTracker();
   private readonly combatOptimizer: CombatOptimizer;
   private readonly combatStore: CombatStateStore;
   private readonly combatTrace: CombatTrace;
-  private lastPassiveStrikeAt = 0;
-  /** 位置取り中に空いた円弧へ向かう経路更新を間引く。 */
-  private arcRepositionUntil = 0;
-  /** spanが終了閾値を下回るまで円弧収束を続けるヒステリシスラッチ。 */
-  private arcNarrowLatched = false;
   /** 防衛中に最後に確認したowner（角度leash用）。 */
   private lastDefendOwner: DefendOwner = null;
   /** 被弾後の短時間は自己防衛を強制する。 */
   private recentDamageUntil = 0;
-  /** 上限付き遠距離回避→前進サイクル用の小さなヒステリシスラッチ。 */
-  private rangedDodgeLatch: RangedDodgeLatch = idleRangedDodgeLatch();
   private lastDamageAt = 0;
   /** 対象が一瞬消えても、戦闘が移動・視線所有権を短時間維持する。 */
   private combatControlUntil = 0;
@@ -205,12 +163,24 @@ export class Reflexes {
   private recoveryOwned = false;
   private recoveryEmergencyWasActive = false;
   private lastRecoveryDamageHandledAt = 0;
-  private combatMoveLastAt = 0;
-  private combatMoveLastPos: { x: number; z: number } | null = null;
-  /** 段差に押し付けられて横移動が進まないときの反転判定。 */
-  private combatStuckSince = 0;
   /** ownerThreatTracker が記録したオーナー被弾情報。 */
   private lastOwnerThreat: OwnerThreatHint = null;
+  /** このtickの護衛対象がオーナーの襲撃者として固定されている。 */
+  private ownerThreatLocked = false;
+  /** 共通判断がtickをまたいで保つ状態。 */
+  private combatMemory: CombatMemory = {};
+  private combatTick = 0;
+  /** このtickの判断。 */
+  private step: CombatStep | null = null;
+  private combatMovement: CombatMovement | undefined;
+  /** 戦闘が pathfinder に目標を出している。 */
+  private combatGoalIssued = false;
+  /** 前tickで移動を出した位置（詰まり判定用）。 */
+  private lastMovePos: { x: number; z: number } | null = null;
+  private lastStrikeAt = 0;
+  private shieldRaised = false;
+  /** 戦闘中の1tick。ダッシュボードの戦闘ステートに表示される。 */
+  readonly combatTree = this.buildCombatTree();
 
   constructor(
     private readonly bot: Bot,
@@ -489,11 +459,16 @@ export class Reflexes {
     this.lastTargetSeenAt = 0;
     this.focusUntil = 0;
     this.activeContextKey = '';
-    this.arcNarrowLatched = false;
-    this.arcRepositionUntil = 0;
-    this.rangedDodgeLatch = idleRangedDodgeLatch();
+    this.clearCombatMemory();
     this.combatControlUntil = 0;
     this.lastCombatLookAt = 0;
+  }
+
+  private clearCombatMemory(): void {
+    this.combatMemory = {};
+    this.step = null;
+    this.lastMovePos = null;
+    this.combatGoalIssued = false;
   }
 
   private protectRanges(): ProtectRanges {
@@ -535,190 +510,154 @@ export class Reflexes {
       return;
     }
 
-    // 防御
-    const enemy = this.currentTarget;
-    if (!enemy) {
+    if (!this.currentTarget) {
       this.finishEpisode();
       this.stopCombat();
       this.mode = 'follow';
       return;
     }
 
-    this.syncCombatLearning(enemy, now);
-    this.maintainCombatLook(enemy, now);
-
-    this.configureCombatRange(enemy);
-    const arcBias = this.collectThreatArcBias(enemy);
-
-    // 着火中だけ短く飛び退き、すでに離れていればそれ以上逃げない。
-    if (this.shouldEvadeCreeper(enemy)) {
-      const dist = enemy?.position && this.bot.entity
-        ? distanceToPos(this.bot.entity.position, enemy.position)
-        : null;
-      this.bot.pvp?.forceStop?.();
-      movement?.setSprintAllowed?.(true);
-      // 着火解除に必要な最低限だけ下がる（遠くまで逃げない）。
-      if (dist == null || dist < CREEPER_SAFE_DISTANCE) {
-        this.moveAwayFrom(enemy, movement, CREEPER_FLEE_DISTANCE);
-      }
-      const traceIntent = this.combatTrace.enabled
-        ? this.decideCurrentCombatIntent(enemy, arcBias)
-        : null;
-      this.traceCombatDecision(enemy, arcBias, traceIntent, {
-        ...this.idleMovementTrace(),
-        kind: 'retreat',
-        bearingRad: threatBearingRad(this.bot.entity!.position, enemy.position) + Math.PI
-      }, now);
-      return;
-    }
-
-    if (enemy?.name === 'creeper') {
-      movement?.setSprintAllowed?.(true);
-    }
-
-    // 危険扇圧があるときだけ狭窄／stack位置取り（届かないだけでは狭窄しない）
-    const dangerFanExposed = this.isDangerFanExposed(arcBias);
-
-    if (dangerFanExposed && this.shouldNarrowThreatArc(arcBias)) {
-      const narrowedBias = this.collectThreatArcBias(enemy) ?? arcBias;
-      const intent = this.decideCurrentCombatIntent(enemy, narrowedBias);
-      const movementTrace = this.runArcNarrowing(enemy, narrowedBias!, intent, movement, now);
-      this.traceCombatDecision(enemy, narrowedBias, intent, movementTrace, now);
-      return;
-    }
-
-    if (
-      dangerFanExposed
-      && arcBias
-      && !this.arcNarrowLatched
-      && shouldApplyTacticalReposition(arcBias.threatCount, arcBias.selection)
-      && (
-        arcBias.rangedThreatCount >= 2
-        || (arcBias.selection?.meleeExposedCount ?? 0) >= 2
-      )
-    ) {
-      const intent = this.decideCurrentCombatIntent(enemy, arcBias!);
-      const movementTrace = this.runArcNarrowing(enemy, arcBias!, intent, movement, now);
-      this.traceCombatDecision(enemy, arcBias, intent, movementTrace, now);
-      return;
-    }
-
-    const traceIntent = this.combatTrace.enabled
-      ? this.decideCurrentCombatIntent(enemy, arcBias)
-      : null;
-
-    const movementTrace = this.applyCombatSpacing(enemy, arcBias);
-    this.ensureAttackTarget(enemy);
-    this.meleeAssistStrike(enemy, now);
-    this.traceCombatDecision(enemy, arcBias, traceIntent, movementTrace, now);
-  }
-
-  /** 遠距離露出／遠距離複数／近接扇に2体以上 */
-  private isDangerFanExposed(arcBias: ThreatArcBias | null): boolean {
-    if (!arcBias) return false;
-    return (arcBias.selection?.rangedExposedCount ?? 0) > 0
-      || arcBias.rangedThreatCount >= 2
-      || (arcBias.selection?.meleeExposedCount ?? 0) >= 2;
+    this.combatMovement = movement;
+    await runTree(this.combatTree, null);
   }
 
   /**
-   * 複数脅威の円弧ラッチ。呼び出し側で危険扇圧を確認してから使う。
+   * 判断（CombatStep）の結果を、優先順に1つ実行する。
+   * 条件はこのtickの判断を読むだけで、判断そのものは共通関数にある。
    */
-  private shouldNarrowThreatArc(arcBias: ThreatArcBias | null): boolean {
-    if (!arcBias) {
-      this.arcNarrowLatched = false;
-      return false;
-    }
-    this.arcNarrowLatched = updateArcNarrowLatch({
-      latched: this.arcNarrowLatched,
-      threatCount: arcBias.threatCount,
-      spanRad: arcBias.spanRad,
-      enterSpanRad: (this.activePresetParams.arcNarrowEnterSpanDeg * Math.PI) / 180,
-      exitSpanRad: (this.activePresetParams.arcNarrowExitSpanDeg * Math.PI) / 180
-    });
-    return this.arcNarrowLatched;
+  private buildCombatTree() {
+    const step = () => this.step!;
+    return sequence('戦闘', [
+      action('敵と状況を見て判断する（CombatStep）', () => this.decideStep()),
+      selector('判断した行動', [
+        sequence('着火したクリーパーから離れる', [
+          condition('殴って止められない着火・めり込み', () => step().directFlee),
+          action('まっすぐ離れる', () => this.moveTowardStep())
+        ]),
+        sequence('危険な攻撃範囲から抜ける', [
+          condition('囲まれ・射線に晒されている', () => step().movement === 'positioning'),
+          action('位置を取り直す', () => this.moveTowardStep()),
+          action('届く敵がいれば殴る', () => this.strikeStepTarget())
+        ]),
+        sequence('遠距離攻撃を避ける', [
+          condition('回避の番', () => step().movement === 'dodge'),
+          action('横・陰へ動く', () => this.moveTowardStep())
+        ]),
+        sequence('殴る', [
+          condition('届く敵がいる', () => step().movement === 'attack'),
+          action('攻撃する', () => this.strikeStepTarget()),
+          action('めり込んでいれば少し離れる', () => this.moveTowardStep())
+        ]),
+        sequence('近づく', [
+          condition('届かない', () => step().movement === 'advance'),
+          action('接近点へ詰める', () => this.moveTowardStep())
+        ]),
+        action('その場で構える', () => this.holdPosition())
+      ])
+    ]);
   }
 
-  private runArcNarrowing(
-    enemy: any,
-    arcBias: ThreatArcBias,
-    intent: CombatIntentDecision,
-    movement: CombatMovement | undefined,
-    now: number
-  ): CombatMovementTrace {
-    this.clearMovementControls();
-    let movementTrace = this.idleMovementTrace();
+  /** 観測を集めて共通判断を呼ぶ。主対象がいなければ false。 */
+  private decideStep(): boolean {
+    const enemy = this.currentTarget;
+    if (!enemy || !this.bot.entity) return false;
+    const now = Date.now();
+    this.syncCombatLearning(enemy, now);
+    this.trackMoveProgress();
 
-    if (arcBias.destination) {
-      this.rangedDodgeLatch = idleRangedDodgeLatch();
-      // ワールド座標の位置取り目的地を設定する前にpvp経路探索を止める。
-      // 位置取り中でもmeleeAssistStrikeによる近距離攻撃は許可する。
-      const releasedPvpGoal = this.bot.pvp?.target != null;
-      if (releasedPvpGoal) this.bot.pvp?.forceStop?.();
-      if (intent.guard) this.keepShieldUp();
-      if (movement && (releasedPvpGoal || now >= this.arcRepositionUntil)) {
-        const botPos = this.bot.entity?.position;
-        const dest = arcBias.destination;
-        const bearing = botPos
-          ? threatBearingRad(botPos, dest)
-          : null;
-        const step = bearing != null ? stepAheadAlongBearing(this.bot, bearing) : null;
-        if (step && movement.climbTo) {
-          movement.climbTo(step.center, COMBAT_REPOSITION_CLIMB_HOLD_MS);
-        } else if (botPos) {
-          movement.goToward({
-            x: dest.x,
-            y: step?.center.y ?? botPos.y,
-            z: dest.z
-          }, 0.75);
-        }
-        this.arcRepositionUntil = now + 400;
-      } else if (!movement && this.bot.entity) {
-        this.applyBearingMovement(threatBearingRad(
-          this.bot.entity.position,
-          arcBias.destination
-        ), { sprint: true });
-      }
-      // 接近位置取り中はダッシュ
-      this.bot.setControlState('sprint', true);
-      movementTrace = {
-        ...movementTrace,
-        kind: 'positioning',
-        bearingRad: this.bot.entity
-          ? threatBearingRad(this.bot.entity.position, arcBias.destination)
-          : null,
-        destination: {
-          x: arcBias.destination.x,
-          y: this.bot.entity?.position.y,
-          z: arcBias.destination.z
-        }
-      };
-    } else {
-      // 扇形が適度に狭まったら戦闘を続け、pathfinderに攻撃目標を奪わせず、
-      // 既存の円弧誘導横移動を使う。
-      movementTrace = this.applyCombatSpacing(enemy, arcBias);
-      this.ensureAttackTarget(enemy);
-    }
-
-    if (intent.attack && !intent.guard) this.meleeAssistStrike(enemy, now);
-    return movementTrace;
-  }
-
-  private decideCurrentCombatIntent(
-    enemy: any,
-    arcBias: ThreatArcBias | null
-  ): CombatIntentDecision {
-    const distanceToPrimary = enemy?.position && this.bot.entity
-      ? distanceToPos(this.bot.entity.position, enemy.position)
-      : Infinity;
-    return decideCombatIntent({
-      distanceToPrimary,
-      meleeAttackRange: RETREAT_MELEE_RANGE,
-      rangedThreatCount: arcBias?.rangedThreatCount ?? (isRangedEntity(enemy) ? 1 : 0),
+    const observations = this.collectTacticalObservations(enemy);
+    const ownerPos = this.lastDefendOwner?.position ?? null;
+    const scene = buildLiveCombatScene({
+      bot: this.bot,
+      now,
+      tick: ++this.combatTick,
+      tickMs: COMBAT_TICK_MS,
+      threats: observations.map(({ entity }) => entity),
+      owner: ownerPos ? { x: ownerPos.x, z: ownerPos.z } : null,
       hasShield: this.hasShieldEquipped(),
-      guardRangedThreatThreshold: LIVE_GUARD_RANGED_THREAT_THRESHOLD,
-      explosiveImmediateDanger: isCreeperIgnited(enemy)
+      lastDamageAt: this.lastDamageAt,
+      priorityThreatId: this.ownerThreatLocked ? enemy.id ?? null : null,
+      params: this.activePresetParams
     });
+    const step = decideCombatStep(scene, this.combatMemory);
+    this.step = step;
+    if (!step.primary) return false;
+
+    const lookAt = this.entityById(step.strikeTarget?.id) ?? this.entityById(step.primary.id);
+    if (lookAt) this.maintainCombatLook(lookAt, now);
+    this.combatMovement?.setSprintAllowed?.(step.movement !== 'attack' && step.movement !== 'stay');
+    // 盾: 殴るtickは下げる。遠距離圧で構える意図があれば構える。
+    if (!step.strikeTarget && step.intent?.guard && scene.hasShield) this.raiseShield();
+    else this.lowerShield();
+    this.traceStep(scene, observations, step, now);
+    return true;
+  }
+
+  /** 判断の移動先へ動く。移動先がなければその場で構える。 */
+  private moveTowardStep(): boolean {
+    const destination = this.step?.destination;
+    if (!destination || !this.bot.entity) return this.holdPosition();
+    const pos = this.bot.entity.position;
+    this.lastMovePos = { x: pos.x, z: pos.z };
+    if (this.combatMovement) {
+      this.combatMovement.goToward({ x: destination.x, y: pos.y, z: destination.z }, COMBAT_GOAL_RANGE);
+      this.combatGoalIssued = true;
+    } else {
+      this.applyBearingMovement(threatBearingRad(pos, destination), { sprint: true });
+    }
+    return true;
+  }
+
+  /** 戦闘が出した移動を止める。 */
+  private holdPosition(): boolean {
+    if (this.combatGoalIssued) {
+      this.combatMovement?.stop?.();
+      this.combatGoalIssued = false;
+    }
+    if (!this.combatMovement) this.clearMovementControls();
+    return true;
+  }
+
+  /** 判断が選んだ敵を、攻撃間隔を守って殴る。 */
+  private strikeStepTarget(): boolean {
+    const target = this.entityById(this.step?.strikeTarget?.id);
+    if (!target) return true;
+    const now = Date.now();
+    const gap = target.name === 'creeper' ? CREEPER_STRIKE_GAP_MS : MELEE_STRIKE_GAP_MS;
+    if (now - this.lastStrikeAt < gap) return true;
+    this.lastStrikeAt = now;
+    this.lowerShield();
+    try {
+      const look = target.position.offset?.(0, (target.height ?? 1.8) * 0.9, 0) || target.position;
+      void Promise.resolve(this.bot.lookAt?.(look, true)).catch(() => {});
+      this.bot.attack?.(target);
+    } catch {
+      /* 失敗は無視する */
+    }
+    return true;
+  }
+
+  /**
+   * 前tickの移動がほとんど進まなければ詰まりとして数え、回り込む向きを変える
+   * （箱庭の approachStuckTicks と同じ）。
+   */
+  private trackMoveProgress(): void {
+    const last = this.lastMovePos;
+    this.lastMovePos = null;
+    if (!last || !this.bot.entity) return;
+    const pos = this.bot.entity.position;
+    const memory = this.combatMemory;
+    if (Math.hypot(pos.x - last.x, pos.z - last.z) < STUCK_PROGRESS) {
+      memory.approachStuckTicks = (memory.approachStuckTicks || 0) + 1;
+      memory.approachFlankSign = memory.approachFlankSign === 1 ? -1 : 1;
+    } else {
+      memory.approachStuckTicks = 0;
+    }
+  }
+
+  private entityById(id: number | null | undefined): any | null {
+    if (id == null) return null;
+    return (this.bot.entities as any)?.[id] ?? null;
   }
 
   /** MovementControllerがない場合の移動キーフォールバック。 */
@@ -733,47 +672,11 @@ export class Reflexes {
     applyCombatStepAssist(this.bot, bearingRad);
   }
 
-  private combatDisplacement(now: number): number {
-    if (!this.bot.entity) return 0;
-    const pos = this.bot.entity.position;
-    let displacement = 0;
-    if (this.combatMoveLastPos && now - this.combatMoveLastAt <= COMBAT_MOVE_DISPLACEMENT_WINDOW_MS) {
-      displacement = Math.hypot(pos.x - this.combatMoveLastPos.x, pos.z - this.combatMoveLastPos.z);
-    }
-    this.combatMoveLastPos = { x: pos.x, z: pos.z };
-    this.combatMoveLastAt = now;
-    return displacement;
-  }
-
-  private strafeBearingToward(enemy: any): number {
-    return perpendicularDodgeBearing(
-      threatBearingRad(this.bot.entity!.position, enemy.position),
-      this.strafeSign
-    );
-  }
-
-  private applyStrafeControls(sign: 1 | -1, bearingRad: number): void {
-    this.bot.setControlState(sign === 1 ? 'left' : 'right', true);
-    applyCombatStepAssist(this.bot, bearingRad);
-  }
-
-  private maybeFlipStuckStrafe(stepAhead: boolean, displacement: number, now: number): void {
-    if (!stepAhead || displacement >= COMBAT_STUCK_DISPLACEMENT) {
-      this.combatStuckSince = 0;
-      return;
-    }
-    if (!this.combatStuckSince) this.combatStuckSince = now;
-    if (now - this.combatStuckSince < COMBAT_STUCK_FLIP_MS) return;
-    this.strafeSign = this.strafeSign === 1 ? -1 : 1;
-    this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
-    this.combatStuckSince = 0;
-  }
-
   /** 入射・共通脅威方向と直交するワールド座標方向へ回避する。 */
   private applyPerpendicularDodge(threatBearing: number, now: number): number {
     if (now >= this.strafeUntil) {
       this.strafeSign = this.strafeSign === 1 ? -1 : 1;
-      this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
+      this.strafeUntil = now + STRAFE_SWITCH_MS;
     }
     const bearing = perpendicularDodgeBearing(threatBearing, this.strafeSign);
     this.applyBearingMovement(bearing);
@@ -800,28 +703,15 @@ export class Reflexes {
     void Promise.resolve(this.bot.lookAt?.(look, true)).catch(() => {});
   }
 
-  private idleMovementTrace(): CombatMovementTrace {
-    return {
-      kind: 'none',
-      bearingRad: null,
-      destination: null,
-      dodgePhase: 'idle',
-      burstRemainingMs: 0,
-      advanceRemainingMs: 0
-    };
-  }
-
-  private traceCombatDecision(
-    primary: any,
-    arcBias: ThreatArcBias | null,
-    intent: CombatIntentDecision | null,
-    movement: CombatMovementTrace,
+  private traceStep(
+    scene: CombatScene,
+    observations: TacticalThreatObservation[],
+    step: CombatStep,
     now: number
   ): void {
-    if (!this.combatTrace.enabled || !this.bot.entity || !intent) return;
+    if (!this.combatTrace.enabled || !this.bot.entity || !step.intent) return;
     const botPos = this.bot.entity.position;
     const ownerPos = this.lastDefendOwner?.position ?? null;
-    const observations = arcBias?.observations ?? this.collectTacticalObservations(primary);
     const threats = observations
       .map(({ entity, source }) => {
         const traced = this.traceEntity(entity);
@@ -834,8 +724,9 @@ export class Reflexes {
       })
       .filter((entry): entry is NonNullable<typeof entry> => entry != null)
       .sort((a, b) => String(a.id).localeCompare(String(b.id)));
-
-    const selection = arcBias?.selection ?? null;
+    const selection = step.detail?.selection ?? null;
+    const arc = step.detail?.arc ?? null;
+    const primary = this.entityById(step.primary?.id);
     const previous = this.lastTracePosition;
     const displacement = previous
       ? Math.hypot(botPos.x - previous.x, botPos.z - previous.z)
@@ -843,16 +734,17 @@ export class Reflexes {
     const actualBearingRad = previous && displacement >= 0.05
       ? threatBearingRad(previous, botPos)
       : null;
-    const destination = movement.destination;
+    const destination = step.destination;
     const stateKey = JSON.stringify({
       mode: this.mode,
-      primary: primary?.id ?? primary?.name ?? null,
+      primary: primary?.id ?? null,
       threats: threats.map((threat) => threat.id ?? threat.name),
       owner: ownerPos ? this.tracePosition(ownerPos) : null,
-      latch: this.arcNarrowLatched,
+      latch: Boolean(this.combatMemory.arcNarrowLatched),
       moved: selection?.moved ?? false,
-      intent: intent.priority,
-      dodge: movement.dodgePhase
+      intent: step.intent.priority,
+      movement: step.movement,
+      dodge: step.dodgePhase
     });
 
     const emitted = this.combatTrace.decision(stateKey, {
@@ -866,32 +758,27 @@ export class Reflexes {
       owner: ownerPos ? this.tracePosition(ownerPos) : null,
       primary: this.traceEntity(primary),
       threats,
-      arc: arcBias ? {
-        spanDeg: traceDegrees(arcBias.spanRad, false),
-        midBearingDeg: traceDegrees(arcBias.midRad),
-        latched: this.arcNarrowLatched,
-        threatCount: arcBias.threatCount,
+      arc: arc ? {
+        spanDeg: traceDegrees(arc.spanRad, false),
+        midBearingDeg: traceDegrees(arc.midRad),
+        latched: Boolean(this.combatMemory.arcNarrowLatched),
+        threatCount: scene.threats.length,
         tacticalRadius: this.tacticalObservationRadius(),
-        rangedThreatCount: arcBias.rangedThreatCount
+        rangedThreatCount: step.rangedPressure
       } : null,
       candidate: selection ? {
         moved: selection.moved,
         improvement: traceNumber(selection.improvement, 3),
-        current: this.tracePositionEvaluation(selection.current),
-        chosen: this.tracePositionEvaluation(selection.chosen)
+        chosen: this.tracePosition(selection.chosen.position)
       } : null,
+      plan: step.mixedPlan?.phase ?? null,
       destination: destination ? this.tracePosition(destination) : null,
-      intent,
-      dodge: {
-        phase: movement.dodgePhase,
-        burstRemainingMs: movement.burstRemainingMs,
-        advanceRemainingMs: movement.advanceRemainingMs
-      },
+      strikeTargetId: step.strikeTarget?.id ?? null,
+      intent: step.intent,
+      dodge: { phase: step.dodgePhase },
       movement: {
-        kind: movement.kind,
-        commandedBearingDeg: movement.bearingRad == null
-          ? null
-          : traceDegrees(movement.bearingRad),
+        kind: step.movement,
+        commandedBearingDeg: destination ? traceDegrees(threatBearingRad(botPos, destination)) : null,
         actualBearingDeg: actualBearingRad == null
           ? null
           : traceDegrees(actualBearingRad),
@@ -901,19 +788,6 @@ export class Reflexes {
     if (emitted) {
       this.lastTracePosition = { x: botPos.x, z: botPos.z, at: now };
     }
-  }
-
-  private tracePositionEvaluation(evaluation: ThreatArcBias['selection']['current']): object {
-    return {
-      position: this.tracePosition(evaluation.position),
-      spanDeg: traceDegrees(evaluation.spanRad, false),
-      minEnemyDistance: traceNumber(evaluation.minEnemyDistance),
-      moveDistance: traceNumber(evaluation.moveDistance),
-      dangerPenalty: traceNumber(evaluation.dangerPenalty, 3),
-      ownerPenalty: traceNumber(evaluation.ownerPenalty, 3),
-      movementPenalty: traceNumber(evaluation.movementPenalty, 3),
-      score: traceNumber(evaluation.score, 3)
-    };
   }
 
   private tracePosition(position: { x: number; y?: number; z: number }): object {
@@ -1031,6 +905,7 @@ export class Reflexes {
       hasLos,
       now
     );
+    this.ownerThreatLocked = ownerThreatLocked;
 
     if (!this.currentTarget) {
       let picked = pickProtectTarget(this.bot, ownerPos, ranges, hasLos, this.lastOwnerThreat);
@@ -1056,7 +931,7 @@ export class Reflexes {
         this.currentTarget = picked;
         this.syncCombatLearning(picked, now);
         this.lastTargetSeenAt = now;
-        this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
+        this.focusUntil = now + FOCUS_STICKY_MS;
       }
     } else if (canSwitch && stickyTarget && !ownerThreatLocked) {
       // 同ティア内のちらつきだけ CombatFocus で抑制
@@ -1070,29 +945,16 @@ export class Reflexes {
       if (preferred && preferred.id !== stickyTarget.id) {
         const preferredReason = isProtectThreat(botPos, ownerPos, preferred, ranges);
         const stickyReason = isProtectThreat(botPos, ownerPos, stickyTarget, ranges);
+        // 優先度（オーナー近傍か自分の直近か）が違うときだけ護衛対象を替える。
+        // 同じ優先度の中でどれを殴るかは共通判断の主対象選び（CombatStep）が決める。
         if (preferredReason !== stickyReason) {
           this.currentTarget = preferred;
           this.syncCombatLearning(preferred, now);
           this.lastTargetSeenAt = now;
-          this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
-        } else {
-          const focus = pickLiveFocus({
-            bot: { x: botPos.x, z: botPos.z },
-            candidates: [stickyTarget, preferred],
-            stickyId: stickyTarget.id,
-            now,
-            stickyMs: LIVE_FOCUS_STICKY_MS
-          });
-          const picked = focus.primary?.id === preferred.id ? preferred : stickyTarget;
-          if (picked.id !== stickyTarget.id) {
-            this.currentTarget = picked;
-            this.syncCombatLearning(picked, now);
-          }
-          this.focusUntil = focus.focusUntil;
-          if (hasLos(picked)) this.lastTargetSeenAt = now;
+          this.focusUntil = now + FOCUS_STICKY_MS;
         }
       } else if (stickyTarget) {
-        this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
+        this.focusUntil = now + FOCUS_STICKY_MS;
       }
     }
   }
@@ -1126,7 +988,7 @@ export class Reflexes {
       this.currentTarget = ownerAttacker;
       this.syncCombatLearning(ownerAttacker, now);
       this.lastTargetSeenAt = now;
-      this.focusUntil = now + LIVE_FOCUS_STICKY_MS;
+      this.focusUntil = now + FOCUS_STICKY_MS;
     }
     return true;
   }
@@ -1154,55 +1016,10 @@ export class Reflexes {
     }
   }
 
-  /**
-   * awaitせず、mineflayer-pvpの対象を `enemy` に設定・維持する。
-   * 対象オブジェクト変更時に `pvp.attack` が `stop()` を最大5秒待つ場合がある。
-   * ここでawaitすると相棒ループが止まり、FollowがBotを再取得してしまう。
-   */
-  private ensureAttackTarget(enemy: any): void {
-    const target = this.currentTarget ?? enemy;
-    const pvp = this.bot.pvp as {
-      target?: { id?: number } | null;
-      attack?: (e: any) => Promise<void> | void;
-    } | undefined;
-    if (!pvp?.attack || !target) return;
-    if (pvp.target?.id != null && target.id != null && pvp.target.id === target.id) {
-      return;
-    }
-    void Promise.resolve(pvp.attack(target)).catch((err: any) => {
-      console.warn('[reflexes] defend failed:', (err as Error)?.message || err);
-    });
-  }
-
-  /**
-   * 近接距離内ではbot.attackで直接攻撃し、間合い制御やpathfinder所有権により
-   * 対象の前で棒立ちになることを防ぐ。
-   */
-  private meleeAssistStrike(enemy: any | null, now: number): void {
-    const target = this.currentTarget ?? enemy;
-    if (!target?.position || !this.bot.entity) return;
-    const dist = distanceToPos(this.bot.entity.position, target.position);
-    const isCreeper = target.name === 'creeper';
-    const reach = isCreeper ? CREEPER_MELEE_ASSIST_RANGE : RETREAT_MELEE_RANGE;
-    if (dist > reach) return;
-    if (isCreeperIgnited(target)) return;
-    const strikeGapMs = isCreeper ? CREEPER_STRIKE_GAP_MS : 1000;
-    if (now - this.lastPassiveStrikeAt < strikeGapMs) return;
-    this.lastPassiveStrikeAt = now;
-    try {
-      const look = target.position.offset?.(0, (target.height ?? 1.8) * 0.9, 0) || target.position;
-      void this.bot.lookAt?.(look, true);
-      this.bot.attack?.(target);
-    } catch {
-      /* 失敗は無視する */
-    }
-  }
-
   private stopCombat(): void {
     if (this.fighting) return;
-    this.arcNarrowLatched = false;
-    this.arcRepositionUntil = 0;
-    this.rangedDodgeLatch = idleRangedDodgeLatch();
+    this.clearCombatMemory();
+    this.lowerShield();
     this.combatControlUntil = 0;
     this.lastCombatLookAt = 0;
     this.fighting = true;
@@ -1243,273 +1060,20 @@ export class Reflexes {
     }
   }
 
-  /** モードを増やさず、直近の爆発脅威から離れる。 */
-  private moveAwayFrom(threat: any, movement?: CombatMovement, fleeDistance?: number): void {
-    if (!movement || !threat?.position) return;
-    const botPos = this.bot.entity.position;
-    let dx = botPos.x - threat.position.x;
-    let dz = botPos.z - threat.position.z;
-    const horizontalDistance = Math.hypot(dx, dz);
-    if (horizontalDistance < 0.1) {
-      dx = -Math.sin(this.bot.entity.yaw);
-      dz = -Math.cos(this.bot.entity.yaw);
-    } else {
-      dx /= horizontalDistance;
-      dz /= horizontalDistance;
-    }
-    const crowdAway = crowdAwayDirection(
-      this.bot.entities,
-      botPos,
-      this.config.hostile_range + TARGET_RANGE_BUFFER,
-      isHostile
-    );
-    const blended = blendCrowdAvoidDirection({
-      awayFromTarget: { x: dx, z: dz },
-      awayFromCrowd: crowdAway,
-      bias: this.activePresetParams.crowdAvoidBias
-    });
-    const range = Math.max(
-      this.config.retreat_distance,
-      Number.isFinite(fleeDistance) ? Number(fleeDistance) : 0
-    );
-    const destination = {
-      x: botPos.x + blended.x * range,
-      y: botPos.y,
-      z: botPos.z + blended.z * range
-    };
-    movement.goToward(destination, RETREAT_GOAL_RANGE);
+  private raiseShield(): void {
+    if (this.shieldRaised) return;
+    this.shieldRaised = true;
+    this.keepShieldUp();
   }
 
-  private shouldEvadeCreeper(enemy: any): boolean {
-    return isCreeperIgnited(enemy);
+  private lowerShield(): void {
+    if (!this.shieldRaised) return;
+    this.shieldRaised = false;
+    this.keepShieldDown();
   }
 
   private isIgnitedCreeper(enemy: any): boolean {
     return isCreeperIgnited(enemy);
-  }
-
-  private configureCombatRange(enemy: any): void {
-    if (!this.bot.pvp) return;
-    const enemyClass = classifyEnemy(enemy.name);
-    const distance = enemy.position
-      ? distanceToPos(this.bot.entity.position, enemy.position)
-      : this.activePresetParams.followRange;
-    const decision = decideSpacing({
-      params: this.activePresetParams,
-      enemyClass,
-      distance,
-      enemyFacingBot: null
-    });
-    this.bot.pvp.followRange = decision.followRange;
-  }
-
-  /** 有効なプリセットの間合い制御をmineflayer-pvpへ重ねる。 */
-  private applyCombatSpacing(
-    enemy: any,
-    arcBias: ThreatArcBias | null = null
-  ): CombatMovementTrace {
-    const idleTrace = this.idleMovementTrace();
-    if (!enemy?.position || !this.bot.entity) return idleTrace;
-    const now = Date.now();
-    const botPos = this.bot.entity.position;
-    const distance = distanceToPos(botPos, enemy.position);
-    const dx = enemy.position.x - botPos.x;
-    const dz = enemy.position.z - botPos.z;
-    const enemyFacingBot = facingDot(enemy.yaw, -dx, -dz);
-    const enemyClass = classifyEnemy(enemy.name);
-    const decision = decideSpacing({
-      params: this.activePresetParams,
-      enemyClass,
-      distance,
-      enemyFacingBot
-    });
-
-    const bias = arcBias ?? this.collectThreatArcBias(enemy);
-    const wideMultiThreat = bias != null
-      && bias.threatCount >= 2
-      && bias.spanRad >= TARGET_THREAT_SPAN_RAD;
-    const arcGuidedStrafe = wideMultiThreat;
-    const rangedThreatBearing = bias && bias.rangedThreatCount > 0
-      ? bias.midRad
-      : enemyClass === 'ranged'
-        ? threatBearingRad(botPos, enemy.position)
-        : null;
-    const dodgeBurst = decideRangedDodgeBurst({
-      now,
-      underRangedPressure: rangedThreatBearing != null,
-      distanceToPrimary: distance,
-      meleeAttackRange: RETREAT_MELEE_RANGE,
-      latch: this.rangedDodgeLatch,
-      lastDamageAt: this.lastDamageAt,
-      hasShield: this.hasShieldEquipped(),
-      burstMs: this.activePresetParams.rangedDodgeBurstMs,
-      advanceMs: this.activePresetParams.rangedDodgeReassessMs
-    });
-    // 近接到達で回避／前進ラッチを完全解除（殴打へ切替）
-    this.rangedDodgeLatch = (
-      distance <= RETREAT_MELEE_RANGE && dodgeBurst.phase === 'attack'
-    ) ? idleRangedDodgeLatch() : dodgeBurst.latch;
-    const needStrafe = arcGuidedStrafe
-      ? false
-      : (decision.needStrafe
-        || (bias != null && bias.spanRad >= WIDE_THREAT_SPAN_RAD));
-    const movementTrace: CombatMovementTrace = {
-      ...idleTrace,
-      dodgePhase: dodgeBurst.phase,
-      burstRemainingMs: Math.max(0, dodgeBurst.latch.burstUntil - now),
-      advanceRemainingMs: Math.max(0, dodgeBurst.latch.advanceUntil - now)
-    };
-
-    this.bot.setControlState('left', false);
-    this.bot.setControlState('right', false);
-    this.bot.setControlState('back', false);
-    this.bot.setControlState('forward', false);
-    this.bot.setControlState('jump', false);
-
-    if (rangedThreatBearing != null && dodgeBurst.dodge) {
-      movementTrace.kind = 'dodge';
-      movementTrace.bearingRad = this.applyPerpendicularDodge(rangedThreatBearing, now);
-    } else if (rangedThreatBearing != null && dodgeBurst.phase === 'advance') {
-      // pvpの移動入力を解除した後、tick間の復帰に任せず共通脅威方向への
-      // 前進を明示的に確定する。
-      this.applyBearingMovement(rangedThreatBearing, { sprint: true });
-      movementTrace.kind = 'advance';
-      movementTrace.bearingRad = rangedThreatBearing;
-      movementTrace.destination = {
-        x: enemy.position.x,
-        y: enemy.position.y,
-        z: enemy.position.z
-      };
-    } else if (rangedThreatBearing != null) {
-      // 攻撃距離では遠距離間合い制御より攻撃を優先し、横移動へ流さず
-      // pvp対象と近接補助のため移動入力を空ける。
-      movementTrace.kind = 'none';
-    } else if (rangedThreatBearing == null && arcGuidedStrafe && bias != null) {
-      this.strafeSign = bias.sign;
-      this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
-      movementTrace.kind = 'strafe';
-      movementTrace.bearingRad = this.strafeBearingToward(enemy);
-      this.applyStrafeControls(this.strafeSign, movementTrace.bearingRad);
-    } else if (needStrafe && bias != null) {
-      if (bias.spanRad >= TARGET_THREAT_SPAN_RAD) {
-        this.strafeSign = bias.sign;
-        this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
-      } else if (now >= this.strafeUntil) {
-        this.strafeSign = this.strafeSign === 1 ? -1 : 1;
-        this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
-      }
-      movementTrace.kind = 'strafe';
-      movementTrace.bearingRad = this.strafeBearingToward(enemy);
-      this.applyStrafeControls(this.strafeSign, movementTrace.bearingRad);
-    } else if (needStrafe && now >= this.strafeUntil) {
-      this.strafeSign = this.strafeSign === 1 ? -1 : 1;
-      this.strafeUntil = now + this.activePresetParams.strafeSwitchMs;
-      movementTrace.kind = 'strafe';
-      movementTrace.bearingRad = this.strafeBearingToward(enemy);
-      this.applyStrafeControls(this.strafeSign, movementTrace.bearingRad);
-    }
-    if (movementTrace.bearingRad != null && movementTrace.kind !== 'none') {
-      const displacement = this.combatDisplacement(now);
-      const stepAhead = stepAheadAlongBearing(this.bot, movementTrace.bearingRad) != null;
-      this.maybeFlipStuckStrafe(stepAhead, displacement, now);
-    }
-    // 密着距離で後退入力を維持すると攻撃が中断されるため、入力しない。
-    if (decision.needBackstep && distance > MELEE_COMMIT_RANGE && rangedThreatBearing == null) {
-      this.bot.setControlState('back', true);
-    }
-    if (this.bot.pvp) this.bot.pvp.followRange = decision.followRange;
-    return movementTrace;
-  }
-
-  /**
-   * 2体以上の護衛脅威が広い角度にいる場合、owner leash内で敵集団を回り込み、
-   * 可能なら敵列の片端より外側へ抜ける安全な経路を選ぶ。
-   */
-  private collectThreatArcBias(primary: any): ThreatArcBias | null {
-    if (!this.bot.entity || !primary?.position) return null;
-    const botPos = this.bot.entity.position;
-    const ownerPos = this.lastDefendOwner?.position ?? null;
-    const ranges = this.protectRanges();
-    const observations = this.collectTacticalObservations(primary);
-    const threats = observations.map(({ entity }) => ({
-      x: entity.position.x,
-      y: entity.position.y,
-      z: entity.position.z,
-      kind: entity.name,
-      id: entity.id
-    }));
-    const rangedThreatCount = observations.filter(({ entity }) => isRangedEntity(entity)).length;
-    const arc = computeThreatArc(
-      { x: botPos.x, z: botPos.z },
-      threats
-    );
-    if (!arc) return null;
-    const currentOwnerDistance = ownerPos ? distanceToPos(botPos, ownerPos) : 0;
-    const tacticalOwnerLeash = arc.spanRad >= WIDE_THREAT_SPAN_RAD
-      ? Math.max(
-          ranges.ownerProtectRange,
-          currentOwnerDistance + WIDE_REPOSITION_OWNER_ALLOWANCE
-        )
-      : ranges.ownerProtectRange;
-
-    const selection = chooseStackThreatPosition(
-      { x: botPos.x, y: botPos.y, z: botPos.z },
-      threats,
-      {
-        step: 2.25,
-        minEnemyDistance: MELEE_COMMIT_RANGE,
-        minimumImprovement: this.arcNarrowLatched
-          ? 0
-          : (this.activePresetParams.positioningImprovementMarginDeg * Math.PI) / 180,
-        ownerPos: ownerPos ? { x: ownerPos.x, z: ownerPos.z } : null,
-        maxOwnerDistance: tacticalOwnerLeash,
-        isTerrainBlocked: (from, to) => {
-          try {
-            const eyeFrom = new Vec3(from.x, (from.y ?? 1) + 1.62, from.z);
-            const eyeTo = new Vec3(to.x, (to.y ?? botPos.y) + 1.62, to.z);
-            const delta = eyeTo.minus(eyeFrom);
-            const dist = delta.norm();
-            if (dist < 0.15) return false;
-            return this.bot.world.raycast(eyeFrom, delta.scaled(1 / dist), dist) !== null;
-          } catch {
-            return false;
-          }
-        }
-      }
-    );
-
-    const sign = strafeSignForOpenArc({
-      botPos: { x: botPos.x, z: botPos.z },
-      primaryPos: { x: primary.position.x, z: primary.position.z },
-      arc,
-      ownerPos: ownerPos ? { x: ownerPos.x, z: ownerPos.z } : null,
-      ignoreOwnerLeash: arc.spanRad >= WIDE_THREAT_SPAN_RAD
-    });
-
-    return {
-      sign,
-      spanRad: arc.spanRad,
-      midRad: arc.midRad,
-      destination: (() => {
-        if (selection.moved && selection.chosen?.position) {
-          return selection.chosen.position;
-        }
-        // 扇に晒されているが stack 候補が動かないときも、攻撃扇の安全点へ寄せる
-        const safe = selection.safePoint;
-        if (
-          safe
-          && ((selection.rangedExposedCount ?? 0) > 0 || (selection.meleeExposedCount ?? 0) >= 2)
-          && Math.hypot(safe.x - botPos.x, safe.z - botPos.z) > 0.35
-        ) {
-          return { x: safe.x, y: botPos.y, z: safe.z };
-        }
-        return null;
-      })(),
-      threatCount: threats.length,
-      rangedThreatCount,
-      observations,
-      selection
-    };
   }
 
   private collectTacticalObservations(primary: any): TacticalThreatObservation[] {
@@ -1723,13 +1287,4 @@ function traceDegrees(radians: number, normalize = true): number | null {
     while (degrees <= -180) degrees += 360;
   }
   return traceNumber(degrees, 1);
-}
-
-function facingDot(yaw: number | undefined, dx: number, dz: number): number | null {
-  if (!Number.isFinite(yaw)) return null;
-  const length = Math.hypot(dx, dz);
-  if (length === 0) return 1;
-  const facingX = -Math.sin(yaw as number);
-  const facingZ = -Math.cos(yaw as number);
-  return Number(((facingX * dx + facingZ * dz) / length).toFixed(3));
 }

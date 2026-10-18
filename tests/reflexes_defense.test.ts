@@ -257,6 +257,16 @@ function makeMovement() {
   };
 }
 
+/** 護衛対象（戦う相手）。届かない間は殴らないので attackTarget では見えない。 */
+function guarding(reflexes: Reflexes): EntityStub | null {
+  return (reflexes as any).currentTarget;
+}
+
+/** このtickの共通判断（CombatStep）。 */
+function stepOf(reflexes: Reflexes): any {
+  return (reflexes as any).step;
+}
+
 describe('hasLineOfSight', () => {
   it('raycastが通る場合はtrueを返す', () => {
     const { bot, track } = makeBot();
@@ -410,7 +420,7 @@ describe('Reflexesの戦闘判断', () => {
     setup.setBlocked('zombie', true);
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
-    assert.equal(setup.bot._stats().attackTarget, zombie);
+    assert.equal(guarding(reflexes), zombie);
     assert.equal(setup.bot._stats().stopCount, 0);
   });
 
@@ -430,10 +440,11 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
     assert.equal(reflexes.ownsTacticalControl, true);
-    assert.equal(setup.bot._stats().attackTarget, zombie);
     (reflexes as any).combatControlUntil = Date.now() - 1;
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
-    assert.equal(setup.bot._stats().attackTarget, null);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(guarding(reflexes), null);
+    assert.equal(reflexes.escortMode, 'follow');
     assert.ok(setup.bot._stats().stopCount >= 1);
   });
 
@@ -449,8 +460,6 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
     assert.equal(setup.bot._stats().attackTarget, immediate);
-    // 同じ対象IDへpvp.attackを再呼び出しせず、await stop()の停滞を防ぐ。
-    // 近接補助でbot.attackが増えても、pvp.attackは1回のまま。
     assert.ok(setup.bot._stats().attackCount >= 1);
   });
 
@@ -464,7 +473,7 @@ describe('Reflexesの戦闘判断', () => {
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
-    assert.equal(setup.bot._stats().attackTarget, ownerThreat);
+    assert.equal(guarding(reflexes), ownerThreat);
   });
 
   it('低HPでもownerへ逃げずGuardで戦い続ける', async () => {
@@ -478,10 +487,11 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
 
     assert.equal(reflexes.escortMode, 'guard');
-    assert.equal(setup.bot._stats().attackTarget, zombie);
-    // ownerを盾にする退避目的地へ移動してはならない。
-    assert.equal(movement._stats().destinations.length, 0);
-    assert.ok(setup.bot._stats().attackCount >= 1);
+    assert.equal(guarding(reflexes), zombie);
+    // ownerを盾にする退避目的地へ移動してはならない。敵へ詰める。
+    const destinations = movement._stats().destinations;
+    assert.equal(destinations.length, 1);
+    assert.ok(Math.hypot(destinations[0].x - zombie.position.x, destinations[0].z - zombie.position.z) < 5);
   });
 
   it('ownerが脅威の隣にいる場合も低HPで防御する', async () => {
@@ -536,16 +546,21 @@ describe('Reflexesの戦闘判断', () => {
     assert.ok(setup.bot._stats().attackCount >= 1);
   });
 
-  it('遠距離敵には引き撃ち用follow rangeを使う', async () => {
+  it('遠距離敵へは真正面ではなく斜めの接近点へ詰める', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
-    const owner = makeOwner('Alice', 6, 64, 0, skeleton);
+    const owner = makeOwner('Alice', 0, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
     setup.track(skeleton, owner);
+    const movement = makeMovement();
     const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
 
-    await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
 
-    assert.equal(setup.bot._stats().followRange, 3.2);
+    const destination = movement._stats().destinations[0];
+    assert.ok(destination);
+    assert.ok(Math.abs(destination.z) > 0.5, `skirt point should leave the arrow line, got ${JSON.stringify(destination)}`);
+    assert.ok(Math.hypot(destination.x - 5, destination.z) < 5, 'and still close in on the skeleton');
+    assert.equal(setup.bot._stats().attackCount, 0);
   });
 
   it('着火前の近いcreeperには近接攻撃する', async () => {
@@ -562,8 +577,23 @@ describe('Reflexesの戦闘判断', () => {
     assert.equal(movement._stats().destinations.length, 0);
   });
 
-  it('盾なしで着火済みcreeperから後退する', async () => {
+  it('届く距離の着火済みcreeperは殴ってノックバックで自爆を止める', async () => {
     const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
+    creeper.metadata = [];
+    creeper.metadata[16] = 1;
+    const setup = makeBot({ hostiles: [creeper] });
+    setup.track(creeper);
+    const movement = makeMovement();
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
+
+    assert.equal(setup.bot._stats().attackTarget, creeper);
+    assert.equal(movement._stats().destinations.length, 0);
+  });
+
+  it('届かない着火済みcreeperからは離れる', async () => {
+    const creeper = makeEntity('creeper', 'hostile', 3.8, 64, 0);
     creeper.metadata = [];
     creeper.metadata[16] = 1;
     const setup = makeBot({ hostiles: [creeper] });
@@ -574,12 +604,13 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
 
     assert.equal(setup.bot._stats().attackCount, 0);
-    assert.equal(setup.bot._stats().forceStopCount, 1);
-    assert.equal(movement._stats().destinations.length, 1);
+    const [destination] = movement._stats().destinations;
+    assert.ok(destination.x < 0, `should move away from the creeper, got ${JSON.stringify(destination)}`);
+    assert.equal(stepOf(reflexes).directFlee, true);
   });
 
-  it('着火が消えたら退避せず攻撃に戻る', async () => {
-    const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
+  it('着火が消えたら退避をやめて詰め直す', async () => {
+    const creeper = makeEntity('creeper', 'hostile', 3.8, 64, 0);
     creeper.metadata = [];
     creeper.metadata[16] = 1;
     const setup = makeBot({ hostiles: [creeper] });
@@ -588,16 +619,15 @@ describe('Reflexesの戦闘判断', () => {
     const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
-    assert.equal(setup.bot._stats().forceStopCount, 1);
-
     creeper.metadata[16] = -1;
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
 
-    assert.ok(setup.bot._stats().attackCount >= 1);
+    assert.equal(stepOf(reflexes).movement, 'advance');
+    assert.ok(movement._stats().destinations.at(-1)!.x > 0);
   });
 
-  it('metadata[18]の着火フラグでもcreeperから後退する', async () => {
-    const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
+  it('metadata[18]の着火フラグでもcreeperから離れる', async () => {
+    const creeper = makeEntity('creeper', 'hostile', 3.8, 64, 0);
     creeper.metadata = [];
     creeper.metadata[18] = true;
     const setup = makeBot({ hostiles: [creeper] });
@@ -608,8 +638,7 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
 
     assert.equal(setup.bot._stats().attackCount, 0);
-    assert.equal(setup.bot._stats().forceStopCount, 1);
-    assert.equal(movement._stats().destinations.length, 1);
+    assert.ok(movement._stats().destinations[0].x < 0);
   });
 
   it('ownerの背面でもowner近傍の敵を防御対象にする', async () => {
@@ -623,7 +652,7 @@ describe('Reflexesの戦闘判断', () => {
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
-    assert.equal(setup.bot._stats().attackTarget, skeleton);
+    assert.equal(guarding(reflexes), skeleton);
     assert.equal(reflexes.escortMode, 'guard');
   });
 
@@ -666,7 +695,7 @@ describe('Reflexesの戦闘判断', () => {
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
-    assert.equal(setup.bot._stats().attackTarget, skeleton);
+    assert.equal(guarding(reflexes), skeleton);
   });
 
   it('脅威消失後の猶予を過ぎたらfollowへ戻る', async () => {
@@ -725,16 +754,12 @@ describe('Reflexesの戦闘判断', () => {
     (reflexes as any).currentTarget = left;
     (reflexes as any).lastTargetSeenAt = Date.now();
 
-    const bias = (reflexes as any).collectThreatArcBias(left);
-    assert.equal(bias?.threatCount, 2);
-    assert.equal(bias?.rangedThreatCount, 0);
-    assert.equal(bias?.selection.moved, true);
-
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
 
-    // CORE: 扇に晒されていない近接複数は狭窄より打撃／接近
-    assert.equal(movement._stats().destinations.length, 0);
-    assert.ok(setup.bot._stats().attackCount >= 1);
+    // CORE: 扇に晒されていない近接複数は狭窄せず、近い方へ詰める
+    assert.equal(stepOf(reflexes).movement, 'advance');
+    assert.equal(movement._stats().destinations.length, 1);
+    assert.ok(movement._stats().destinations[0].x < 0);
     const trace = JSON.parse(traceLines.at(-1)!.slice('[combat-trace] '.length));
     assert.equal(trace.event, 'decision');
     assert.deepEqual(trace.owner, { x: 30, y: 64, z: 0 });
@@ -770,12 +795,10 @@ describe('Reflexesの戦闘判断', () => {
     (reflexes as any).currentTarget = zombie;
     (reflexes as any).lastTargetSeenAt = Date.now();
 
-    const bias = (reflexes as any).collectThreatArcBias(zombie);
-    assert.equal(bias?.threatCount, 2);
-    assert.equal(bias?.rangedThreatCount, 1);
-
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
 
+    // 遠距離の射線に晒されているので扇を狭める位置取り
+    assert.equal(stepOf(reflexes).movement, 'positioning');
     assert.equal(movement._stats().destinations.length, 1);
     assert.equal(setup.bot._stats().attackCount, 0);
   });
@@ -844,59 +867,31 @@ describe('Reflexesの戦闘判断', () => {
     assert.equal(setup.bot._stats().attackTarget, near);
   });
 
-  it('単体遠距離敵の射線と直交するワールド方向へ回避する', async () => {
-    const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
-    const owner = makeOwner('Alice', 0, 64, 0, skeleton);
-    const setup = makeBot({ hostiles: [skeleton] });
-    setup.bot.entity.yaw = Math.PI / 2; // Bot currently faces -X.
-    setup.track(skeleton, owner);
-    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
-
-    await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
-
-    const controls = setup.bot._stats().controls;
-    // 射線は東西方向。このyawではleft入力で+Zへ動く。
-    assert.equal(controls.left, true);
-    assert.equal(controls.forward, false);
-    assert.equal(controls.back, false);
-    assert.equal(setup.bot._stats().attackTarget, skeleton);
-  });
-
-  it('回避バースト後に遠距離敵へ明示的に前進する', async () => {
+  it('MovementControllerがなければ判断の移動先へ移動キーで向かう', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 5, 64, 0);
     const owner = makeOwner('Alice', 0, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
     setup.bot.entity.yaw = 0;
     setup.track(skeleton, owner);
     const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
-    const now = Date.now();
-    (reflexes as any).rangedDodgeLatch = {
-      burstUntil: now - 1,
-      advanceUntil: now + 1200,
-      bestDistance: 6,
-      lastProgressAt: now,
-      handledDamageAt: 0
-    };
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
+    const destination = stepOf(reflexes).destination;
+    assert.ok(destination);
     const controls = setup.bot._stats().controls;
-    // 敵は+X方向。yaw 0ではright入力で+Xへ動く。
-    assert.equal(controls.right, true);
-    assert.equal(controls.left, false);
-    assert.equal(controls.forward, false);
-    assert.equal(controls.back, false);
-    assert.equal(setup.bot._stats().attackTarget, skeleton);
+    assert.ok(controls.forward || controls.back || controls.left || controls.right);
+    assert.equal(controls.sprint, true);
   });
 
-  it('遠距離敵が近接距離へ入ったら回避ラッチを解除して攻撃する', async () => {
+  it('遠距離敵が近接距離へ入ったら回避ラッチを捨てて攻撃する', async () => {
     const skeleton = makeEntity('skeleton', 'hostile', 3.4, 64, 0);
     const owner = makeOwner('Alice', 0, 64, 0, skeleton);
     const setup = makeBot({ hostiles: [skeleton] });
     setup.track(skeleton, owner);
     const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
     const now = Date.now();
-    (reflexes as any).rangedDodgeLatch = {
+    (reflexes as any).combatMemory.dodgeLatch = {
       burstUntil: now + 600,
       advanceUntil: now + 2100,
       bestDistance: 5,
@@ -906,11 +901,8 @@ describe('Reflexesの戦闘判断', () => {
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
-    assert.ok(setup.bot._stats().attackCount >= 1);
-    assert.equal(setup.bot._stats().controls.left, false);
-    assert.equal(setup.bot._stats().controls.right, false);
-    assert.equal((reflexes as any).rangedDodgeLatch.burstUntil, 0);
-    assert.equal((reflexes as any).rangedDodgeLatch.advanceUntil, 0);
+    assert.equal(setup.bot._stats().attackTarget, skeleton);
+    assert.equal((reflexes as any).combatMemory.dodgeLatch.burstUntil, 0);
   });
 
   it('前後にいる遠距離敵2体には位置取りを優先する', async () => {
@@ -950,9 +942,9 @@ describe('Reflexesの戦闘判断', () => {
     assert.equal(setup.bot._stats().forceStopCount, 0);
   });
 
-  it('遠距離圧下の位置取り中も盾防御を維持する', async () => {
-    const north = makeEntity('skeleton', 'hostile', 0, 64, 3);
-    const south = makeEntity('skeleton', 'hostile', 0, 64, -3);
+  it('遠距離圧下で殴れない間は盾を構える', async () => {
+    const north = makeEntity('skeleton', 'hostile', 0, 64, 6);
+    const south = makeEntity('skeleton', 'hostile', 0, 64, -6);
     const owner = makeOwner('Alice', 0, 64, 0, north);
     const setup = makeBot({ hostiles: [north, south], hasShield: true });
     setup.track(north, south, owner);
@@ -963,8 +955,22 @@ describe('Reflexesの戦闘判断', () => {
 
     assert.equal(movement._stats().destinations.length, 1);
     assert.ok(setup.bot._stats().activateCount >= 1);
-    // 純粋判断には攻撃意図もあるが、API競合では盾を優先する。
     assert.equal(setup.bot._stats().attackCount, 0);
+  });
+
+  it('殴るtickは盾を下げる', async () => {
+    const north = makeEntity('skeleton', 'hostile', 0, 64, 3);
+    const south = makeEntity('skeleton', 'hostile', 0, 64, -3);
+    const owner = makeOwner('Alice', 0, 64, 0, north);
+    const setup = makeBot({ hostiles: [north, south], hasShield: true });
+    setup.track(north, south, owner);
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+    (reflexes as any).shieldRaised = true;
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement: makeMovement() });
+
+    assert.ok(setup.bot._stats().attackCount >= 1);
+    assert.ok(setup.bot._stats().deactivateCount >= 1);
   });
 });
 
@@ -1094,7 +1100,7 @@ describe('上位モードと戦闘の連携', () => {
     } as any);
 
     assert.equal(reflexes.ownsTacticalControl, true);
-    assert.equal(setup.bot._stats().attackTarget, skeleton);
+    assert.equal(guarding(reflexes), skeleton);
     assert.equal(followCount, 0);
     assert.equal(stopCount, stopsAfterCombatClaim);
   });
