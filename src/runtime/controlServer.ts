@@ -16,6 +16,7 @@ import {
   type RetentionCatalog
 } from '../companion/utils/retentionCatalog.js';
 import { resolveRetentionPolicy } from '../companion/utils/retentionPolicy.js';
+import { ACTION_COMMANDS, MODE_COMMANDS } from '../companion/dialogueParse.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -61,6 +62,14 @@ export function startControlServer(
       }
       if (request.method === 'POST' && url.pathname === '/despawn') {
         const result = await despawnCompanion(state);
+        return json(response, result.ok ? 200 : 409, result);
+      }
+      if (request.method === 'GET' && url.pathname === '/commands') {
+        return json(response, 200, { commands: listChatCommands() });
+      }
+      if (request.method === 'POST' && url.pathname === '/command') {
+        const body = (await readJson(request)) as { id?: unknown };
+        const result = runChatCommand(state, String(body?.id ?? ''));
         return json(response, result.ok ? 200 : 409, result);
       }
       if (request.method === 'GET' && url.pathname === '/retention/catalog') {
@@ -224,8 +233,58 @@ export function buildStatus(state: ControlState) {
     ownerName: companion?.ctx?.ownerName ?? null,
     preferredMode: manager?.getCurrentModeId?.() ?? null,
     activeFsm: manager?.getActiveFsmId?.() ?? null,
+    fsm: manager?.describeFsm?.() ?? null,
     inventory: items
   };
+}
+
+export type ChatCommand = {
+  id: string;
+  kind: 'mode' | 'action';
+  word: string;
+  description: string;
+};
+
+/** The official chat words, so the dashboard can list and send them. */
+export function listChatCommands(): ChatCommand[] {
+  return [
+    ...MODE_COMMANDS.map((def) => ({
+      id: def.mode,
+      kind: 'mode' as const,
+      word: def.keywordsJa[0],
+      description: def.description
+    })),
+    ...ACTION_COMMANDS.map((def) => ({
+      id: def.action,
+      kind: 'action' as const,
+      word: def.keywordsJa[0],
+      description: def.description
+    }))
+  ];
+}
+
+/**
+ * Run a chat command from the dashboard as if the locked owner had said it,
+ * so a button and the chat word go through the exact same path.
+ *
+ * Not awaited: 全回収 walks the whole inventory over, which can take longer
+ * than the dashboard is willing to hold a request open.
+ */
+export function runChatCommand(
+  state: ControlState,
+  id: string
+): { ok: boolean; error?: string } {
+  const command = listChatCommands().find((entry) => entry.id === id);
+  if (!command) return { ok: false, error: `unknown command: ${id}` };
+  const companion = state.host?.companion;
+  const dialogue = companion?.dialogue;
+  if (!dialogue) return { ok: false, error: '相棒がスポーンしていません' };
+  if (dialogue.isActionBusy) return { ok: false, error: '相棒が受け渡し中です' };
+  const owner = companion?.ctx?.ownerName || '';
+  void dialogue.handlePlayerMessage(owner, command.word).catch((error: unknown) => {
+    console.error('[trailmate] dashboard command failed:', error);
+  });
+  return { ok: true };
 }
 
 /** Cheap to build, but rebuilt on every dashboard tab switch without this. */
