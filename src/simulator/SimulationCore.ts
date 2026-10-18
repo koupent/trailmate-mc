@@ -856,7 +856,7 @@ function stepCombat(state: SimulationState, blocks: Set<string>): SimulationDeci
 }
 
 /** 箱庭の状態を共通判断（CombatStep）の観測に変換する。 */
-function simCombatScene(
+export function simCombatScene(
   state: SimulationState,
   blocks: Set<string>,
   threats: SimEnemy[],
