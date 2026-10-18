@@ -261,6 +261,13 @@ describe('follow crop planting', () => {
         assert.equal(pickupPending.findCalls, 0);
     });
 
+    it('does not plant when crop replanting is turned off in settings', async () => {
+        const world = makeCtx({ farmland: [new Vec3(1, 63, 0)] });
+        world.ctx.config.crop_replant = { enabled: false };
+        await followWithPlanting().tick(world.ctx);
+        assert.equal(world.findCalls, 0);
+    });
+
     it('searches from the current bot position and continues beyond the starting radius', async () => {
         const world = makeCtx({
             ownerPos: new Vec3(0, 64, 0),

@@ -52,6 +52,7 @@ export class CropPlanter {
     _findWork(ctx) {
         const bot = ctx.bot;
         const owner = ctx.ownerEntity;
+        if (ctx.config?.crop_replant?.enabled === false) return null;
         if (!ctx.ownerName || !owner || !bot?.entity) return null;
         // A climb hold still making progress keeps the follow state.
         if (ctx.movement?.isHeld) return null;

@@ -1,5 +1,7 @@
 /** Minimal world helpers used by companion (no Mindcraft library). */
 
+import { isAttackableMob } from './mobHostility.js';
+
 type Pos = { x: number; y: number; z: number; distanceTo?: (p: any) => number };
 
 type BotLike = {
@@ -12,11 +14,11 @@ export const IMMEDIATE_THREAT_RANGE = 6;
 /** ownerからこの距離内の敵を護衛脅威とみなす（視野角には依存しない）。 */
 export const OWNER_PROTECT_RANGE = 10;
 
-export function isHostile(mob: { type?: string; name?: string } | null | undefined): boolean {
+export function isHostile(
+  mob: { type?: string; name?: string; displayName?: string; metadata?: any; customName?: unknown } | null | undefined
+): boolean {
   if (!mob || !mob.name) return false;
-  return (mob.type === 'mob' || mob.type === 'hostile')
-    && mob.name !== 'iron_golem'
-    && mob.name !== 'snow_golem';
+  return isAttackableMob(mob);
 }
 
 export function isGroundItem(entity: { name?: string; type?: string; objectType?: string; displayName?: string } | null | undefined): boolean {

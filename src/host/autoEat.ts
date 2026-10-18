@@ -29,15 +29,23 @@ type FoodStats = { foodPoints: number; saturation?: number };
 /**
  * Whether a companion should eat given current hunger and health.
  */
+export type EatThresholds = { healthy_start_at: number; injured_start_at: number };
+
+const DEFAULT_EAT_THRESHOLDS: EatThresholds = {
+  healthy_start_at: COMPANION_HEALTHY_START_AT,
+  injured_start_at: COMPANION_INJURED_START_AT
+};
+
 export function shouldCompanionEat(
   hunger: number,
   health: number,
-  maxHealth = DEFAULT_MAX_HEALTH
+  maxHealth = DEFAULT_MAX_HEALTH,
+  thresholds: EatThresholds = DEFAULT_EAT_THRESHOLDS
 ): boolean {
   if (hunger >= MAX_HUNGER) return false;
   const startAt = health < maxHealth
-    ? COMPANION_INJURED_START_AT
-    : COMPANION_HEALTHY_START_AT;
+    ? thresholds.injured_start_at
+    : thresholds.healthy_start_at;
   return hunger <= startAt;
 }
 
@@ -131,12 +139,12 @@ async function consumeChosenFood(bot: Bot, foodItem: FoodItem, offhand: boolean)
   bot.emit('autoeat_finished', foodItem as any, offhand);
 }
 
-function installCompanionEat(bot: Bot): void {
+function installCompanionEat(bot: Bot, thresholds: EatThresholds): void {
   bot.autoEat.eat = async (useOffhand = bot.autoEat.options.offhand) => {
     if (
       bot.autoEat.isEating
       || bot.autoEat.disabled
-      || !shouldCompanionEat(bot.food, bot.health)
+      || !shouldCompanionEat(bot.food, bot.health, DEFAULT_MAX_HEALTH, thresholds)
     ) {
       return false;
     }
@@ -170,18 +178,18 @@ function installCompanionEat(bot: Bot): void {
 /**
  * Configure mineflayer-auto-eat with deficit-aware selection and health-aware thresholds.
  */
-export function setupAutoEat(bot: Bot): void {
+export function setupAutoEat(bot: Bot, thresholds: EatThresholds = DEFAULT_EAT_THRESHOLDS): void {
   const current = bot.autoEat?.options || {};
   bot.autoEat.options = {
     ...current,
     priority: 'foodPoints',
-    startAt: COMPANION_HEALTHY_START_AT,
+    startAt: thresholds.healthy_start_at,
     bannedFood: [...new Set([
       ...(current.bannedFood || []),
       ...UNSAFE_OR_SPECIAL_FOODS
     ])]
   };
 
-  installCompanionEat(bot);
+  installCompanionEat(bot, thresholds);
   void bot.autoEat.eat().catch(() => {});
 }

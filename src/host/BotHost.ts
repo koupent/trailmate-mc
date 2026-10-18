@@ -122,7 +122,7 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
   });
 
   trackDamage(bot);
-  setupAutoEat(bot);
+  setupAutoEat(bot, config.companion.auto_eat);
 
   host.reflexes = new Reflexes(
     bot,
