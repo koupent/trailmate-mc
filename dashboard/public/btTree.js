@@ -44,11 +44,11 @@ function renderNode(node, opts) {
   const children = node.children?.length
     ? `<ul>${node.children.map((child) => renderNode(child, opts)).join('')}</ul>`
     : '';
-  return `<li class="${classes.join(' ')}"><div class="bt-row"><span class="bt-kind" title="${escapeHtml(
+  return `<li class="${classes.join(' ')}"><div class="bt-row"><span class="bt-head"><span class="bt-kind" title="${escapeHtml(
     kindHint
-  )}">${escapeHtml(kindText)}</span><span class="bt-label">${escapeHtml(node.label)}</span>${
-    opts.live ? statusMark(node) : ''
-  }</div>${children}</li>`;
+  )}">${escapeHtml(kindText)}</span>${opts.live ? statusMark(node) : ''}</span><span class="bt-label">${escapeHtml(
+    node.label
+  )}</span></div>${children}</li>`;
 }
 
 /**
