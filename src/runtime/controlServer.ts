@@ -90,7 +90,7 @@ export function startControlServer(
       }
       if (request.method === 'GET' && url.pathname === '/mobs/catalog') {
         const { registry, version } = retentionRegistry(state);
-        return json(response, 200, { version, mobs: buildMobCatalog(registry as never) });
+        return json(response, 200, { version, mobs: buildMobCatalog(registry as never, Object.keys(loadConfig().mob_hostility)) });
       }
       if (request.method === 'POST' && url.pathname === '/mobs') {
         const body = (await readJson(request)) as { mob_hostility?: unknown };

@@ -48,7 +48,7 @@ function rowHtml(mob) {
   ].join('');
   return `
     <label class="row">
-      <span>${escapeHtml(mob.label)} <span class="muted">${escapeHtml(mob.id)}</span></span>
+      <span title="${escapeHtml(mob.id)}">${escapeHtml(mob.label)}</span>
       <select data-mob="${escapeHtml(mob.id)}">${options}</select>
     </label>`;
 }
@@ -63,7 +63,7 @@ function render() {
       .map((id) => ({ id, label: id, default: null }))
   ];
   const unset = mobs.filter((mob) => decisionOf(mob) == null);
-  const rest = mobs.filter((mob) => decisionOf(mob) != null).sort((a, b) => a.label.localeCompare(b.label));
+  const rest = mobs.filter((mob) => decisionOf(mob) != null).sort((a, b) => a.label.localeCompare(b.label, 'ja'));
 
   syncHtml(
     summaryEl,

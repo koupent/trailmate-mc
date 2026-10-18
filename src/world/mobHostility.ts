@@ -7,6 +7,8 @@
  * ダッシュボードからユーザーが決められるようにする。
  */
 
+import { entityDisplayNameJa } from '../i18n/entityNames.js';
+
 export type MobDecision = 'attack' | 'ignore';
 export type MobHostilityConfig = Record<string, MobDecision>;
 
@@ -88,26 +90,31 @@ export function isAttackableMob(mob: MobLike): boolean {
 }
 
 export function listUnsetEncounters(): Array<{ id: string; label: string }> {
-  return [...unsetEncounters].map(([id, label]) => ({ id, label }));
+  return [...unsetEncounters].map(([id, label]) => ({ id, label: entityDisplayNameJa(id) ?? label }));
 }
 
 /**
- * ダッシュボードに出す候補: レジストリの敵対・未分類モブと、遭遇した未設定モブ。
+ * ダッシュボードに出す候補: レジストリの敵対・未分類モブと、遭遇した未設定モブ、
+ * 設定済みのモブ（再起動で遭遇記録が消えても日本語名で出すため）。
  */
 export function buildMobCatalog(
-  registry: { entitiesArray?: Array<{ name: string; type?: string; displayName?: string }> } | null
+  registry: { entitiesArray?: Array<{ name: string; type?: string; displayName?: string }> } | null,
+  configuredIds: string[] = []
 ): Array<{ id: string; label: string; default: MobDecision | null }> {
   const mobs = new Map<string, { id: string; label: string; default: MobDecision | null }>();
   for (const entity of registry?.entitiesArray ?? []) {
     if (entity.type !== 'hostile' && entity.type !== 'mob') continue;
     mobs.set(entity.name, {
       id: entity.name,
-      label: entity.displayName || entity.name,
+      label: entityDisplayNameJa(entity.name) ?? entity.displayName ?? entity.name,
       default: defaultMobDecision(entity.name, entity.type)
     });
   }
   for (const { id, label } of listUnsetEncounters()) {
     if (!mobs.has(id)) mobs.set(id, { id, label, default: null });
+  }
+  for (const id of configuredIds) {
+    if (!mobs.has(id)) mobs.set(id, { id, label: entityDisplayNameJa(id) ?? id, default: null });
   }
   return [...mobs.values()];
 }
