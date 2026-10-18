@@ -1,7 +1,7 @@
 import { Mode } from '../Mode.js';
 import { lockOwner, notifyOwnerLocked } from '../ownerLock.js';
 import { applyOwnerWorkRetreat } from '../ownerWorkMovement.js';
-import { currentControlOwner } from '../ControlPriority.js';
+import { yieldsOutsideMachine } from '../ControlPriority.js';
 import {
     FOLLOW_GOAL_RANGE,
     LAST_KNOWN_ARRIVE_RANGE
@@ -10,25 +10,7 @@ import { resolveFollowPhase } from '../movement/followPhase.js';
 import { ColumnClimber } from '../movement/climbColumn.js';
 import { wouldPathPassNearPlayer } from '../movement/playerPathClearance.js';
 import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
-import { canPlaceUnderProtection } from '../blockProtection.js';
-import { Vec3 } from 'vec3';
-
-const CROP_SEARCH_RADIUS = 16;
-const CROP_OWNER_MAX_DISTANCE = 32;
-const CROP_PLACE_DISTANCE = 4;
-const CROP_APPROACH_RANGE = 2;
-const UNREACHABLE_CROP_RETRY_MS = 5000;
-
-const CROP_BY_ITEM = new Map([
-    ['wheat_seeds', 'wheat'],
-    ['beetroot_seeds', 'beetroots'],
-    ['pumpkin_seeds', 'pumpkin_stem'],
-    ['melon_seeds', 'melon_stem'],
-    ['torchflower_seeds', 'torchflower_crop'],
-    ['pitcher_pod', 'pitcher_crop'],
-    ['carrot', 'carrots'],
-    ['potato', 'potatoes']
-]);
+import { action, condition, FAILURE, runTree, selector, sequence } from '../behaviorTree/bt.js';
 
 /**
  * Lock onto the first player seen in FOV and keep following.
@@ -52,13 +34,10 @@ export class FollowMode extends Mode {
         this._lastOwnerDim = null;
         /** True after reaching last-known pos while owner is still missing. */
         this._waitingAtLastKnown = false;
-        /** @type {string|null} */
-        this._plantingTargetKey = null;
-        /** @type {Map<string, number>} */
-        this._unreachableFarmlandUntil = new Map();
         /** Manual ladder / vine climb; pathfinder never moves vertically here. */
         this._climb = new ColumnClimber();
         this._climbConsulted = false;
+        this.tree = this._buildTree();
     }
 
     async onEnter() {
@@ -66,7 +45,6 @@ export class FollowMode extends Mode {
     }
 
     async onExit(ctx) {
-        this._plantingTargetKey = null;
         this._climb.release(ctx);
         // FSM では combat/duty へ一瞬でも遷移するたびに呼ばれる。
         // ここで stop すると追従ゴールが毎回消え、棒立ち・duty 往復の原因になる。
@@ -76,176 +54,95 @@ export class FollowMode extends Mode {
         }
     }
 
+    /**
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     * @returns {Promise<'success'|'failure'>}
+     */
     async tick(ctx) {
         this._climbConsulted = false;
         try {
-            await this._runTick(ctx);
+            ctx.movement.tickHoldWatchdog();
+            if (yieldsOutsideMachine(ctx, 'follow')) {
+                const owner = ctx.ownerEntity;
+                if (owner) this._rememberOwner(ctx, owner);
+                return FAILURE;
+            }
+            return await runTree(this.tree, ctx);
         } finally {
-            // Every early return above the climb branch — combat taking over,
-            // the owner disappearing, a pickup pause — must let go of forward.
+            // Every branch that ends before the climb node — the owner
+            // disappearing, a pickup, a boat — must let go of forward.
             if (!this._climbConsulted) this._climb.release(ctx);
         }
     }
 
     /**
-     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     * What following means, in priority order. The first branch that acts
+     * owns the tick; later ones are not evaluated.
      */
-    async _runTick(ctx) {
-        const bot = ctx.bot;
-
-        ctx.movement.tickHoldWatchdog();
-
-        // FSM が combat/duty を所有するときは FollowBehavior 自体が動かない。
-        // ここではラッチ中の wantsCombat で追従を止めない（二重ループ時代の名残）。
-        const fsmId = ctx.agent?.companion?.manager?.getActiveFsmId?.();
-        if (!fsmId && currentControlOwner(ctx, 'follow') !== 'follow') {
-            this._plantingTargetKey = null;
-            const owner = ctx.ownerEntity;
-            if (owner) this._rememberOwner(ctx, owner);
-            return;
-        }
-        if (fsmId && fsmId !== 'follow') {
-            this._plantingTargetKey = null;
-            const owner = ctx.ownerEntity;
-            if (owner) this._rememberOwner(ctx, owner);
-            return;
-        }
-
-        if (!ctx.ownerName) {
-            this._plantingTargetKey = null;
-            this._clearLastKnown();
-            await this._searchOwner(ctx);
-            return;
-        }
-
-        const owner = ctx.ownerEntity;
-        if (!owner) {
-            this._plantingTargetKey = null;
-            this._seekLastKnown(ctx);
-            return;
-        }
-
-        this._rememberOwner(ctx, owner);
-        this._waitingAtLastKnown = false;
-
-        if (ctx.boatPassenger?.tryBoard?.(owner)) {
-            this._plantingTargetKey = null;
-            return;
-        }
-
-        // Skip Follow only while a climb hold is still making progress.
-        if (ctx.movement.isHeld) {
-            this._plantingTargetKey = null;
-            return;
-        }
-
-        if (applyOwnerWorkRetreat(ctx)) {
-            this._plantingTargetKey = null;
-            return;
-        }
-
-        if (tryOpportunisticCollect(ctx)) {
-            this._plantingTargetKey = null;
-            return;
-        }
-
-        const dutyPending = Boolean(
-            ctx.agent?.companion?.manager?.targets?._dutyPending
-        );
-        if (!dutyPending
-            && ctx.config?.crop_replant?.enabled !== false
-            && currentControlOwner(ctx, 'follow') === 'follow'
-            && bot.entity.position.distanceTo(owner.position) <= CROP_OWNER_MAX_DISTANCE
-            && await this._tryPlantNearbyCrop(ctx)) {
-            return;
-        }
-        this._plantingTargetKey = null;
-
-        // A* plans no usable upward move over vines, so the wall is climbed by
-        // hand. The follow route never reaches the foot of it either — it stops
-        // beside the column, or fails outright on the owner's cell up on top —
-        // so the climb owns the walk into the column as well, and holds the
-        // tick for it. Everything below stays untouched when it does not apply.
-        this._climbConsulted = true;
-        if (this._climb.tick(ctx)) return;
-
-        const phase = resolveFollowPhase(ctx, owner);
-
-        if (phase === 'near') {
-            ctx.movement.stop();
-            return;
-        }
-
-        ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE, {
-            endpointVisibilityTarget: owner
-        });
+    _buildTree() {
+        return selector('追従の手順', [
+            sequence('オーナーを探す', [
+                condition('オーナーが未決定', (ctx) => !ctx.ownerName),
+                action('見えたプレイヤーをオーナーにする', async (ctx) => {
+                    this._clearLastKnown();
+                    await this._searchOwner(ctx);
+                    return true;
+                })
+            ]),
+            sequence('オーナーを見失った', [
+                condition('オーナーが見えない', (ctx) => !ctx.ownerEntity),
+                action('最後に見た場所へ向かう', (ctx) => {
+                    this._seekLastKnown(ctx);
+                    return true;
+                })
+            ]),
+            sequence('オーナーのそばで動く', [
+                action('オーナーの位置を記録', (ctx) => {
+                    this._rememberOwner(ctx, ctx.ownerEntity);
+                    this._waitingAtLastKnown = false;
+                    return true;
+                }),
+                selector('いまやることを選ぶ', [
+                    action('ボートに一緒に乗る', (ctx) => Boolean(
+                        ctx.boatPassenger?.tryBoard?.(ctx.ownerEntity)
+                    )),
+                    // Skip follow only while a climb hold is still making progress.
+                    condition('登り動作を続けている', (ctx) => Boolean(ctx.movement.isHeld)),
+                    action('作業中のプレイヤーから離れる', (ctx) => Boolean(applyOwnerWorkRetreat(ctx))),
+                    action('手が届くアイテムを拾う（歩かない）', (ctx) => Boolean(tryOpportunisticCollect(ctx))),
+                    // A* plans no usable upward move over vines, so the wall is
+                    // climbed by hand. The climb owns the walk into the column
+                    // as well, and holds the tick for it.
+                    action('はしご・つるを登る', (ctx) => {
+                        this._climbConsulted = true;
+                        return this._climb.tick(ctx);
+                    }),
+                    sequence('オーナーのすぐそば', [
+                        condition('十分に近い', (ctx) => resolveFollowPhase(ctx, ctx.ownerEntity) === 'near'),
+                        action('立ち止まる', (ctx) => {
+                            ctx.movement.stop();
+                            return true;
+                        })
+                    ]),
+                    action('オーナーについて行く', (ctx) => {
+                        const owner = ctx.ownerEntity;
+                        ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE, {
+                            endpointVisibilityTarget: owner
+                        });
+                        return true;
+                    })
+                ])
+            ])
+        ]);
     }
 
     /**
-     * Plant at most one crop, or reserve this tick while approaching farmland.
+     * Keep the last-known owner position current while another follow-mode
+     * job (planting) owns the tick, so losing the owner then still leads back.
      * @param {import('../CompanionContext.js').CompanionContext} ctx
-     * @returns {Promise<boolean>}
      */
-    async _tryPlantNearbyCrop(ctx) {
-        const bot = ctx.bot;
-        const item = findPlantableItem(bot);
-        if (!item || typeof bot.findBlock !== 'function') return false;
-
-        const now = Date.now();
-        for (const [key, until] of this._unreachableFarmlandUntil) {
-            if (until <= now) this._unreachableFarmlandUntil.delete(key);
-        }
-
-        if (this._plantingTargetKey && plantingRouteFailed(ctx.movement)) {
-            this._unreachableFarmlandUntil.set(
-                this._plantingTargetKey,
-                now + UNREACHABLE_CROP_RETRY_MS
-            );
-            this._plantingTargetKey = null;
-        }
-
-        const farmland = findNearestEmptyFarmland(
-            bot,
-            this._unreachableFarmlandUntil,
-            now,
-            ctx.ownerEntity.position
-        );
-        if (!farmland) return false;
-
-        const cropName = CROP_BY_ITEM.get(item.name);
-        if (!canPlaceUnderProtection(cropName)) return false;
-
-        const key = blockKey(farmland.position);
-        const cropPosition = farmland.position.offset(0, 1, 0);
-        if (bot.entity.position.distanceTo(cropPosition) > CROP_PLACE_DISTANCE) {
-            this._plantingTargetKey = key;
-            ctx.movement.goToward(cropPosition, CROP_APPROACH_RANGE);
-            return true;
-        }
-
-        this._plantingTargetKey = null;
-        ctx.movement.stop();
-        try {
-            await bot.equip(item, 'hand');
-            const currentFarmland = bot.blockAt(farmland.position);
-            const currentCrop = bot.blockAt(cropPosition);
-            const owner = ctx.ownerEntity;
-            if (currentFarmland?.name !== 'farmland'
-                || currentCrop?.name !== 'air'
-                || !owner
-                || bot.entity.position.distanceTo(owner.position) > CROP_OWNER_MAX_DISTANCE
-                || farmland.position.distanceTo(owner.position) > CROP_OWNER_MAX_DISTANCE
-                || currentControlOwner(ctx, 'follow') !== 'follow') {
-                return false;
-            }
-            await bot.placeBlock(currentFarmland, new Vec3(0, 1, 0));
-        } catch {
-            this._unreachableFarmlandUntil.set(
-                key,
-                Date.now() + UNREACHABLE_CROP_RETRY_MS
-            );
-        }
-        return true;
+    trackOwner(ctx) {
+        if (ctx.ownerEntity) this._rememberOwner(ctx, ctx.ownerEntity);
     }
 
     /**
@@ -315,39 +212,4 @@ export class FollowMode extends Mode {
  */
 function createPushGuard(ctx) {
     return (target) => () => wouldPathPassNearPlayer(ctx, target);
-}
-
-function findPlantableItem(bot) {
-    try {
-        return bot.inventory?.items?.().find((item) => CROP_BY_ITEM.has(item.name)) || null;
-    } catch {
-        return null;
-    }
-}
-
-function findNearestEmptyFarmland(bot, excludedUntil, now, ownerPosition) {
-    try {
-        return bot.findBlock({
-            matching: (block) => block?.name === 'farmland',
-            maxDistance: CROP_SEARCH_RADIUS,
-            useExtraInfo: (block) => {
-                if (bot.entity.position.distanceTo(block.position) > CROP_SEARCH_RADIUS) return false;
-                if (block.position.distanceTo(ownerPosition) > CROP_OWNER_MAX_DISTANCE) return false;
-                if ((excludedUntil.get(blockKey(block.position)) || 0) > now) return false;
-                return bot.blockAt(block.position.offset(0, 1, 0))?.name === 'air';
-            }
-        });
-    } catch {
-        return null;
-    }
-}
-
-function plantingRouteFailed(movement) {
-    return movement?.isBlocked
-        || movement?.isUnreachable
-        || movement?.status === 'partial';
-}
-
-function blockKey(pos) {
-    return `${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`;
 }

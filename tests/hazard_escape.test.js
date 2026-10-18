@@ -549,6 +549,7 @@ describe('hazard movement ownership', () => {
     it('runs even while the orchestrator is paused and skips ordinary behavior', async () => {
         const calls = [];
         const ctx = {
+            movement: { stop() {} },
             hazardEscape: { tick: () => { calls.push('hazard'); return true; } }
         };
         const agent = {};
@@ -559,6 +560,7 @@ describe('hazard movement ownership', () => {
         await manager.tick();
 
         assert.deepEqual(calls, ['hazard']);
+        assert.equal(manager.getActiveFsmId(), 'hazard_escape');
         assert.equal(manager._busy, false);
     });
 });

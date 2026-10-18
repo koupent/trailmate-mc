@@ -7,9 +7,12 @@
  * only its Japanese label falls back to the raw id until one is given.
  */
 
-const WIDTH = 640;
-const HEIGHT = 340;
-const NODE_W = 128;
+const WIDTH = 680;
+/** Height of the ellipse area holding the ordinary states. */
+const RING_H = 340;
+/** Extra band above the ellipse for safety states, entered from any state. */
+const TOP_H = 90;
+const NODE_W = 120;
 const NODE_H = 48;
 /** How far an arrow bows sideways, so A→B and B→A do not overlap. */
 const BEND = 26;
@@ -24,19 +27,26 @@ function escapeXml(value) {
     .replaceAll('"', '&quot;');
 }
 
-/** States on an ellipse, first one at the top, clockwise. */
-export function layoutNodes(states) {
+/**
+ * `top` (the "any state" marker and the safety states) in a row across the
+ * top; every other state on an ellipse below, first one at the top, clockwise.
+ */
+export function layoutNodes(states, top = []) {
+  const ring = states.filter((id) => !top.includes(id));
+  const offset = top.length ? TOP_H : 0;
   const cx = WIDTH / 2;
-  const cy = HEIGHT / 2;
+  const cy = offset + RING_H / 2;
   const rx = WIDTH / 2 - NODE_W / 2 - 12;
-  const ry = HEIGHT / 2 - NODE_H / 2 - 12;
-  const n = Math.max(states.length, 1);
-  return new Map(
-    states.map((id, i) => {
+  const ry = RING_H / 2 - NODE_H / 2 - 12;
+  const n = Math.max(ring.length, 1);
+  const step = WIDTH / Math.max(top.length, 1);
+  return new Map([
+    ...top.map((id, i) => [id, { x: step * (i + 0.5), y: 12 + NODE_H / 2 }]),
+    ...ring.map((id, i) => {
       const angle = -Math.PI / 2 + (i * 2 * Math.PI) / n;
       return [id, { x: cx + rx * Math.cos(angle), y: cy + ry * Math.sin(angle) }];
     })
-  );
+  ]);
 }
 
 /** Where a ray from the node centre towards (tx, ty) leaves its box. */
@@ -69,18 +79,22 @@ function edgePath(from, to) {
 /**
  * @param {{
  *   active: string,
- *   preferredMode?: string,
- *   modes?: string[],
  *   states: string[],
  *   transitions: Array<{ name: string, from: string, to: string }>,
  *   history?: Array<{ from: string, to: string, at: number }>
  * }} fsm
- * @param {{ label: (id: string) => string, note: (id: string) => string, now?: number }} text
+ * @param {{ label: (id: string) => string, note: (id: string) => string, now?: number, selected?: string|null }} text
+ *   `selected` is the state whose behavior tree is shown under the diagram.
  */
 export function renderFsmSvg(fsm, text) {
-  const states = Array.isArray(fsm?.states) ? fsm.states : [];
-  const positions = layoutNodes(states);
-  const modes = new Set(fsm?.modes || []);
+  const listed = Array.isArray(fsm?.states) ? fsm.states : [];
+  const fromAny = (fsm?.transitions || []).some((t) => t.from === 'any');
+  // "any" is not a state: it stands for "from whichever state is active".
+  const states = fromAny ? ['any', ...listed] : listed;
+  const top = fromAny ? ['any', ...(fsm?.safetyStates || [])] : [];
+  const safety = new Set(fsm?.safetyStates || []);
+  const positions = layoutNodes(states, top);
+  const height = (top.length ? TOP_H : 0) + RING_H;
   const now = text.now ?? Date.now();
   const last = (fsm?.history || []).at(-1);
   const recent = last && now - last.at < RECENT_MS ? last : null;
@@ -117,20 +131,28 @@ export function renderFsmSvg(fsm, text) {
   const nodes = states
     .map((id) => {
       const p = positions.get(id);
-      const classes = ['fsm-node', modes.has(id) ? 'is-mode' : 'is-auto'];
+      if (id === 'any') {
+        return `<g class="fsm-any" transform="translate(${Math.round(p.x - NODE_W / 2)},${Math.round(
+          p.y - NODE_H / 2
+        )})"><rect width="${NODE_W}" height="${NODE_H}" rx="24" /><text class="fsm-label" x="${NODE_W / 2}" y="21">どの状態からでも</text><text class="fsm-note" x="${
+          NODE_W / 2
+        }" y="37">最優先で割り込む</text></g>`;
+      }
+      const classes = ['fsm-node'];
+      if (safety.has(id)) classes.push('is-safety');
       if (id === fsm.active) classes.push('is-active');
-      if (id === fsm.preferredMode) classes.push('is-preferred');
-      return `<g class="${classes.join(' ')}" transform="translate(${Math.round(p.x - NODE_W / 2)},${Math.round(
+      if (id === text.selected) classes.push('is-selected');
+      return `<g class="${classes.join(' ')}" data-state="${escapeXml(id)}" tabindex="0" role="button" transform="translate(${Math.round(p.x - NODE_W / 2)},${Math.round(
         p.y - NODE_H / 2
       )})"><title>${escapeXml(id)}</title><rect width="${NODE_W}" height="${NODE_H}" rx="8" /><text class="fsm-label" x="${
         NODE_W / 2
       }" y="21">${escapeXml(text.label(id))}</text><text class="fsm-note" x="${NODE_W / 2}" y="37">${escapeXml(
         text.note(id)
-      )}</text></g>`;
+      )}</text>${fsm?.trees?.[id] ? `<text class="fsm-bt" x="${NODE_W - 6}" y="11">BT</text>` : ''}</g>`;
     })
     .join('');
 
-  return `<svg class="fsm-svg" viewBox="0 0 ${WIDTH} ${HEIGHT}" role="img" aria-label="状態遷移図">
+  return `<svg class="fsm-svg" viewBox="0 0 ${WIDTH} ${height}" role="img" aria-label="状態遷移図">
 <defs>
 <marker id="fsm-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fsm-arrow-head" /></marker>
 <marker id="fsm-arrow-on" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="fsm-arrow-head is-on" /></marker>

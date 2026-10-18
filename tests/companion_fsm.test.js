@@ -9,13 +9,13 @@ import {
     dutyPending,
     passagePending,
     preferGearRecovery,
-    resumeUpperMode,
     safetyDutyPending,
     shouldEnterCombat,
     shouldEnterDuty,
     shouldEnterPassageTransit,
     shouldStayInCombat
 } from '../src/companion/stateMachine/transitions.js';
+import { action, runTree } from '../src/companion/behaviorTree/bt.js';
 
 function makeTargets(overrides = {}) {
     return {
@@ -47,11 +47,6 @@ function makeTargets(overrides = {}) {
 }
 
 describe('companion fsm transitions', () => {
-    it('resumeUpperMode respects preferredMode', () => {
-        assert.equal(resumeUpperMode({ preferredMode: 'wait' }), 'wait');
-        assert.equal(resumeUpperMode({ preferredMode: 'follow' }), 'follow');
-    });
-
     it('shouldEnterCombat when wantsCombat', () => {
         const targets = makeTargets();
         targets.ctx.agent.reflexes.wantsCombat = true;
@@ -105,12 +100,11 @@ describe('companion fsm transitions', () => {
         const base = makeTargets().ctx;
         base.movement = { stop() {} };
         base.doors = { resumePassage() {}, suspendPassage() {} };
-        const mode = { onEnter() {}, onExit() {}, tick() {} };
         const targets = createCompanionTargets({
             ctx: base,
             agent: base.agent,
-            followMode: mode,
-            waitMode: mode,
+            followMode: fakeMode(),
+            waitMode: fakeMode(),
             interrupts: []
         });
         const { root, states } = createRootMachine(targets);
@@ -138,21 +132,12 @@ describe('companion fsm transitions', () => {
         assert.equal(preferGearRecovery(targets), false);
     });
 
-    it('NestedStateMachine switches follow to wait on preferredMode', async () => {
+    it('a mode switch changes the normal branch, not the state', async () => {
         const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
         const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
-        const followMode = {
-            id: 'follow',
-            onEnter: async () => {},
-            onExit: async () => {},
-            tick: async () => {}
-        };
-        const waitMode = {
-            id: 'wait',
-            onEnter: async () => {},
-            onExit: async () => {},
-            tick: async () => {}
-        };
+        const calls = [];
+        const followMode = fakeMode('follow', calls);
+        const waitMode = fakeMode('wait', calls);
         const targets = createCompanionTargets({
             ctx: makeTargets().ctx,
             agent: makeTargets().ctx.agent,
@@ -163,10 +148,133 @@ describe('companion fsm transitions', () => {
         const { root, states } = createRootMachine(targets);
         root.active = true;
         root.onStateEntered();
-        assert.equal(root.activeState, states.follow);
+        assert.equal(root.activeState, states.normal);
+        assert.equal(targets.activeId, 'normal');
+
+        await states.normal.runTick();
         targets.preferredMode = 'wait';
         root.update();
-        assert.equal(root.activeState, states.wait);
-        assert.equal(targets.activeId, 'wait');
+        assert.equal(root.activeState, states.normal, 'switching modes is not a transition');
+        // update() runs the active behavior without awaiting it.
+        await new Promise((resolve) => setImmediate(resolve));
+
+        assert.deepEqual(calls, [
+            'follow:enter',
+            'follow:tick',
+            'follow:exit',
+            'wait:enter',
+            'wait:tick'
+        ]);
+        // The normal state shows and runs only the selected mode's tree.
+        assert.equal(states.normal.tree.mode, 'wait');
+        assert.equal(states.normal.tree.status, 'success');
+    });
+
+    it('routes interrupt work to the state of the first pending interrupt', async () => {
+        const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
+        const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
+        const base = makeTargets().ctx;
+        const loot = { name: 'nearby_loot', _lastShouldRun: false };
+        const grave = { name: 'own_grave', _lastShouldRun: false };
+        const stuck = { name: 'recovery', _lastShouldRun: false };
+        const targets = createCompanionTargets({
+            ctx: base,
+            agent: base.agent,
+            followMode: fakeMode('follow'),
+            waitMode: fakeMode('wait'),
+            interrupts: [loot, grave, stuck]
+        });
+        const { root, states } = createRootMachine(targets);
+        root.active = true;
+        root.onStateEntered();
+
+        stuck._lastShouldRun = true;
+        targets._dutyPending = true;
+        root.update();
+        assert.equal(root.activeState, states.stuck_recovery);
+
+        grave._lastShouldRun = true;
+        root.update();
+        assert.equal(root.activeState, states.death_recovery, 'an earlier-listed interrupt takes over');
+
+        grave._lastShouldRun = false;
+        stuck._lastShouldRun = false;
+        targets._dutyPending = false;
+        root.update();
+        assert.equal(root.activeState, states.normal);
+    });
+
+    it('plants only in follow mode, below every other job', async () => {
+        const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
+        const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
+        const base = makeTargets().ctx;
+        const planter = { work: { key: '1,63,0' }, release() {} };
+        const targets = createCompanionTargets({
+            ctx: base,
+            agent: base.agent,
+            followMode: fakeMode('follow'),
+            waitMode: fakeMode('wait'),
+            interrupts: [],
+            planter
+        });
+        const { root, states } = createRootMachine(targets);
+        root.active = true;
+        root.onStateEntered();
+
+        root.update();
+        assert.equal(root.activeState, states.planting);
+
+        base.agent.reflexes.wantsCombat = true;
+        root.update();
+        assert.equal(root.activeState, states.combat);
+        base.agent.reflexes.wantsCombat = false;
+        root.update();
+        assert.equal(root.activeState, states.normal);
+
+        targets.preferredMode = 'wait';
+        root.update();
+        assert.equal(root.activeState, states.normal, 'wait mode never plants');
+    });
+
+    it('a switch made during combat takes effect on return to normal', async () => {
+        const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
+        const { createCompanionTargets } = await import('../src/companion/stateMachine/targets.js');
+        const calls = [];
+        const base = makeTargets().ctx;
+        const targets = createCompanionTargets({
+            ctx: base,
+            agent: base.agent,
+            followMode: fakeMode('follow', calls),
+            waitMode: fakeMode('wait', calls),
+            interrupts: []
+        });
+        const { root, states } = createRootMachine(targets);
+        root.active = true;
+        root.onStateEntered();
+
+        base.agent.reflexes.wantsCombat = true;
+        root.update();
+        assert.equal(root.activeState, states.combat);
+        targets.preferredMode = 'wait';
+
+        base.agent.reflexes.wantsCombat = false;
+        root.update();
+        assert.equal(root.activeState, states.normal);
+        assert.deepEqual(calls, ['follow:enter', 'follow:exit', 'wait:enter']);
     });
 });
+
+/** A mode with a one-action tree that records what the machine asked of it. */
+function fakeMode(id = 'mode', calls = []) {
+    const tree = action(id, () => true);
+    return {
+        id,
+        tree,
+        onEnter: () => { calls.push(`${id}:enter`); },
+        onExit: () => { calls.push(`${id}:exit`); },
+        tick: async (ctx) => {
+            calls.push(`${id}:tick`);
+            return runTree(tree, ctx);
+        }
+    };
+}

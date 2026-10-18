@@ -117,16 +117,28 @@
                 <div class="card-head card-head-split">
                   <div>
                     <h2 class="card-title">状態遷移</h2>
-                    <p class="card-lead">相棒が実際に使っているステートマシンです。青が現在の状態、青い矢印はここから移りうる先です。</p>
+                    <p class="card-lead">相棒が実際に使っているステートマシンです。青が現在の状態、青い矢印はここから移りうる先です。状態をクリックすると、その中で動くビヘイビアツリーを表示します。</p>
                   </div>
                   <div id="fsm-current" class="fsm-current"></div>
                 </div>
+                <div id="fsm-mode" class="fsm-mode"></div>
                 <div id="fsm-graph" class="fsm-graph"><div class="empty">スポーンすると表示されます</div></div>
                 <div class="fsm-legend">
-                  <span><i class="swatch swatch-mode"></i>手動で選べるモード</span>
                   <span><i class="swatch swatch-auto"></i>状況に応じて自動で入る状態</span>
+                  <span><i class="swatch swatch-safety"></i>どの状態からでも最優先で入る安全系</span>
                   <span><i class="swatch swatch-active"></i>現在</span>
+                  <span><i class="swatch swatch-selected"></i>中身を表示中</span>
                 </div>
+                <p class="hint">ステートマシンは「いま何の仕事をしているか」、ビヘイビアツリーは「その仕事をこの瞬間どう進めるか」です。追従・待機はその上のモードで、「平常」で動くツリーと、作物を植えるかどうかを決めます。</p>
+                <h3 id="bt-title" class="section-title">状態の中身</h3>
+                <div class="bt-legend">
+                  <span><b>どれか</b>上から試し最初に成立したもの</span>
+                  <span><b>順番</b>上から順にすべて</span>
+                  <span><b>条件</b>状況の確認</span>
+                  <span><b>動作</b>実際に行うこと</span>
+                  <span><b class="is-ok">✓</b>今回成立 <b class="is-ng">×</b>今回不成立</span>
+                </div>
+                <div id="bt-tree" class="bt-panel"><div class="empty">スポーンすると表示されます</div></div>
                 <h3 class="section-title">最近の遷移</h3>
                 <ol id="fsm-history" class="timeline"><li class="muted">まだありません</li></ol>
               </article>

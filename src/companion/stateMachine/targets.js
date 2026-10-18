@@ -3,7 +3,7 @@
  */
 
 /**
- * @typedef {'follow'|'wait'|'combat'|'passage_transit'|'duty'} CompanionFsmStateId
+ * @typedef {'normal'|'planting'|'combat'|'passage_transit'|'loot'|'death_recovery'|'stuck_recovery'|'hazard_escape'|'boat_passenger'|'item_transfer'} CompanionFsmStateId
  */
 
 /**
@@ -13,6 +13,7 @@
  * @param {import('../modes/FollowMode.js').FollowMode} opts.followMode
  * @param {import('../modes/WaitMode.js').WaitMode} opts.waitMode
  * @param {Array<{ name: string, shouldRun: Function, run: Function }>} opts.interrupts
+ * @param {import('../planting/CropPlanter.js').CropPlanter} [opts.planter]
  */
 export function createCompanionTargets(opts) {
     return {
@@ -21,15 +22,15 @@ export function createCompanionTargets(opts) {
         followMode: opts.followMode,
         waitMode: opts.waitMode,
         interrupts: opts.interrupts || [],
-        /** @type {'follow'|'wait'} Player-selected upper mode (dialogue). */
+        /** @type {import('../planting/CropPlanter.js').CropPlanter} */
+        planter: opts.planter,
+        /** @type {'follow'|'wait'} Player-selected mode, read by the normal state's tree. */
         preferredMode: 'follow',
         /** Item transfer etc. — skip FSM behavior work. */
         paused: false,
         /** @type {CompanionFsmStateId} */
-        activeId: 'follow',
+        activeId: 'normal',
         /** A passage transaction must finish before normal work resumes. */
-        _passagePending: false,
-        /** Last non-combat/duty mode for return transitions. */
-        resumeMode: 'follow'
+        _passagePending: false
     };
 }

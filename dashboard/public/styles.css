@@ -589,9 +589,52 @@ button.small { padding: 2px 10px; font-size: 13px; }
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.05));
 }
 
-.fsm-node.is-auto rect { stroke: #c9c4be; stroke-dasharray: 4 3; }
-.fsm-node.is-preferred rect { stroke: var(--primary); stroke-width: 1.6; stroke-dasharray: none; }
+.fsm-node { cursor: pointer; outline: none; }
+.fsm-node rect { stroke: #c9c4be; stroke-dasharray: 4 3; }
+.fsm-node:hover rect,
+.fsm-node:focus-visible rect { stroke: var(--primary); }
 .fsm-node.is-active rect { fill: var(--primary); stroke: var(--primary); }
+.fsm-node.is-selected rect { stroke: var(--ink-secondary); stroke-width: 2.4; stroke-dasharray: none; }
+
+.fsm-node.is-safety rect { stroke: var(--orange); }
+.fsm-node.is-safety.is-active rect { fill: var(--orange); stroke: var(--orange); }
+.fsm-any rect { fill: var(--canvas-soft); stroke: #c9c4be; }
+.fsm-any .fsm-label { font-size: 12px; }
+
+.fsm-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.fsm-mode:empty { display: none; }
+.fsm-mode-label { margin-right: 4px; font-size: 13px; font-weight: 700; }
+.fsm-mode-label small { font-weight: 400; color: var(--ink-muted); }
+
+.fsm-bt {
+  text-anchor: end;
+  font-size: 9px;
+  font-weight: 700;
+  fill: var(--ink-faint);
+}
+.fsm-node.is-active .fsm-node.is-safety rect { stroke: var(--orange); }
+.fsm-node.is-safety.is-active rect { fill: var(--orange); stroke: var(--orange); }
+.fsm-any rect { fill: var(--canvas-soft); stroke: #c9c4be; }
+.fsm-any .fsm-label { font-size: 12px; }
+
+.fsm-mode {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.fsm-mode:empty { display: none; }
+.fsm-mode-label { margin-right: 4px; font-size: 13px; font-weight: 700; }
+.fsm-mode-label small { font-weight: 400; color: var(--ink-muted); }
+
+.fsm-bt { fill: rgba(255, 255, 255, 0.8); }
 
 .fsm-label {
   text-anchor: middle;
@@ -629,9 +672,137 @@ button.small { padding: 2px 10px; font-size: 13px; }
   vertical-align: -1px;
 }
 
-.swatch-mode { border-color: #bdb8b2; }
 .swatch-auto { border-style: dashed; border-color: #bdb8b2; }
 .swatch-active { background: var(--primary); border-color: var(--primary); }
+.swatch-selected { border-color: var(--ink-secondary); border-width: 2px; }
+.swatch-safety { border-color: var(--orange); }
+
+/* ===== behavior tree ===== */
+.bt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+.bt-legend b { margin-right: 4px; color: var(--ink-secondary); }
+.bt-legend b.is-ok { color: var(--green); }
+.bt-legend b.is-ng { color: var(--ink-faint); }
+
+.bt-panel {
+  overflow: auto;
+  max-height: 560px;
+  padding: 4px 0;
+}
+
+/*
+ * Top-down tree: each node's box sits above the row of its children,
+ * joined by connectors drawn with borders.
+ */
+.bt-tree,
+.bt-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  justify-content: center;
+}
+.bt-tree {
+  width: max-content;
+  min-width: 100%;
+}
+.bt-tree li {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px 3px 0;
+}
+.bt-tree ul {
+  position: relative;
+  padding-top: 16px;
+}
+/* Parent box → the bar over its children. */
+.bt-tree ul::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 50%;
+  height: 16px;
+  border-left: 1px solid #c9c4be;
+}
+/* Bar across siblings, with a stub down into each child box. */
+.bt-tree li::before,
+.bt-tree li::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  width: 50%;
+  height: 16px;
+  border-top: 1px solid #c9c4be;
+}
+.bt-tree li::before { right: 50%; }
+.bt-tree li::after { left: 50%; border-left: 1px solid #c9c4be; }
+.bt-tree li:first-child::before,
+.bt-tree li:last-child::after { border: 0 none; }
+.bt-tree li:last-child::before { border-right: 1px solid #c9c4be; }
+.bt-tree li:only-child { padding-top: 0; }
+.bt-tree li:only-child::before,
+.bt-tree li:only-child::after,
+.bt-tree > li::before,
+.bt-tree > li::after { display: none; }
+.bt-tree > li { padding-top: 0; }
+
+.bt-row {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  max-width: 9.5em;
+  padding: 4px 8px;
+  border: 1px solid var(--hairline);
+  border-radius: 6px;
+  background: var(--surface);
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.bt-kind {
+  flex: none;
+  min-width: 3em;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--ink-muted);
+  background: var(--canvas-soft);
+}
+.bt-condition > .bt-row .bt-kind { background: var(--primary-soft); color: var(--primary-active); }
+.bt-action > .bt-row .bt-kind { background: var(--green-soft); color: #137a2a; }
+
+.bt-head { display: flex; align-items: center; gap: 4px; }
+.bt-mark { font-weight: 700; }
+.bt-tree.is-live .is-success > .bt-row { background: var(--green-soft); border-color: var(--green); }
+.bt-tree.is-live .is-success > .bt-row .bt-mark { color: var(--green); }
+.bt-tree.is-live .is-failure > .bt-row { color: var(--ink-muted); }
+.bt-tree.is-live .is-failure > .bt-row .bt-mark { color: var(--ink-faint); }
+.bt-tree.is-live .is-skipped > .bt-row { color: var(--ink-faint); border-style: dashed; }
+
+/* The branch that the player-selected mode turns on. */
+.bt-node.is-mode-branch > .bt-row { font-weight: 700; }
+.bt-node.is-current-mode > .bt-row { box-shadow: inset 3px 0 0 var(--primary); border-color: var(--primary); }
+
+.timeline .tag {
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--primary-active);
+  background: var(--primary-soft);
+}
 
 .timeline {
   list-style: none;

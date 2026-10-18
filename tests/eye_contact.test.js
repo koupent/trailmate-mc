@@ -25,7 +25,7 @@ function entity(x, y, z, yaw = 0, pitch = 0) {
 
 function makeReactionFixture(overrides = {}) {
     let now = 0;
-    let fsmId = 'follow';
+    let fsmId = 'normal';
     const controls = new Map();
     const sneakPackets = [];
     const lookCalls = [];

@@ -187,7 +187,7 @@ describe('CompanionOrchestrator passage upkeep', () => {
             world.setBlock('oak_fence_gate', gatePos, { facing: 'north', open: false });
 
             await manager.tick();
-            assert.equal(manager.getActiveFsmId(), 'follow');
+            assert.equal(manager.getActiveFsmId(), 'normal');
 
             await manager.tick();
             assert.equal(resumed, true);
