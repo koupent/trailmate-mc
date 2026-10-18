@@ -112,7 +112,7 @@ function applyMode(isReady, settings = {}) {
   // 同じスロットへの appendChild でもノードは差し替わる（入力中のフォーカスが飛ぶ）。
   const slot = readyToSpawn ? settingsSlot : wizardSlot;
   if (panelSetup.parentElement !== slot) slot.appendChild(panelSetup);
-  // ウィザード完了直後だけ運用タブへ戻す（設定タブ閲覧中は維持）
+  // ウィザード完了直後だけプレイページへ戻す（設定ページ閲覧中は維持）
   if (readyToSpawn && !wasReady) showTab('operate');
 
   updateAccountStepVisibility(settings.authMethod === 'NONE');
