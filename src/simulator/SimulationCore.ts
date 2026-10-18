@@ -18,6 +18,7 @@ import {
 import {
   combatDistance,
   ENTITY_OVERLAP_RANGE,
+  GUARD_RANGED_THREAT_THRESHOLD,
   MELEE_HEIGHT_SLACK,
   MELEE_HOLD_RANGE,
   MELEE_STOP_RANGE,
@@ -1668,8 +1669,7 @@ function countRangedPressure(state: SimulationState, blocks: Set<string>): numbe
 /** CORE: 盾+遠距離圧ならガード中（箱庭の被弾軽減判定）。 */
 function isBotGuardingRanged(state: SimulationState, blocks: Set<string>): boolean {
   if (!state.inventory.includes('shield')) return false;
-  const threshold = state.presetParams?.guardRangedThreatThreshold ?? 1;
-  return countRangedPressure(state, blocks) >= Math.max(1, threshold);
+  return countRangedPressure(state, blocks) >= GUARD_RANGED_THREAT_THRESHOLD;
 }
 
 function moveEnemyAroundBlocks(

@@ -5,11 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {
   baselinePresetId,
-  blendCrowdAvoidDirection,
   classifyEnemy,
   isRangedEntity,
   clampPreset,
-  decideSpacing,
   getPresetParams,
   listPresetsForContext,
   PRESET_BOUNDS
@@ -21,14 +19,7 @@ import {
   generateThreatPositionCandidates,
   movementControlsTowardBearing,
   perpendicularDodgeBearing,
-  shouldEnterArcNarrowing,
-  shouldExitArcNarrowing,
-  shouldApplyTacticalReposition,
-  updateArcNarrowLatch,
-  ENTER_ARC_NARROW_SPAN_RAD,
-  EXIT_ARC_NARROW_SPAN_RAD,
-  spanDegrees,
-  strafeSignForOpenArc
+  spanDegrees
 } from '../src/combat/threatArc.js';
 import {
   decideCombatIntent,
@@ -68,22 +59,12 @@ describe('CombatProfiles', () => {
   it('プリセット値を安全範囲内へ制限する', () => {
     const clamped = clampPreset({
       ...getPresetParams('melee-baseline'),
-      followRange: 99,
-      crowdAvoidBias: -3
+      rangedDodgeBurstMs: 99999,
+      creeperSoftEvadeRange: -3
     });
-    assert.equal(clamped.followRange, PRESET_BOUNDS.followRange.max);
-    assert.equal(clamped.crowdAvoidBias, PRESET_BOUNDS.crowdAvoidBias.min);
-
-    const hysteresis = clampPreset({
-      ...getPresetParams('melee-baseline'),
-      arcNarrowEnterSpanDeg: 40,
-      arcNarrowExitSpanDeg: 50
-    });
-    assert.ok(
-      hysteresis.arcNarrowExitSpanDeg <= hysteresis.arcNarrowEnterSpanDeg - 5,
-      '解除角は開始角より狭く保つ'
-    );
-    assert.equal(getPresetParams('ranged-baseline').arcNarrowExitSpanDeg, 35);
+    assert.equal(clamped.rangedDodgeBurstMs, PRESET_BOUNDS.rangedDodgeBurstMs.max);
+    assert.equal(clamped.creeperSoftEvadeRange, PRESET_BOUNDS.creeperSoftEvadeRange.min);
+    assert.equal(getPresetParams('ranged-baseline').rangedDodgeBurstMs, 450);
   });
 
   it('敵数バケットを使わずクラス別プリセット一覧を返す', () => {
@@ -128,27 +109,6 @@ describe('CombatProfiles', () => {
     );
   });
 
-  it('近接敵へ密着した場合に後退を選ぶ', () => {
-    const params = getPresetParams('melee-baseline');
-    const decision = decideSpacing({
-      params,
-      enemyClass: 'melee',
-      distance: 1.4,
-      enemyFacingBot: 1
-    });
-    assert.equal(decision.needBackstep, true);
-    assert.equal(decision.needStrafe, true);
-  });
-
-  it('補正値に応じて敵集団回避方向を混ぜる', () => {
-    const blended = blendCrowdAvoidDirection({
-      awayFromTarget: { x: 1, z: 0 },
-      awayFromCrowd: { x: 0, z: 1 },
-      bias: 0.5
-    });
-    assert.ok(blended.x > 0);
-    assert.ok(blended.z > 0);
-  });
 });
 
 describe('threatArc位置取り', () => {
@@ -284,77 +244,14 @@ describe('threatArc位置取り', () => {
     approximately(rotated.chosen.spanRad, first.chosen.spanRad);
   });
 
-  it('開始・終了ヒステリシス境界を適用する', () => {
-    assert.equal(
-      shouldEnterArcNarrowing({
-        threatCount: 2,
-        spanRad: ENTER_ARC_NARROW_SPAN_RAD * 0.95
-      }),
-      false
-    );
-    assert.equal(
-      shouldEnterArcNarrowing({
-        threatCount: 2,
-        spanRad: ENTER_ARC_NARROW_SPAN_RAD * 1.05
-      }),
-      true
-    );
-    assert.equal(shouldExitArcNarrowing(EXIT_ARC_NARROW_SPAN_RAD * 0.9), true);
-    assert.equal(shouldExitArcNarrowing(EXIT_ARC_NARROW_SPAN_RAD * 1.1), false);
-  });
-
-  it('扇狭窄の開始・解除角はプリセット閾値で変えられる', () => {
-    const enter = (50 * Math.PI) / 180;
-    const exit = (35 * Math.PI) / 180;
-    assert.equal(
-      shouldEnterArcNarrowing({ threatCount: 2, spanRad: (40 * Math.PI) / 180, enterSpanRad: enter }),
-      false
-    );
-    assert.equal(
-      shouldEnterArcNarrowing({ threatCount: 2, spanRad: (55 * Math.PI) / 180, enterSpanRad: enter }),
-      true
-    );
-    assert.equal(shouldExitArcNarrowing((30 * Math.PI) / 180, exit), true);
-    assert.equal(shouldExitArcNarrowing((40 * Math.PI) / 180, exit), false);
-
-    let latched = updateArcNarrowLatch({
-      latched: false,
-      threatCount: 2,
-      spanRad: (55 * Math.PI) / 180,
-      enterSpanRad: enter,
-      exitSpanRad: exit
-    });
-    assert.equal(latched, true);
-    latched = updateArcNarrowLatch({
-      latched: true,
-      threatCount: 2,
-      spanRad: (40 * Math.PI) / 180,
-      enterSpanRad: enter,
-      exitSpanRad: exit
-    });
-    assert.equal(latched, true, 'exit まではラッチ維持');
-    latched = updateArcNarrowLatch({
-      latched: true,
-      threatCount: 2,
-      spanRad: (30 * Math.PI) / 180,
-      enterSpanRad: enter,
-      exitSpanRad: exit
-    });
-    assert.equal(latched, false, 'exit 未満で解除');
-  });
-
-  it('狭い扇形でも改善位置があれば戦術 reposition を適用する', () => {
+  it('狭い扇形でも改善位置があれば移動候補を返す', () => {
     const bot = { x: -338.13, z: 209.8 };
     const threats = [
       { x: -333.67, z: 209.5 },
       { x: -331.33, z: 208.32 }
     ];
     const selection = chooseBestThreatPosition(bot, threats, { step: 2.25, minimumImprovement: 0 });
-    assert.equal(
-      shouldEnterArcNarrowing({ threatCount: 2, spanRad: selection.current.spanRad }),
-      false
-    );
-    assert.equal(shouldApplyTacticalReposition(2, selection), true);
+    assert.equal(selection.moved, true);
     assert.ok(selection.chosen.spanRad < selection.current.spanRad);
   });
 
@@ -408,17 +305,6 @@ describe('threatArc位置取り', () => {
     const line = { x: Math.sin(narrowed!.midRad), z: Math.cos(narrowed!.midRad) };
     const movement = { x: Math.sin(dodge), z: Math.cos(dodge) };
     approximately(line.x * movement.x + line.z * movement.z, 0);
-  });
-
-  it('空いた側への横移動方向を決定論的に選ぶ', () => {
-    const bot = { x: 0, z: 0 };
-    const arc = computeThreatArc(bot, [{ x: 2, z: 4 }, { x: 4, z: 2 }]);
-    assert.ok(arc);
-    assert.equal(strafeSignForOpenArc({
-      botPos: bot,
-      primaryPos: { x: 2, z: 4 },
-      arc: arc!
-    }), 1);
   });
 
   it('候補評価に危険度と移動コストを含める', () => {
@@ -804,8 +690,8 @@ describe('CombatEpisodeTrackerの採点', () => {
 
 describe('ParamTuner', () => {
   it('オーバーレイを安全範囲にクランプして合成する', () => {
-    const params = applyParamOverlay('melee-baseline', { followRange: 99 });
-    assert.equal(params.followRange, PRESET_BOUNDS.followRange.max);
+    const params = applyParamOverlay('melee-baseline', { rangedDodgeBurstMs: 99999 });
+    assert.equal(params.rangedDodgeBurstMs, PRESET_BOUNDS.rangedDodgeBurstMs.max);
   });
 
   it('変異はチューナブルキーのみを変える', () => {
@@ -990,7 +876,7 @@ describe('CombatOptimizerとStateStore', () => {
     assert.equal(result.paramsAdopted, true);
     const entry = store.getContextState(ctx, 'ranged-baseline');
     assert.equal(entry.tunedParams?.rangedDodgeBurstMs, 720);
-    assert.equal(entry.tunedParams?.followRange, undefined);
+    assert.deepEqual(Object.keys(entry.tunedParams ?? {}), ['rangedDodgeBurstMs']);
     assert.equal(entry.paramAdoptCount, 1);
   });
 
