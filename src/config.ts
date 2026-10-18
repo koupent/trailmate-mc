@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { normalizeMobHostility, type MobHostilityConfig } from './world/mobHostility.js';
 
 dotenv.config();
 
@@ -164,6 +165,8 @@ export type AppConfig = {
   minecraft_version: string;
   language: string;
   chat_ingame: boolean;
+  /** モブごとの攻撃方針（ダッシュボードで設定）。 */
+  mob_hostility: MobHostilityConfig;
   companion: CompanionConfig;
 };
 
@@ -322,6 +325,7 @@ export function loadConfig(): AppConfig {
     minecraft_version: String(file.minecraft_version || '1.21.6'),
     language: String(file.language || 'ja'),
     chat_ingame: file.chat_ingame !== false,
+    mob_hostility: normalizeMobHostility(file.mob_hostility),
     companion: {
       ...DEFAULT_COMPANION,
       ...companionFile,

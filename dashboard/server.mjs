@@ -99,6 +99,13 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request);
       return json(response, 200, await writeRetentionSettings(body?.retention));
     }
+    if (request.method === 'GET' && url.pathname === '/api/mobs') {
+      return json(response, 200, await readMobSettings());
+    }
+    if (request.method === 'POST' && url.pathname === '/api/mobs') {
+      const body = await readJson(request);
+      return json(response, 200, await writeMobSettings(body?.mobHostility));
+    }
     if (request.method === 'GET' && url.pathname === '/api/status') {
       return sendControlStatus(response);
     }
@@ -358,6 +365,59 @@ async function writeRetentionSettings(input) {
       ? '保存しました。次のチェスト返却から新しい設定で動きます。'
       : '保存しました。相棒が未スポーンのため、次のスポーンから反映されます。'
   };
+}
+
+/**
+ * モブ一覧（Bot が手持ちのデータと遭遇記録から作る）と、config.json の保存値。
+ */
+async function readMobSettings() {
+  let catalog = null;
+  try {
+    const upstream = await fetch(`${controlUrl}/mobs/catalog`, { signal: AbortSignal.timeout(5000) });
+    if (upstream.ok) catalog = await upstream.json();
+  } catch {
+    catalog = null;
+  }
+  const config = await readConfigJson();
+  return {
+    mobs: catalog?.mobs ?? null,
+    mobHostility: normalizeMobHostility(config.mob_hostility),
+    message: catalog ? null : '相棒（ボット）コンテナの準備中です。モブ一覧を取得できるまでお待ちください。'
+  };
+}
+
+/** 書き方は writeRetentionSettings と同じ（bind mount のため in-place 書き込み）。 */
+async function writeMobSettings(input) {
+  const mobHostility = normalizeMobHostility(input);
+  const config = await readConfigJson();
+  config.mob_hostility = mobHostility;
+  await fs.writeFile(PATHS.config, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  let applied = false;
+  try {
+    const upstream = await fetch(`${controlUrl}/mobs`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ mob_hostility: mobHostility }),
+      signal: AbortSignal.timeout(5000)
+    });
+    applied = upstream.ok;
+  } catch {
+    applied = false;
+  }
+  return {
+    ok: true,
+    mobHostility,
+    message: applied ? '保存しました。すぐに反映されます。' : '保存しました。次のスポーンから反映されます。'
+  };
+}
+
+function normalizeMobHostility(input) {
+  const result = {};
+  if (!input || typeof input !== 'object') return result;
+  for (const [key, value] of Object.entries(input)) {
+    if (/^[a-z0-9_]+$/.test(key) && (value === 'attack' || value === 'ignore')) result[key] = value;
+  }
+  return result;
 }
 
 /**
@@ -1016,7 +1076,7 @@ async function waitForViaProxyHealthy(timeoutMs) {
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
   if (
-    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'logFollow.js', 'retention.js', 'styles.css'].includes(
+    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'logFollow.js', 'retention.js', 'mobs.js', 'styles.css'].includes(
       file
     )
   ) {

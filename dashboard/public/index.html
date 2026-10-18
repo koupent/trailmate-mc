@@ -176,6 +176,21 @@
                   <span id="retention-msg" class="msg"></span>
                 </div>
               </article>
+              <article class="card" id="mobs-zone">
+                <div class="card-head">
+                  <h2 class="card-title">攻撃するモブ</h2>
+                  <p class="card-lead">
+                    相棒が攻撃するかどうかをモブごとに決めます。「未設定」のモブは攻撃しません。
+                    ゲームの更新で増えたモブは、相棒が出会ったときにここへ追加されます。
+                  </p>
+                </div>
+                <div id="mobs-summary"></div>
+                <div id="mobs-list" aria-live="polite">読み込み中…</div>
+                <div class="row">
+                  <button type="button" id="mobs-save" class="primary" disabled>モブ設定を保存</button>
+                  <span id="mobs-msg" class="msg"></span>
+                </div>
+              </article>
             </div>
           </div>
         </section>
@@ -238,5 +253,6 @@
   </div>
   <script type="module" src="/app.js"></script>
   <script type="module" src="/retention.js"></script>
+  <script type="module" src="/mobs.js"></script>
 </body>
 </html>
