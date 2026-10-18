@@ -11,6 +11,9 @@ import { prepareCompanionWorldTick } from './prepareTick.js';
 import { startPassageUpkeep, syncPassageTransit } from './passageUpkeep.js';
 import { refreshDutyFlags, shouldEnterPassageTransit } from './transitions.js';
 
+/** Recent transitions kept for the dashboard timeline. */
+const HISTORY_LIMIT = 12;
+
 export class CompanionOrchestrator {
     /**
      * @param {import('../CompanionContext.js').CompanionContext} ctx
@@ -48,6 +51,8 @@ export class CompanionOrchestrator {
         this.fsmStates = built.states;
         this.root.active = true;
         this.root.onStateEntered();
+        /** @type {Array<{ name: string, from: string, to: string, at: number }>} newest last */
+        this.transitionHistory = [];
     }
 
     pause() {
@@ -81,6 +86,29 @@ export class CompanionOrchestrator {
      */
     getActiveFsmId() {
         return this.targets.activeId;
+    }
+
+    /**
+     * The machine as it is actually wired, for the dashboard to draw. Read
+     * from the live transitions so added or removed states show up as-is.
+     */
+    describeFsm() {
+        return {
+            active: this.targets.activeId,
+            preferredMode: this.targets.preferredMode,
+            modes: [...this.modes.keys()],
+            states: Object.values(this.fsmStates).map((state) => state.stateName),
+            transitions: (this.root.transitions || []).map((transition) => ({
+                name: transition.name,
+                from: transition.parentState?.stateName,
+                to: transition.childState?.stateName
+            })),
+            duties: this.interrupts.map((interrupt) => ({
+                name: interrupt.name,
+                pending: interrupt._lastShouldRun === true
+            })),
+            history: this.transitionHistory
+        };
     }
 
     /**
@@ -164,6 +192,13 @@ export class CompanionOrchestrator {
             if (transition.parentState !== nested.activeState) continue;
             if (!(transition.isTriggered() || transition.shouldTransition())) continue;
             transition.resetTrigger();
+            this.transitionHistory.push({
+                name: transition.name,
+                from: nested.activeState.stateName,
+                to: transition.childState.stateName,
+                at: Date.now()
+            });
+            if (this.transitionHistory.length > HISTORY_LIMIT) this.transitionHistory.shift();
             nested.activeState.active = false;
             nested.activeState.onStateExited?.();
             transition.onTransition();

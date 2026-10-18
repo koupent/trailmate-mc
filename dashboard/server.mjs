@@ -117,6 +117,13 @@ const server = http.createServer(async (request, response) => {
       }
       return proxyControl(response, '/despawn', 'POST');
     }
+    if (request.method === 'GET' && url.pathname === '/api/commands') {
+      return proxyControl(response, '/commands', 'GET');
+    }
+    if (request.method === 'POST' && url.pathname === '/api/command') {
+      const body = await readJson(request);
+      return proxyControl(response, '/command', 'POST', JSON.stringify({ id: body?.id }));
+    }
     if (request.method === 'GET' && url.pathname === '/api/logs') {
       const service = url.searchParams.get('service') || 'trailmate';
       const tail = Number(url.searchParams.get('tail') || 40);
@@ -772,10 +779,12 @@ async function sendControlStatus(response) {
   }
 }
 
-async function proxyControl(response, pathname, method = 'GET') {
+async function proxyControl(response, pathname, method = 'GET', body = undefined) {
   try {
     const upstream = await fetch(`${controlUrl}${pathname}`, {
       method,
+      body,
+      headers: body ? { 'content-type': 'application/json' } : undefined,
       signal: AbortSignal.timeout(method === 'GET' ? 2000 : 120000)
     });
     const text = await upstream.text();
@@ -1007,7 +1016,7 @@ async function waitForViaProxyHealthy(timeoutMs) {
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
   if (
-    !['index.html', 'app.js', 'domSync.js', 'logFollow.js', 'retention.js', 'styles.css'].includes(
+    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'logFollow.js', 'retention.js', 'styles.css'].includes(
       file
     )
   ) {

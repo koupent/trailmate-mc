@@ -1,5 +1,6 @@
 import { createLogFollowState } from './logFollow.js';
 import { syncHtml, syncProp, syncText, syncTextKeepingScroll } from './domSync.js';
+import { renderFsmSvg } from './fsmGraph.js';
 
 /* ===== helpers ===== */
 const POLL_INTERVAL_MS = 2000;
@@ -51,6 +52,13 @@ const spawnMsg = document.getElementById('spawn-msg');
 const spawnBlockReason = document.getElementById('spawn-block-reason');
 const spawnDiagnosticsEl = document.getElementById('spawn-diagnostics');
 const statusPanel = document.getElementById('status-panel');
+const inventoryPanel = document.getElementById('inventory-panel');
+const fsmGraphEl = document.getElementById('fsm-graph');
+const fsmCurrentEl = document.getElementById('fsm-current');
+const fsmHistoryEl = document.getElementById('fsm-history');
+const modeSwitchEl = document.getElementById('mode-switch');
+const commandListEl = document.getElementById('command-list');
+const commandMsg = document.getElementById('command-msg');
 const msLoginBtn = document.getElementById('ms-login-btn');
 const msCancelBtn = document.getElementById('ms-cancel-btn');
 const msLoginMsg = document.getElementById('ms-login-msg');
@@ -104,7 +112,7 @@ function applyMode(isReady, settings = {}) {
   // 同じスロットへの appendChild でもノードは差し替わる（入力中のフォーカスが飛ぶ）。
   const slot = readyToSpawn ? settingsSlot : wizardSlot;
   if (panelSetup.parentElement !== slot) slot.appendChild(panelSetup);
-  // ウィザード完了直後だけ運用タブへ戻す（設定タブ閲覧中は維持）
+  // ウィザード完了直後だけプレイページへ戻す（設定ページ閲覧中は維持）
   if (readyToSpawn && !wasReady) showTab('operate');
 
   updateAccountStepVisibility(settings.authMethod === 'NONE');
@@ -112,8 +120,8 @@ function applyMode(isReady, settings = {}) {
 
 function showTab(tabId) {
   currentTab = tabId;
-  // `.tab` だけだと保持ピッカーのサブタブまで掴んで、選択表示を消してしまう。
-  document.querySelectorAll('.tab[data-tab]').forEach((button) => {
+  // `.tab` は保持ピッカーのサブタブ。ページ切替は data-tab を持つ項目だけ。
+  document.querySelectorAll('.nav-item[data-tab]').forEach((button) => {
     const active = button.getAttribute('data-tab') === tabId;
     button.classList.toggle('is-active', active);
     button.setAttribute('aria-selected', active ? 'true' : 'false');
@@ -134,7 +142,7 @@ function showTab(tabId) {
   document.dispatchEvent(new CustomEvent('trailmate:tab', { detail: { tabId } }));
 }
 
-document.querySelectorAll('.tab').forEach((button) => {
+document.querySelectorAll('.nav-item[data-tab]').forEach((button) => {
   button.addEventListener('click', () => {
     showTab(button.getAttribute('data-tab'));
   });
@@ -389,6 +397,8 @@ despawnBtn.addEventListener('click', async () => {
 
 function renderStatus(status) {
   renderSpawnDiagnostics(status?.diagnostics);
+  const spawned = Boolean(status?.backendReady !== false && status?.spawned);
+  renderCompanionPanels(spawned ? status : null);
 
   if (!status || status.backendReady === false) {
     const message =
@@ -399,7 +409,7 @@ function renderStatus(status) {
     syncHtml(
       statusPanel,
       `
-      <div><span class="pill off">準備中</span></div>
+      <div class="status-line"><span class="pill off">準備中</span></div>
       <div class="muted">${escapeHtml(message)}</div>
     `
     );
@@ -428,7 +438,7 @@ function renderStatus(status) {
     syncHtml(
       statusPanel,
       `
-      <div><span class="pill off">未スポーン</span> ${escapeHtml(status.botName || '')}</div>
+      <div class="status-line"><span class="pill off">未スポーン</span> ${escapeHtml(status.botName || '')}</div>
       <div class="muted">${status.spawning ? '接続処理中…' : 'ワールドには出ていません。時間は進みません。'}</div>
       ${preparingNote}
       ${err}
@@ -442,29 +452,206 @@ function renderStatus(status) {
   const pos = status.position
     ? `${status.position.x}, ${status.position.y}, ${status.position.z}`
     : '-';
-  const inv = Array.isArray(status.inventory) && status.inventory.length
-    ? `<ul class="inv">${status.inventory
-        .map((item) => {
-          const label = item.displayName || item.name;
-          return `<li>${escapeHtml(label)} × ${item.count}</li>`;
-        })
-        .join('')}</ul>`
-    : '<div class="muted">持ち物なし</div>';
 
   syncHtml(
     statusPanel,
     `
-    <div><span class="pill on">スポーン中</span> ${escapeHtml(status.username || status.botName || '')}</div>
-    <div>HP: ${fmt(status.health)} / 空腹: ${fmt(status.food)}</div>
-    <div>座標: ${escapeHtml(pos)}</div>
-    <div>ディメンション: ${escapeHtml(status.dimension || '-')}</div>
-    <div>オーナー: ${escapeHtml(status.ownerName || '未ロック')}</div>
-    <div>希望モード: <strong>${escapeHtml(status.preferredMode || '-')}</strong></div>
-    <div>動作中 FSM: <strong>${escapeHtml(status.activeFsm || '-')}</strong></div>
-    <div>持ち物:${inv}</div>
+    <div class="status-line"><span class="pill on">スポーン中</span> <strong>${escapeHtml(status.username || status.botName || '')}</strong></div>
+    <dl class="props">
+      <dt>HP</dt><dd>${fmt(status.health)} / 20</dd>
+      <dt>満腹度</dt><dd>${fmt(status.food)} / 20</dd>
+      <dt>座標</dt><dd>${escapeHtml(pos)}</dd>
+      <dt>ディメンション</dt><dd>${escapeHtml(status.dimension || '-')}</dd>
+      <dt>オーナー</dt><dd>${escapeHtml(status.ownerName || '未ロック')}</dd>
+    </dl>
   `
   );
 }
+
+/* ===== state machine ===== */
+/**
+ * Japanese names for the states the bot reports. A state without an entry
+ * still appears in the diagram under its raw id.
+ */
+const STATE_TEXT = {
+  follow: ['追従', 'オーナーについていく'],
+  wait: ['待機', 'その場で待つ'],
+  combat: ['戦闘', '敵に対処する'],
+  passage_transit: ['通路通過', '扉・ゲートを通る'],
+  duty: ['割り込み作業', '回収・復帰など']
+};
+
+const DUTY_TEXT = {
+  nearby_loot: '近くのアイテム回収',
+  own_grave: '自分の墓を回収',
+  death_return: '死亡地点から戻る',
+  recovery: 'スタックから復帰'
+};
+
+function stateLabel(id) {
+  return STATE_TEXT[id]?.[0] || id;
+}
+
+/** Duty says which interrupt it is actually running, when one is pending. */
+function stateNote(fsm, id) {
+  if (id === 'duty') {
+    const pending = (fsm.duties || []).find((duty) => duty.pending);
+    if (pending) return DUTY_TEXT[pending.name] || pending.name;
+  }
+  return STATE_TEXT[id]?.[1] || id;
+}
+
+function formatTime(at) {
+  return new Date(at).toLocaleTimeString('ja-JP', { hour12: false });
+}
+
+function renderFsm(fsm) {
+  if (!fsm) {
+    syncHtml(fsmGraphEl, '<div class="empty">スポーンすると表示されます</div>');
+    syncHtml(fsmCurrentEl, '');
+    syncHtml(fsmHistoryEl, '<li class="muted">まだありません</li>');
+    return;
+  }
+
+  syncHtml(
+    fsmGraphEl,
+    renderFsmSvg(fsm, { label: stateLabel, note: (id) => stateNote(fsm, id) })
+  );
+  syncHtml(
+    fsmCurrentEl,
+    `<div class="fsm-current-label">${escapeHtml(stateLabel(fsm.active))}</div>
+    <div class="fsm-current-note">${escapeHtml(stateNote(fsm, fsm.active))} · 希望モード ${escapeHtml(
+      stateLabel(fsm.preferredMode)
+    )}</div>`
+  );
+
+  const history = [...(fsm.history || [])].reverse();
+  syncHtml(
+    fsmHistoryEl,
+    history.length
+      ? history
+          .map(
+            (entry) => `<li title="${escapeHtml(entry.name)}"><time>${formatTime(entry.at)}</time><span>${escapeHtml(
+              stateLabel(entry.from)
+            )}<span class="arrow">→</span><strong>${escapeHtml(stateLabel(entry.to))}</strong></span></li>`
+          )
+          .join('')
+      : '<li class="muted">スポーンしてからの遷移はまだありません</li>'
+  );
+}
+
+/* ===== modes / commands ===== */
+/** @type {Array<{ id: string, kind: 'mode'|'action', word: string, description: string }>|null} */
+let chatCommands = null;
+let companionSpawned = false;
+let preferredMode = null;
+
+async function loadCommands() {
+  if (chatCommands) return;
+  try {
+    const data = await api('/api/commands');
+    if (!Array.isArray(data.commands)) return;
+    chatCommands = data.commands;
+  } catch {
+    return;
+  }
+  syncHtml(
+    modeSwitchEl,
+    chatCommands
+      .filter((command) => command.kind === 'mode')
+      .map(
+        (command) => `<button type="button" data-run="${escapeHtml(command.id)}">${escapeHtml(
+          stateLabel(command.id)
+        )}<span class="segmented-sub">${escapeHtml(command.description)}</span></button>`
+      )
+      .join('')
+  );
+  syncHtml(
+    commandListEl,
+    chatCommands
+      .map(
+        (command) => `<tr>
+        <td class="cmd-word"><code>${escapeHtml(command.word)}</code><span class="cmd-kind">${
+          command.kind === 'mode' ? 'モード' : 'アクション'
+        }</span></td>
+        <td>${escapeHtml(command.description)}</td>
+        <td class="cmd-actions">
+          <button type="button" class="small" data-run="${escapeHtml(command.id)}">実行</button>
+          <button type="button" class="small" data-copy-word="${escapeHtml(command.word)}">コピー</button>
+        </td>
+      </tr>`
+      )
+      .join('')
+  );
+  syncCommandButtons();
+}
+
+function syncCommandButtons() {
+  document.querySelectorAll('[data-run]').forEach((button) => {
+    syncProp(button, 'disabled', !companionSpawned);
+  });
+  modeSwitchEl.querySelectorAll('[data-run]').forEach((button) => {
+    const active = companionSpawned && button.getAttribute('data-run') === preferredMode;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+}
+
+function renderCompanionPanels(status) {
+  companionSpawned = Boolean(status);
+  preferredMode = status?.preferredMode ?? null;
+  syncCommandButtons();
+  renderFsm(status?.fsm ?? null);
+
+  if (!status) {
+    syncHtml(inventoryPanel, '<span class="muted">スポーンすると表示されます</span>');
+    return;
+  }
+  const items = Array.isArray(status.inventory) ? status.inventory : [];
+  syncHtml(
+    inventoryPanel,
+    items.length
+      ? items
+          .map(
+            (item) =>
+              `<span class="inv-chip">${escapeHtml(item.displayName || item.name)}<b>×${item.count}</b></span>`
+          )
+          .join('')
+      : '<span class="muted">持ち物なし</span>'
+  );
+}
+
+async function runCommand(id) {
+  const command = chatCommands?.find((entry) => entry.id === id);
+  if (!command) return;
+  setMsg(commandMsg, `「${command.word}」を送信中…`);
+  try {
+    await api('/api/command', { method: 'POST', body: JSON.stringify({ id }) });
+    setMsg(commandMsg, `「${command.word}」を指示しました`, 'ok');
+    await refreshStatus();
+  } catch (error) {
+    setMsg(commandMsg, error.message, 'err');
+  }
+}
+
+async function copyWord(word) {
+  try {
+    await navigator.clipboard.writeText(word);
+    setMsg(commandMsg, `「${word}」をコピーしました。マイクラのチャットに貼り付けて使えます`, 'ok');
+  } catch {
+    setMsg(commandMsg, 'コピーに失敗しました。ワードを手で選択してください', 'err');
+  }
+}
+
+document.addEventListener('click', (event) => {
+  const run = event.target.closest('[data-run]');
+  if (run && !run.disabled) {
+    void runCommand(run.getAttribute('data-run'));
+    return;
+  }
+  const copy = event.target.closest('[data-copy-word]');
+  if (copy) void copyWord(copy.getAttribute('data-copy-word'));
+});
 
 async function refreshStatus() {
   try {
@@ -475,6 +662,7 @@ async function refreshStatus() {
       status.diagnostics?.summary || status.backendMessage || status.error || '';
     syncSpawnControls();
     renderStatus(status);
+    if (backendReady) void loadCommands();
   } catch (error) {
     backendReady = false;
     spawnReady = false;
