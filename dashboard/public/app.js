@@ -462,14 +462,34 @@ function renderStatus(status) {
     `
     <div class="status-line"><span class="pill on">スポーン中</span> <strong>${escapeHtml(status.username || status.botName || '')}</strong></div>
     <dl class="props">
-      <dt>HP</dt><dd>${fmt(status.health)} / 20</dd>
+      <dt>体力</dt><dd>${fmt(status.health)} / 20</dd>
       <dt>満腹度</dt><dd>${fmt(status.food)} / 20</dd>
       <dt>座標</dt><dd>${escapeHtml(pos)}</dd>
-      <dt>ディメンション</dt><dd>${escapeHtml(status.dimension || '-')}</dd>
+      <dt>ディメンション</dt><dd>${escapeHtml(dimensionLabel(status.dimension))}</dd>
       <dt>オーナー</dt><dd>${escapeHtml(status.ownerName || '未ロック')}</dd>
     </dl>
+    ${
+      status.unsetMobs?.length
+        ? `<div class="warn">攻撃するか未設定のモブに出会いました（${escapeHtml(
+            status.unsetMobs.map((mob) => mob.label).join('、')
+          )}）。設定タブの「攻撃するモブ」で選んでください。</div>`
+        : ''
+    }
   `
   );
+}
+
+/** ゲーム内の日本語表記に合わせる。 */
+const DIMENSION_TEXT = {
+  overworld: 'オーバーワールド',
+  the_nether: 'ネザー',
+  the_end: 'ジ・エンド'
+};
+
+function dimensionLabel(dimension) {
+  if (!dimension) return '-';
+  const id = String(dimension).replace(/^minecraft:/, '');
+  return DIMENSION_TEXT[id] || id;
 }
 
 /* ===== state machine ===== */

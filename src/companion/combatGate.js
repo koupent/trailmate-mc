@@ -37,7 +37,8 @@ function isWeaponItem(bot, item) {
 function resolveProtectRanges(ctx) {
   return {
     ...DEFAULT_PROTECT_RANGES,
-    botChaseRange: ctx.config?.reflexes?.hostile_range ?? DEFAULT_PROTECT_RANGES.botChaseRange
+    botChaseRange: ctx.config?.reflexes?.hostile_range ?? DEFAULT_PROTECT_RANGES.botChaseRange,
+    ownerProtectRange: ctx.config?.reflexes?.owner_protect_range ?? DEFAULT_PROTECT_RANGES.ownerProtectRange
   };
 }
 

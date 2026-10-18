@@ -17,6 +17,12 @@ import {
 } from '../companion/utils/retentionCatalog.js';
 import { resolveRetentionPolicy } from '../companion/utils/retentionPolicy.js';
 import { ACTION_COMMANDS, MODE_COMMANDS } from '../companion/dialogueParse.js';
+import {
+  buildMobCatalog,
+  listUnsetEncounters,
+  setMobHostility
+} from '../world/mobHostility.js';
+import { settingsSchema } from '../settings/companionSettings.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -79,6 +85,17 @@ export function startControlServer(
         const body = await readJson(request);
         return json(response, 200, applyRetention(state, body));
       }
+      if (request.method === 'GET' && url.pathname === '/settings/schema') {
+        return json(response, 200, { categories: settingsSchema() });
+      }
+      if (request.method === 'GET' && url.pathname === '/mobs/catalog') {
+        const { registry, version } = retentionRegistry(state);
+        return json(response, 200, { version, mobs: buildMobCatalog(registry as never, Object.keys(loadConfig().mob_hostility)) });
+      }
+      if (request.method === 'POST' && url.pathname === '/mobs') {
+        const body = (await readJson(request)) as { mob_hostility?: unknown };
+        return json(response, 200, { ok: true, mob_hostility: setMobHostility(body?.mob_hostility) });
+      }
       json(response, 404, { error: 'not found' });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -111,6 +128,7 @@ export async function spawnCompanion(
     // Pick up dashboard edits to .env / config.json without recreating the container.
     dotenv.config({ override: true });
     const resolved = config ?? loadConfig();
+    setMobHostility(resolved.mob_hostility);
     console.log(`[trailmate] spawning to ${resolved.host}:${resolved.port} as ${resolved.botName}`);
 
     let host: TrailmateHost | null = null;
@@ -234,7 +252,8 @@ export function buildStatus(state: ControlState) {
     preferredMode: manager?.getCurrentModeId?.() ?? null,
     activeFsm: manager?.getActiveFsmId?.() ?? null,
     fsm: manager?.describeFsm?.() ?? null,
-    inventory: items
+    inventory: items,
+    unsetMobs: listUnsetEncounters()
   };
 }
 
