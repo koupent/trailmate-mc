@@ -22,6 +22,7 @@ import {
   listUnsetEncounters,
   setMobHostility
 } from '../world/mobHostility.js';
+import { settingsSchema } from '../settings/companionSettings.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -83,6 +84,9 @@ export function startControlServer(
       if (request.method === 'POST' && url.pathname === '/retention') {
         const body = await readJson(request);
         return json(response, 200, applyRetention(state, body));
+      }
+      if (request.method === 'GET' && url.pathname === '/settings/schema') {
+        return json(response, 200, { categories: settingsSchema() });
       }
       if (request.method === 'GET' && url.pathname === '/mobs/catalog') {
         const { registry, version } = retentionRegistry(state);

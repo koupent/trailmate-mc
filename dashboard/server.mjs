@@ -99,6 +99,13 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request);
       return json(response, 200, await writeRetentionSettings(body?.retention));
     }
+    if (request.method === 'GET' && url.pathname === '/api/companion-settings') {
+      return json(response, 200, await readCompanionSettings());
+    }
+    if (request.method === 'POST' && url.pathname === '/api/companion-settings') {
+      const body = await readJson(request);
+      return json(response, 200, await writeCompanionSettings(body?.values));
+    }
     if (request.method === 'GET' && url.pathname === '/api/mobs') {
       return json(response, 200, await readMobSettings());
     }
@@ -364,6 +371,82 @@ async function writeRetentionSettings(input) {
     message: applied
       ? '保存しました。次のチェスト返却から新しい設定で動きます。'
       : '保存しました。相棒が未スポーンのため、次のスポーンから反映されます。'
+  };
+}
+
+/** 項目の定義は Bot が持つ（既定値と同じ場所で管理するため）。 */
+async function fetchSettingsSchema() {
+  try {
+    const upstream = await fetch(`${controlUrl}/settings/schema`, { signal: AbortSignal.timeout(5000) });
+    return upstream.ok ? (await upstream.json()).categories : null;
+  } catch {
+    return null;
+  }
+}
+
+function settingFields(categories) {
+  return categories.flatMap((category) => category.sections.flatMap((section) => section.fields));
+}
+
+function readConfigPath(config, path) {
+  return path.split('.').reduce((value, key) => (value == null ? undefined : value[key]), config);
+}
+
+async function readCompanionSettings() {
+  const categories = await fetchSettingsSchema();
+  const config = await readConfigJson();
+  const values = {};
+  for (const field of settingFields(categories || [])) values[field.path] = readConfigPath(config, field.path);
+  return {
+    categories,
+    values,
+    message: categories ? null : '相棒（ボット）コンテナの準備中です。設定項目を取得できるまでお待ちください。'
+  };
+}
+
+/**
+ * values は { "companion.follow_distance": 4, ... }。null はその項目を消して既定に戻す。
+ * 定義にない項目・範囲外の値は受け付けない。
+ */
+function invalid(message) {
+  return Object.assign(new Error(message), { status: 400 });
+}
+
+async function writeCompanionSettings(values) {
+  const categories = await fetchSettingsSchema();
+  if (!categories) throw new Error('相棒（ボット）コンテナの準備中のため保存できません。');
+  const fields = new Map(settingFields(categories).map((field) => [field.path, field]));
+  const config = await readConfigJson();
+  for (const [path, value] of Object.entries(values || {})) {
+    const field = fields.get(path);
+    if (!field) throw invalid(`不明な設定項目です: ${path}`);
+    const keys = path.split('.');
+    const last = keys.pop();
+    let parent = config;
+    for (const key of keys) {
+      if (typeof parent[key] !== 'object' || parent[key] == null) parent[key] = {};
+      parent = parent[key];
+    }
+    if (value == null) {
+      delete parent[last];
+    } else if (field.kind === 'bool' && typeof value === 'boolean') {
+      parent[last] = value;
+    } else if (field.kind === 'number' && Number.isFinite(value)) {
+      const scale = field.scale ?? 1;
+      const shown = value * scale;
+      if (shown < field.min - 1e-9 || shown > field.max + 1e-9) {
+        throw invalid(`${field.label} は ${field.min}〜${field.max} の範囲で指定してください。`);
+      }
+      parent[last] = value;
+    } else {
+      throw invalid(`${field.label} の値が不正です。`);
+    }
+  }
+  await fs.writeFile(PATHS.config, `${JSON.stringify(config, null, 2)}\n`, 'utf8');
+  return {
+    ...(await readCompanionSettings()),
+    ok: true,
+    message: '保存しました。次のスポーンから反映されます（スポーン中なら一度デスポーンしてからスポーンしてください）。'
   };
 }
 
@@ -1076,7 +1159,7 @@ async function waitForViaProxyHealthy(timeoutMs) {
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
   if (
-    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'logFollow.js', 'retention.js', 'mobs.js', 'styles.css'].includes(
+    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'logFollow.js', 'retention.js', 'mobs.js', 'companionSettings.js', 'styles.css'].includes(
       file
     )
   ) {

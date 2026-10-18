@@ -170,7 +170,7 @@ export type AppConfig = {
   companion: CompanionConfig;
 };
 
-const DEFAULT_COMPANION: CompanionConfig = {
+export const DEFAULT_COMPANION: CompanionConfig = {
   scan_radius: 48,
   fov_degrees: 120,
   follow_distance: 3,
