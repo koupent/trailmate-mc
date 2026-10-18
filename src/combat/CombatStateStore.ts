@@ -306,6 +306,7 @@ export class CombatStateStore {
       return [];
     }
     const seeded: string[] = [];
+    const wasDirty = this.dirty;
     for (const [key, entry] of Object.entries(seed.contexts)) {
       if (!entry.tunedParams || this.state.contexts[key]?.tunedParams) continue;
       const [enemyClass, shield] = key.split('|');
@@ -315,10 +316,9 @@ export class CombatStateStore {
       this.getContextState(ctx, entry.selectedPresetId).tunedParams = tuned;
       seeded.push(key);
     }
-    if (seeded.length) {
-      this.dirty = true;
-      this.scheduleSave();
-    }
+    // 取り込みだけでは保存しない。次に学習が保存されるときに一緒に書かれる
+    // （起動するたびに本番ファイルへ書き込まないため。未保存なら次の起動でまた取り込む）。
+    this.dirty = wasDirty;
     return seeded;
   }
 

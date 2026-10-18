@@ -604,9 +604,13 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
 
     assert.equal(setup.bot._stats().attackCount, 0);
-    const [destination] = movement._stats().destinations;
-    assert.ok(destination.x < 0, `should move away from the creeper, got ${JSON.stringify(destination)}`);
-    assert.equal(stepOf(reflexes).directFlee, true);
+    const step = stepOf(reflexes);
+    assert.equal(step.directFlee, true);
+    assert.ok(step.destination.x < 0, `should move away from the creeper, got ${JSON.stringify(step.destination)}`);
+    // 退避は経路探索を待たず、移動キーで直進する（箱庭と同じ）。
+    assert.equal(movement._stats().destinations.length, 0);
+    const controls = setup.bot._stats().controls;
+    assert.ok(controls.forward || controls.back || controls.left || controls.right);
   });
 
   it('着火が消えたら退避をやめて詰め直す', async () => {
@@ -638,7 +642,7 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
 
     assert.equal(setup.bot._stats().attackCount, 0);
-    assert.ok(movement._stats().destinations[0].x < 0);
+    assert.ok(stepOf(reflexes).destination.x < 0);
   });
 
   it('ownerの背面でもowner近傍の敵を防御対象にする', async () => {
@@ -696,6 +700,30 @@ describe('Reflexesの戦闘判断', () => {
     await reflexes.tick({ movementHeld: false, isIdleish: true, owner });
 
     assert.equal(guarding(reflexes), skeleton);
+  });
+
+  it('戦闘をやめると、戦闘が出した移動・盾・ダッシュ許可を戻す', async () => {
+    const north = makeEntity('skeleton', 'hostile', 0, 64, 6);
+    const south = makeEntity('skeleton', 'hostile', 0, 64, -6);
+    const owner = makeOwner('Alice', 0, 64, 0, north);
+    const setup = makeBot({ hostiles: [north, south], hasShield: true });
+    setup.track(north, south, owner);
+    let stops = 0;
+    const sprint: boolean[] = [];
+    const movement = {
+      ...makeMovement(),
+      stop() { stops += 1; },
+      setSprintAllowed(allowed: boolean) { sprint.push(allowed); }
+    };
+    const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+
+    await reflexes.tick({ movementHeld: false, isIdleish: true, owner, movement });
+    assert.ok(setup.bot._stats().activateCount >= 1);
+    reflexes.resetCombat();
+
+    assert.ok(stops >= 1, 'the combat goal is cancelled');
+    assert.ok(setup.bot._stats().deactivateCount >= 1, 'the shield is lowered');
+    assert.deepEqual(sprint, [true, false]);
   });
 
   it('脅威消失後の猶予を過ぎたらfollowへ戻る', async () => {

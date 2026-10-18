@@ -18,12 +18,16 @@ import { combatDistance, MELEE_HOLD_RANGE } from '../combat/CombatParams.js';
 import { threatBearingRad, type XZ } from '../combat/threatArc.js';
 
 const EYE_HEIGHT = 1.62;
-/** 矢の高さ（箱庭と同じく目線の 0.55 倍）。 */
-const ARROW_HEIGHT = EYE_HEIGHT * 0.55;
+/** 視線を通す先（敵の胴）。背の低い敵や低い天井でも当たるよう目線より下。 */
+const TARGET_HEIGHT = 1.0;
+/** 矢を放つ高さ（スケルトンの手元）。1段の壁は越えて飛んでくる。 */
+const ARROW_LAUNCH_HEIGHT = 1.5;
+/** 矢が当たる高さ（相棒の胴）。 */
+const ARROW_HIT_HEIGHT = 1.2;
 /** 矢が他の敵に吸われるとみなす距離（箱庭と同じ）。 */
 const ARROW_HIT_RADIUS = 0.65;
-/** 膝の高さ。直線で歩けるかをこの高さの raycast で見る。 */
-const KNEE_HEIGHT = 0.6;
+/** 1段は跳んで越えられるので、それより上で直線に歩けるかを raycast で見る。 */
+const STEP_CLEAR_HEIGHT = 1.1;
 /** 1tickで進める距離の目安（歩き 4.3m/s × 0.25s）。 */
 const STEP_PER_TICK = 1.0;
 
@@ -73,6 +77,20 @@ function segmentDistance(p: XZ, a: XZ, b: XZ): number {
   return Math.hypot(p.x - (a.x + dx * t), p.z - (a.z + dz * t));
 }
 
+/** 着地先が溶岩、または2段以上の落下になる。 */
+function unsafeLanding(bot: Bot, to: XZ, y: number): boolean {
+  try {
+    const at = (dy: number) => bot.blockAt(new Vec3(to.x, Math.floor(y) + dy, to.z));
+    const feet = at(0);
+    if (String(feet?.name ?? '').includes('lava')) return true;
+    const below = at(-1);
+    if (String(below?.name ?? '').includes('lava')) return true;
+    return below?.boundingBox === 'empty' && at(-2)?.boundingBox === 'empty';
+  } catch {
+    return false;
+  }
+}
+
 export function buildLiveCombatScene(input: LiveSceneInput): CombatScene {
   const { bot } = input;
   const pos = bot.entity.position;
@@ -90,9 +108,9 @@ export function buildLiveCombatScene(input: LiveSceneInput): CombatScene {
     }));
   const pathBlocked = (from: ScenePoint, to: XZ) => rayBlocked(
     bot,
-    { x: from.x, y: from.y + KNEE_HEIGHT, z: from.z },
-    { x: to.x, y: from.y + KNEE_HEIGHT, z: to.z }
-  );
+    { x: from.x, y: from.y + STEP_CLEAR_HEIGHT, z: from.z },
+    { x: to.x, y: from.y + STEP_CLEAR_HEIGHT, z: to.z }
+  ) || unsafeLanding(bot, to, from.y);
   const eye = (p: Partial<ScenePoint> & XZ, fallbackY: number): ScenePoint => ({
     x: p.x,
     y: (p.y ?? fallbackY) + EYE_HEIGHT,
@@ -114,10 +132,14 @@ export function buildLiveCombatScene(input: LiveSceneInput): CombatScene {
     cornered: false,
     priorityThreatId: input.priorityThreatId,
     params: input.params,
-    hasLineOfSight: (from, to) => !rayBlocked(bot, eye(from, from.y), eye(to, to.y)),
+    hasLineOfSight: (from, to) => !rayBlocked(
+      bot,
+      eye(from, from.y),
+      { x: to.x, y: to.y + TARGET_HEIGHT, z: to.z }
+    ),
     rangedHitsBot: (shooter) => {
-      const from = { x: shooter.x, y: shooter.y + ARROW_HEIGHT, z: shooter.z };
-      const to = { x: botPoint.x, y: botPoint.y + ARROW_HEIGHT, z: botPoint.z };
+      const from = { x: shooter.x, y: shooter.y + ARROW_LAUNCH_HEIGHT, z: shooter.z };
+      const to = { x: botPoint.x, y: botPoint.y + ARROW_HIT_HEIGHT, z: botPoint.z };
       if (rayBlocked(bot, from, to)) return false;
       // 間に別の敵がいれば矢はそちらに当たる（肉壁）。
       return !threats.some((other) => other.id !== shooter.id

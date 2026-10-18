@@ -102,6 +102,8 @@ export type EscortMode = 'follow' | 'guard';
 const TARGET_RANGE_BUFFER = 2;
 /** 戦闘の移動目標に到着したとみなす距離。 */
 const COMBAT_GOAL_RANGE = 0.75;
+/** これ以下の短い移動は経路探索せず移動キーで直接動く（めり込み解消・横への一歩）。 */
+const DIRECT_STEP_MAX = 1.5;
 /** 相棒の1tick（companion.tick_ms と箱庭の tickMs に合わせる）。 */
 const COMBAT_TICK_MS = 250;
 /** 1tickでこれ未満しか進まなければ詰まりとみなす（箱庭と同じ）。 */
@@ -175,6 +177,10 @@ export class Reflexes {
   private combatMovement: CombatMovement | undefined;
   /** 戦闘が pathfinder に目標を出している。 */
   private combatGoalIssued = false;
+  /** 戦闘が移動キーを直接押している。 */
+  private directMoveIssued = false;
+  /** 戦闘がダッシュを許可した（終了時に戻す）。 */
+  private sprintAllowedByCombat = false;
   /** 前tickで移動を出した位置（詰まり判定用）。 */
   private lastMovePos: { x: number; z: number } | null = null;
   private lastStrikeAt = 0;
@@ -473,11 +479,28 @@ export class Reflexes {
     this.lastCombatLookAt = 0;
   }
 
+  /** 戦闘の状態を捨て、戦闘が出していた移動・盾・ダッシュ許可を戻す。 */
   private clearCombatMemory(): void {
+    this.releaseCombatMovement();
+    this.lowerShield();
     this.combatMemory = {};
     this.step = null;
     this.lastMovePos = null;
-    this.combatGoalIssued = false;
+  }
+
+  private releaseCombatMovement(): void {
+    if (this.combatGoalIssued) {
+      this.combatMovement?.stop?.();
+      this.combatGoalIssued = false;
+    }
+    if (this.directMoveIssued) {
+      this.clearMovementControls();
+      this.directMoveIssued = false;
+    }
+    if (this.sprintAllowedByCombat) {
+      this.combatMovement?.setSprintAllowed?.(false);
+      this.sprintAllowedByCombat = false;
+    }
   }
 
   private protectRanges(): ProtectRanges {
@@ -591,11 +614,19 @@ export class Reflexes {
     });
     const step = decideCombatStep(scene, this.combatMemory);
     this.step = step;
-    if (!step.primary) return false;
+    if (!step.primary) {
+      this.holdPosition();
+      this.lowerShield();
+      return false;
+    }
 
     const lookAt = this.entityById(step.strikeTarget?.id) ?? this.entityById(step.primary.id);
     if (lookAt) this.maintainCombatLook(lookAt, now);
-    this.combatMovement?.setSprintAllowed?.(step.movement !== 'attack' && step.movement !== 'stay');
+    if (!this.sprintAllowedByCombat && this.combatMovement?.setSprintAllowed) {
+      // 毎tick切り替えると pathfinder の経路がリセットされるので、戦闘中は許可したままにする。
+      this.combatMovement.setSprintAllowed(true);
+      this.sprintAllowedByCombat = true;
+    }
     // 盾: 殴るtickは下げる。遠距離圧で構える意図があれば構える。
     if (!step.strikeTarget && step.intent?.guard && scene.hasShield) this.raiseShield();
     else this.lowerShield();
@@ -603,29 +634,58 @@ export class Reflexes {
     return true;
   }
 
-  /** 判断の移動先へ動く。移動先がなければその場で構える。 */
+  /**
+   * 判断の移動先へ動く。移動先がなければその場で構える。
+   * 短い一歩と直進の退避は移動キーで直接、それ以外は pathfinder に任せる。
+   */
   private moveTowardStep(): boolean {
-    const destination = this.step?.destination;
-    if (!destination || !this.bot.entity) return this.holdPosition();
+    const step = this.step;
+    const destination = step?.destination;
+    if (!step || !destination || !this.bot.entity) return this.holdPosition();
     const pos = this.bot.entity.position;
     this.lastMovePos = { x: pos.x, z: pos.z };
-    if (this.combatMovement) {
-      this.combatMovement.goToward({ x: destination.x, y: pos.y, z: destination.z }, COMBAT_GOAL_RANGE);
-      this.combatGoalIssued = true;
-    } else {
-      this.applyBearingMovement(threatBearingRad(pos, destination), { sprint: true });
+    const distance = Math.hypot(destination.x - pos.x, destination.z - pos.z);
+    // 着火クリーパーからの退避は箱庭と同じく直進（経路探索の待ちを入れない）。
+    const direct = !this.combatMovement
+      || step.directFlee
+      || distance <= DIRECT_STEP_MAX;
+    if (direct) {
+      if (this.combatGoalIssued) {
+        this.combatMovement?.stop?.();
+        this.combatGoalIssued = false;
+      }
+      this.applyBearingMovement(threatBearingRad(pos, destination), { sprint: distance > DIRECT_STEP_MAX });
+      this.directMoveIssued = true;
+      return true;
     }
+    if (this.directMoveIssued) {
+      this.clearMovementControls();
+      this.directMoveIssued = false;
+    }
+    this.combatMovement!.goToward({
+      x: destination.x,
+      y: standingY(this.bot, destination.x, destination.z, pos.y),
+      z: destination.z
+    }, COMBAT_GOAL_RANGE);
+    this.combatGoalIssued = true;
     return true;
   }
 
   /** 戦闘が出した移動を止める。 */
   private holdPosition(): boolean {
+    this.releaseMoveOnly();
+    return true;
+  }
+
+  private releaseMoveOnly(): void {
     if (this.combatGoalIssued) {
       this.combatMovement?.stop?.();
       this.combatGoalIssued = false;
     }
-    if (!this.combatMovement) this.clearMovementControls();
-    return true;
+    if (this.directMoveIssued || !this.combatMovement) {
+      this.clearMovementControls();
+      this.directMoveIssued = false;
+    }
   }
 
   /** 判断が選んだ敵を、攻撃間隔を守って殴る。 */
@@ -659,7 +719,10 @@ export class Reflexes {
     const memory = this.combatMemory;
     if (Math.hypot(pos.x - last.x, pos.z - last.z) < STUCK_PROGRESS) {
       memory.approachStuckTicks = (memory.approachStuckTicks || 0) + 1;
-      memory.approachFlankSign = memory.approachFlankSign === 1 ? -1 : 1;
+      // 箱庭と同じく、直進の退避では回り込む向きを変えない。
+      if (!this.step?.directFlee) {
+        memory.approachFlankSign = memory.approachFlankSign === 1 ? -1 : 1;
+      }
     } else {
       memory.approachStuckTicks = 0;
     }
@@ -694,6 +757,7 @@ export class Reflexes {
   }
 
   private clearMovementControls(): void {
+    this.bot.setControlState('jump', false);
     this.bot.setControlState('left', false);
     this.bot.setControlState('right', false);
     this.bot.setControlState('back', false);
@@ -863,18 +927,6 @@ export class Reflexes {
       return;
     }
 
-    if (!this.currentTarget && this.bot.pvp?.target) {
-      const livePvp = this.resolveLiveTarget(this.bot.pvp.target);
-      if (
-        this.isUsableTarget(livePvp)
-        && isProtectThreat(botPos, ownerPos, livePvp, ranges)
-        && hasLineOfSight(this.bot, livePvp)
-      ) {
-        this.currentTarget = livePvp;
-        this.lastTargetSeenAt = now;
-      }
-    }
-
     if (this.currentTarget) {
       this.currentTarget = this.resolveLiveTarget(this.currentTarget);
       if (!this.isUsableTarget(this.currentTarget)) {
@@ -1020,7 +1072,7 @@ export class Reflexes {
       activeThreat: hasThreat
     });
     if (hasThreat && previousMode === 'follow') {
-      // 上位モードの選択は維持するが、pvp・位置取りが戦術目的地を設定する前に
+      // 上位モードの選択は維持するが、戦闘が目的地を設定する前に
       // owner目的地を解除する。
       movement?.stop?.();
     }
@@ -1029,7 +1081,6 @@ export class Reflexes {
   private stopCombat(): void {
     if (this.fighting) return;
     this.clearCombatMemory();
-    this.lowerShield();
     this.combatControlUntil = 0;
     this.lastCombatLookAt = 0;
     this.fighting = true;
@@ -1055,6 +1106,7 @@ export class Reflexes {
   }
 
   private keepShieldDown(): void {
+    this.shieldRaised = false;
     try {
       this.bot.deactivateItem();
     } catch {
@@ -1063,6 +1115,7 @@ export class Reflexes {
   }
 
   private keepShieldUp(): void {
+    this.shieldRaised = true;
     try {
       this.bot.activateItem?.(true);
     } catch {
@@ -1071,15 +1124,11 @@ export class Reflexes {
   }
 
   private raiseShield(): void {
-    if (this.shieldRaised) return;
-    this.shieldRaised = true;
-    this.keepShieldUp();
+    if (!this.shieldRaised) this.keepShieldUp();
   }
 
   private lowerShield(): void {
-    if (!this.shieldRaised) return;
-    this.shieldRaised = false;
-    this.keepShieldDown();
+    if (this.shieldRaised) this.keepShieldDown();
   }
 
   private isIgnitedCreeper(enemy: any): boolean {
@@ -1297,4 +1346,23 @@ function traceDegrees(radians: number, normalize = true): number | null {
     while (degrees <= -180) degrees += 360;
   }
   return traceNumber(degrees, 1);
+}
+
+/**
+ * 移動先の立てる高さ。足元が空気で下が固体の段を、今の高さの上下2段から探す。
+ * 見つからなければ今の高さ（pathfinder の GoalNear は高さも距離に含めるため）。
+ */
+function standingY(bot: Bot, x: number, z: number, fromY: number): number {
+  const base = Math.floor(fromY);
+  for (const dy of [0, 1, -1, 2, -2]) {
+    const y = base + dy;
+    try {
+      const feet = bot.blockAt(new Vec3(x, y, z));
+      const below = bot.blockAt(new Vec3(x, y - 1, z));
+      if (feet && below && feet.boundingBox === 'empty' && below.boundingBox === 'block') return y;
+    } catch {
+      return fromY;
+    }
+  }
+  return fromY;
 }
