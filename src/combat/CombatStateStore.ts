@@ -292,6 +292,36 @@ export class CombatStateStore {
     this.scheduleSave();
   }
 
+  /**
+   * 別の学習ファイル（箱庭）で採用された数値を、この学習でまだ数値を持たない
+   * 文脈の初期値として取り込む。すでに本番で数値を持つ文脈は上書きしない。
+   * @returns 取り込んだ文脈キー
+   */
+  seedTunedParamsFrom(seedPath: string): string[] {
+    let seed: CombatStateFile;
+    try {
+      if (!seedPath || !fs.existsSync(seedPath)) return [];
+      seed = normalizeCombatState(JSON.parse(fs.readFileSync(seedPath, 'utf8')));
+    } catch {
+      return [];
+    }
+    const seeded: string[] = [];
+    for (const [key, entry] of Object.entries(seed.contexts)) {
+      if (!entry.tunedParams || this.state.contexts[key]?.tunedParams) continue;
+      const [enemyClass, shield] = key.split('|');
+      const ctx = { enemyClass: enemyClass as CombatContext['enemyClass'], hasShield: shield === '1' };
+      const tuned = filterSimTuneOverlay(entry.tunedParams, ctx.enemyClass);
+      if (!tuned) continue;
+      this.getContextState(ctx, entry.selectedPresetId).tunedParams = tuned;
+      seeded.push(key);
+    }
+    if (seeded.length) {
+      this.dirty = true;
+      this.scheduleSave();
+    }
+    return seeded;
+  }
+
   setParamTuningMeta(ctx: CombatContext, patch: {
     tunedBestScore?: number;
     paramExploreCount?: number;

@@ -40,7 +40,7 @@ export function buildReviewMarkdown(summary: ReviewSummary, worst: EpisodeResult
   lines.push('  → 箱庭の**自動チューニング**が担当。Cursorは値をいじらない。');
   lines.push('- **ロジック**（移動優先順位・分岐・ノックバック／着火など）');
   lines.push('  → 自動チューニングが**頭打ち（plateau）**のときだけ修正する。');
-  lines.push('- 学習ストアは `data/sim-combat-state.json`。本番 `data/combat-state.json` は黙って上書きしない。');
+  lines.push('- 学習ストアは `data/sim-combat-state.json`。本番 `data/combat-state.json` は上書きせず、本番が未学習の敵種別にだけ初期値として取り込まれる。');
   lines.push('- 禁止: ニューラルネット追加');
   lines.push('');
   lines.push('## 自動チューニング状態');

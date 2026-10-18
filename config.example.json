@@ -82,7 +82,8 @@
         "min_trials": 3,
         "min_health_to_explore": 12,
         "explore_damage_abort": 8,
-        "state_path": "data/combat-state.json"
+        "state_path": "data/combat-state.json",
+        "seed_path": "data/sim-combat-state.json"
       }
     },
     "chat": {

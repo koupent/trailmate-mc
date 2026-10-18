@@ -197,6 +197,15 @@ export class Reflexes {
       ? learning.state_path
       : path.join(projectRoot(), learning.state_path);
     this.combatStore = new CombatStateStore(statePath);
+    if (learning.enabled && learning.seed_path) {
+      const seedPath = path.isAbsolute(learning.seed_path)
+        ? learning.seed_path
+        : path.join(projectRoot(), learning.seed_path);
+      const seeded = this.combatStore.seedTunedParamsFrom(seedPath);
+      if (seeded.length) {
+        console.log(`[combat-learn] seeded tuned params from simulator: ${seeded.join(', ')}`);
+      }
+    }
     this.combatOptimizer = new CombatOptimizer(this.combatStore, {
       enabled: learning.enabled,
       exploreRate: learning.explore_rate,

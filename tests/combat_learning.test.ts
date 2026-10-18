@@ -912,3 +912,33 @@ describe('CombatOptimizerとStateStore', () => {
     assert.ok(open.paramOverlay && Object.keys(open.paramOverlay).length >= 1);
   });
 });
+
+describe('箱庭の調整値を本番の初期値に取り込む', () => {
+  it('本番で未学習の文脈だけに、探索対象のキーだけを取り込む', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'combat-seed-'));
+    const simPath = path.join(dir, 'sim.json');
+    const sim = new CombatStateStore(simPath);
+    sim.setTunedParams({ enemyClass: 'ranged', hasShield: false }, { rangedDodgeBurstMs: 380 });
+    sim.setTunedParams({ enemyClass: 'explosive', hasShield: false }, { creeperSoftEvadeRange: 4.1 });
+    sim.flush();
+    // 古い学習JSONに残った探索外キーは捨てる
+    const raw = JSON.parse(fs.readFileSync(simPath, 'utf8'));
+    raw.contexts['ranged|0'].tunedParams.followRange = 9;
+    fs.writeFileSync(simPath, JSON.stringify(raw));
+
+    const live = new CombatStateStore(path.join(dir, 'live.json'));
+    live.setTunedParams({ enemyClass: 'explosive', hasShield: false }, { creeperSoftEvadeRange: 3.3 });
+
+    assert.deepEqual(live.seedTunedParamsFrom(simPath), ['ranged|0']);
+    assert.deepEqual(
+      live.getContextState({ enemyClass: 'ranged', hasShield: false }, 'ranged-baseline').tunedParams,
+      { rangedDodgeBurstMs: 380 }
+    );
+    assert.deepEqual(
+      live.getContextState({ enemyClass: 'explosive', hasShield: false }, 'explosive-wide').tunedParams,
+      { creeperSoftEvadeRange: 3.3 },
+      '本番で学習済みの数値は上書きしない'
+    );
+    assert.deepEqual(live.seedTunedParamsFrom(path.join(dir, 'missing.json')), []);
+  });
+});
