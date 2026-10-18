@@ -12,16 +12,7 @@
 /** 着火中の短い飛び退き距離。短いほど早く攻撃に戻れる。 */
 export const CREEPER_FLEE_DISTANCE = 4;
 
-/**
- * この距離以上なら着火中でも追加の飛び退きはしない
- * （すでに安全距離にいる）。
- */
-export const CREEPER_SAFE_DISTANCE = 3.5;
-
-/** クリーパーへの近接補助の最大距離（閉じながら振る）。 */
-export const CREEPER_MELEE_ASSIST_RANGE = 4.5;
-
-/** クリーパー近接補助の最短間隔（ms）。 */
+/** クリーパーを殴る最短間隔（ms）。着火を止めるため剣の間隔より短い。 */
 export const CREEPER_STRIKE_GAP_MS = 300;
 
 /**
@@ -45,4 +36,16 @@ export function isCreeperIgnited(
     if (ignited === true || ignited === 1) return true;
 
     return false;
+}
+
+/** 着火中で殴って止められないときだけ強制退避。 */
+export function creeperMustFlee(opts: {
+  ignited: boolean;
+  canMeleeStrike: boolean;
+  distance: number;
+  fleeDistance: number;
+}): boolean {
+  if (!opts.ignited) return false;
+  if (opts.canMeleeStrike) return false;
+  return opts.distance < opts.fleeDistance;
 }

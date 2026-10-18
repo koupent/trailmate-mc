@@ -3,7 +3,6 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import { Reflexes } from '../src/reflexes/Reflexes.ts';
-import { computeThreatArc } from '../src/combat/threatArc.ts';
 import { currentControlOwner } from '../src/companion/ControlPriority.js';
 import { FollowMode } from '../src/companion/modes/FollowMode.js';
 import { DeathReturnInterrupt } from '../src/companion/interrupts/DeathReturnInterrupt.js';
@@ -331,79 +330,40 @@ class VirtualWorld {
         if (this.deathReturn.shouldRun(this.ctx)) return this.deathReturn.run(this.ctx);
         return new FollowMode().tick(this.ctx);
     }
-
-    dodgePhase() {
-        const latch = this.reflexes.rangedDodgeLatch;
-        const now = Date.now();
-        if (now < latch.burstUntil) return 'dodge';
-        if (now < latch.advanceUntil) return 'advance';
-        return 'idle';
-    }
 }
 
 describe('決定論的な仮想3D相棒シナリオ', () => {
-    it('単体遠距離脅威: 回避→前進→攻撃', async () => {
+    it('単体遠距離脅威: 射線を外して斜めに詰め、届いたら殴る', async () => {
         const world = new VirtualWorld();
         world.setOwner(0);
         const skeleton = world.addEnemy('skeleton', 6);
 
         await world.combatTick();
         assert.equal(currentControlOwner(world.ctx), 'combat');
-        assert.equal(world.dodgePhase(), 'dodge');
-        assert.ok(world.controls.forward || world.controls.back);
+        assert.ok(world.pendingDestination);
+        assert.ok(Math.abs(world.pendingDestination.z) > 0.3, 'the approach leaves the arrow line');
 
-        world.reflexes.rangedDodgeLatch.burstUntil = Date.now() - 1;
-        world.reflexes.rangedDodgeLatch.advanceUntil = Date.now() + 1500;
-        world.reflexes.rangedDodgeLatch.lastProgressAt = Date.now();
-        await world.combatTick();
-        assert.equal(world.dodgePhase(), 'advance');
-        assert.equal(world.controls.right, true);
-
-        world.advanceControls(2.7);
-        await world.combatTick();
+        for (let tick = 0; tick < 20 && world.directAttacks === 0; tick += 1) {
+            world.advanceDestination();
+            await world.combatTick();
+        }
         assert.ok(world.bot.entity.position.distanceTo(skeleton.position) <= 3.5);
         assert.ok(world.directAttacks >= 1);
-        // 近接到達でラッチを完全解除して殴打へ切り替える（Reflexes.ts の
-        // decideSpacing と tests/reflexes_defense.test.ts の「回避ラッチを解除して
-        // 攻撃する」に揃える）
-        assert.equal(world.reflexes.rangedDodgeLatch.burstUntil, 0);
-        assert.equal(world.reflexes.rangedDodgeLatch.advanceUntil, 0);
     });
 
-    // 危険扇圧（rangedExposed>0 / meleeExposed>=2）があるときだけ狭窄する。
-    // 前後に離れた近接2体は扇の内側に入らないため圧なし＝位置取りしないのが
-    // 現在の意図なので、挟撃の検証は遠距離2体で行う。
-    it('複数脅威: 敵列の外側へ移動し35度未満へ収束する', async () => {
+    it('遠距離2体に挟まれたら1体へ詰めて殴る（逃げ回らない）', async () => {
         const world = new VirtualWorld();
-        const owner = world.setOwner(-5);
-        const front = world.addEnemy('skeleton', 0, 64, 4);
-        const back = world.addEnemy('skeleton', 0, 64, -4);
-        const before = computeThreatArc(world.bot.entity.position, [front.position, back.position]);
-        let reached = false;
+        world.setOwner(-5);
+        world.addEnemy('skeleton', 0, 64, 4);
+        world.addEnemy('skeleton', 0, 64, -4);
 
-        for (let tick = 0; tick < 30; tick += 1) {
-            world.reflexes.arcRepositionUntil = 0;
+        for (let tick = 0; tick < 20 && world.directAttacks === 0; tick += 1) {
             await world.combatTick();
             assert.equal(currentControlOwner(world.ctx), 'combat');
-            assert.ok(world.pendingDestination);
+            assert.notEqual(world.reflexes.step.movement, 'positioning');
             world.advanceDestination();
-
-            const ownerDistance = world.bot.entity.position.distanceTo(owner.position);
-            const current = computeThreatArc(world.bot.entity.position, [front.position, back.position]);
-            // 遠距離敵相手では詰めるのが正しいので近接間合いのガードは置かない。
-            // 代わりに扇が一度も広がらないこと（外側へ抜け続けること）を見る。
-            assert.ok(current && before && current.spanRad <= before.spanRad + 1e-6);
-            assert.ok(ownerDistance <= 8 + 1e-6);
-            if (current && current.spanRad <= (35 * Math.PI) / 180
-                && Math.abs(world.bot.entity.position.z) > 4) {
-                reached = true;
-                break;
-            }
         }
-
-        const after = computeThreatArc(world.bot.entity.position, [front.position, back.position]);
-        assert.ok(before && after && after.spanRad < before.spanRad);
-        assert.ok(reached);
+        assert.ok(world.directAttacks >= 1);
     });
 
     it('戦闘所有権がFollowと受け渡しの移動・視線を抑制する', async () => {
@@ -468,7 +428,7 @@ describe('決定論的な仮想3D相棒シナリオ', () => {
         enemy.position = world.bot.entity.position.offset(3, 0, 0);
         world.bot.entities[enemy.id] = enemy;
         await world.combatTick();
-        assert.equal(world.bot.pvp.target?.id, enemy.id);
+        assert.equal(world.reflexes.currentTarget?.id, enemy.id);
         assert.ok(world.directAttacks >= 1, 'Combat must attack on the tick after Recovery completes');
     });
 
@@ -515,7 +475,7 @@ describe('決定論的な仮想3D相棒シナリオ', () => {
 
         const enemy = world.addEnemy('zombie', 3);
         await world.combatTick();
-        assert.equal(world.bot.pvp.target?.id, enemy.id);
+        assert.equal(world.reflexes.currentTarget?.id, enemy.id);
         assert.ok(world.directAttacks >= 1);
     });
 

@@ -71,14 +71,6 @@ export type BearingMovementControls = {
   right: boolean;
 };
 
-/** 理想とする脅威扇形の最大角（デフォルト。実運用はプリセットの arcNarrow* を使う）。 */
-export const TARGET_THREAT_SPAN_RAD = (35 * Math.PI) / 180;
-/** 通常の横移動より位置取りを優先する広い挟撃角。 */
-export const WIDE_THREAT_SPAN_RAD = (90 * Math.PI) / 180;
-/** 開始・終了閾値のデフォルト（プリセット未指定時）。 */
-export const ENTER_ARC_NARROW_SPAN_RAD = TARGET_THREAT_SPAN_RAD;
-export const EXIT_ARC_NARROW_SPAN_RAD = (25 * Math.PI) / 180;
-
 const DEFAULT_STEP = 2.25;
 const DEFAULT_MIN_ENEMY_DISTANCE = 1.8;
 const DEFAULT_DANGER_WEIGHT = Math.PI;
@@ -328,90 +320,6 @@ export function perpendicularDodgeBearing(
   side: 1 | -1
 ): number {
   return normalizeAngleRad(threatBearing + side * Math.PI / 2);
-}
-
-export function strafeSignForOpenArc(opts: {
-  botPos: XZ;
-  primaryPos: XZ;
-  arc: ThreatArc;
-  ownerPos?: XZ | null;
-  ignoreOwnerLeash?: boolean;
-}): 1 | -1 {
-  const faceX = opts.primaryPos.x - opts.botPos.x;
-  const faceZ = opts.primaryPos.z - opts.botPos.z;
-  const faceLength = Math.hypot(faceX, faceZ);
-  const forwardX = faceLength < POSITION_EPSILON ? 0 : faceX / faceLength;
-  const forwardZ = faceLength < POSITION_EPSILON ? 1 : faceZ / faceLength;
-  const leftX = -forwardZ;
-  const leftZ = forwardX;
-  const openX = Math.sin(opts.arc.openRad);
-  const openZ = Math.cos(opts.arc.openRad);
-  const arcSign: 1 | -1 = openX * leftX + openZ * leftZ >= 0 ? 1 : -1;
-
-  if (!opts.ownerPos || opts.ignoreOwnerLeash) return arcSign;
-  const step = 1.2;
-  const leftPos = { x: opts.botPos.x + leftX * step, z: opts.botPos.z + leftZ * step };
-  const rightPos = { x: opts.botPos.x - leftX * step, z: opts.botPos.z - leftZ * step };
-  const currentDistance = distance2(opts.botPos, opts.ownerPos);
-  const leftDistance = distance2(leftPos, opts.ownerPos);
-  const rightDistance = distance2(rightPos, opts.ownerPos);
-  const preferredDistance = arcSign === 1 ? leftDistance : rightDistance;
-  const otherDistance = arcSign === 1 ? rightDistance : leftDistance;
-  if (preferredDistance > currentDistance + 1.5 && otherDistance < preferredDistance - 0.4) {
-    return arcSign === 1 ? -1 : 1;
-  }
-  return arcSign;
-}
-
-export type ArcNarrowThresholds = {
-  /** これ以上でラッチ開始（rad）。 */
-  enterSpanRad?: number;
-  /** これ未満でラッチ解除（rad）。 */
-  exitSpanRad?: number;
-};
-
-export function shouldEnterArcNarrowing(opts: {
-  threatCount: number;
-  spanRad: number;
-  enterSpanRad?: number;
-}): boolean {
-  const enter = opts.enterSpanRad ?? ENTER_ARC_NARROW_SPAN_RAD;
-  return opts.threatCount >= 2 && opts.spanRad >= enter;
-}
-
-export function shouldExitArcNarrowing(
-  spanRad: number,
-  exitSpanRad: number = EXIT_ARC_NARROW_SPAN_RAD
-): boolean {
-  return spanRad < exitSpanRad;
-}
-
-/**
- * 扇狭窄のヒステリシス。一度入ったら exit まで位置取りを継続する。
- * enter/exit はプリセット学習で調整する（Reflexes / 旧経路用）。
- * 箱庭の主経路は updateArcNarrowLatchByImprovement を使う。
- */
-export function updateArcNarrowLatch(opts: {
-  latched: boolean;
-  threatCount: number;
-  spanRad: number | null | undefined;
-  enterSpanRad?: number;
-  exitSpanRad?: number;
-}): boolean {
-  if (opts.threatCount < 2 || opts.spanRad == null || !Number.isFinite(opts.spanRad)) {
-    return false;
-  }
-  if (opts.latched) {
-    return !shouldExitArcNarrowing(
-      opts.spanRad,
-      opts.exitSpanRad ?? EXIT_ARC_NARROW_SPAN_RAD
-    );
-  }
-  return shouldEnterArcNarrowing({
-    threatCount: opts.threatCount,
-    spanRad: opts.spanRad,
-    enterSpanRad: opts.enterSpanRad
-  });
 }
 
 /**
@@ -718,16 +626,6 @@ export function chooseStackThreatPosition(
  * 最寄り敵を中心に円弧を描きながら半径を縮めて目標へ寄る1ステップ。
  * 直線接近で射線に乗り続けるのを避ける。
  */
-/**
- * 扇形が既に狭くても chooseBestThreatPosition が改善位置を返したら移動する。
- */
-export function shouldApplyTacticalReposition(
-  threatCount: number,
-  selection: ThreatPositionSelection | null | undefined
-): boolean {
-  return threatCount >= 2 && Boolean(selection?.moved && selection.chosen?.position);
-}
-
 export function spanDegrees(spanRad: number): number {
   return (spanRad * 180) / Math.PI;
 }

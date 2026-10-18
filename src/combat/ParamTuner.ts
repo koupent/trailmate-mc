@@ -2,7 +2,7 @@
  * 箱庭向けの連続パラメータ探索。
  * 優先順位や分岐ロジックは触らず、PRESET_BOUNDS 内の厳選数値だけを動かす。
  *
- * 探索キーは CombatTuneCatalog（敵クラス別）。本番間合いは LIVE_TUNABLE に分離。
+ * 探索キーは CombatTuneCatalog（敵クラス別）。箱庭と本番は同じ判断（CombatStep）でこれを読む。
  */
 
 import {
@@ -25,23 +25,7 @@ import {
 /** @deprecated 互換エイリアス。実体は ALL_SIM_TUNABLE_KEYS */
 export const TUNABLE_PARAM_KEYS = ALL_SIM_TUNABLE_KEYS;
 
-/**
- * 本番 bot（Reflexes / PVP 間合い）向け。箱庭ジムでは探索しない。
- */
-export const LIVE_TUNABLE_PARAM_KEYS = [
-  'followRange',
-  'kiteFollowRange',
-  'backstepRange',
-  'strafeRange',
-  'creeperFollowRange',
-  'positioningImprovementMarginDeg',
-  'arcNarrowEnterSpanDeg',
-  'arcNarrowExitSpanDeg',
-  'crowdAvoidBias'
-] as const satisfies ReadonlyArray<keyof CombatPresetParams>;
-
 export type TunableParamKey = SimTuneKey;
-export type LiveTunableParamKey = (typeof LIVE_TUNABLE_PARAM_KEYS)[number];
 
 export type ParamOverlay = Partial<CombatPresetParams>;
 
@@ -184,33 +168,6 @@ export const TUNABLE_PARAM_META: Record<
     unit: 'm',
     blurb: '着火退避・危険帯の目安距離（箱庭↔本番の差を吸収）'
   }
-};
-
-export const LIVE_TUNABLE_PARAM_META: Record<
-  LiveTunableParamKey,
-  { label: string; unit: string; blurb: string }
-> = {
-  followRange: { label: '接近間合い', unit: 'm', blurb: '本番PVPの基本寄り距離' },
-  kiteFollowRange: { label: 'カイト間合い', unit: 'm', blurb: '本番の遠距離・低HP間合い' },
-  backstepRange: { label: '後退距離', unit: 'm', blurb: '本番で近すぎたときの一歩後退' },
-  strafeRange: { label: '横移動幅', unit: 'm', blurb: '本番の織り歩き幅' },
-  creeperFollowRange: { label: 'クリーパー追従', unit: 'm', blurb: '本番クリーパー戦の経路間合い' },
-  positioningImprovementMarginDeg: {
-    label: '扇改善閾値',
-    unit: '°',
-    blurb: '本番位置取りを動かす最小改善'
-  },
-  arcNarrowEnterSpanDeg: {
-    label: '扇ラッチ開始',
-    unit: '°',
-    blurb: '本番の扇ラッチ開始角（箱庭は決定論のため探索外）'
-  },
-  arcNarrowExitSpanDeg: {
-    label: '扇閉じ目安',
-    unit: '°',
-    blurb: '本番ヒステリシス用（箱庭は定数化のため探索外）'
-  },
-  crowdAvoidBias: { label: '集団回避バイアス', unit: '', blurb: '本番の複数敵からの逃げ混み' }
 };
 
 export type TuningParamRow = {

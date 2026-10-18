@@ -2,7 +2,7 @@ import { AsyncTickBehavior } from './AsyncTickBehavior.js';
 import { getActiveOwnerThreat } from '../../ownerThreatTracker.js';
 import { preferGearRecovery } from '../transitions.js';
 import { shouldDeferRecoveryForCombat } from '../../combatGate.js';
-import { action, runTree } from '../../behaviorTree/bt.js';
+import { action, runTree, subtree } from '../../behaviorTree/bt.js';
 
 /**
  * Runs Reflexes combat as the active FSM state (single-loop ownership).
@@ -14,9 +14,12 @@ export class CombatBehavior extends AsyncTickBehavior {
     constructor(targets) {
         super('combat');
         this.targets = targets;
-        // The combat decisions live in src/reflexes/Reflexes.ts (this
-        // project's own code; mineflayer-pvp only swings and chases).
-        this.tree = action('戦闘の判断と行動（Reflexes.ts）', () => this._tickReflexes());
+        // 戦闘の判断は箱庭と共通の CombatStep、実行は Reflexes。Reflexes の
+        // ツリーがあればその中身（判断→行動の選択）をそのまま見せる。
+        const combatTree = targets.agent?.reflexes?.combatTree;
+        this.tree = combatTree
+            ? subtree('戦闘', combatTree, () => this._tickReflexes())
+            : action('戦闘', () => this._tickReflexes());
     }
 
     onStateEntered() {

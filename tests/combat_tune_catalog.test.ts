@@ -67,7 +67,8 @@ describe('CombatTuneCatalog / 敵クラス固有キー', () => {
       contexts: {
         'melee|0': {
           selectedPresetId: 'melee-baseline',
-          tunedParams: { followRange: 2.9, creeperSoftEvadeRange: 4 },
+          // 古い学習JSONに残った探索外キー（followRange）は表示しない
+          tunedParams: { followRange: 2.9, creeperSoftEvadeRange: 4 } as any,
           tunedBestScore: 1,
           paramExploreCount: 3,
           paramAdoptCount: 0,
@@ -75,7 +76,7 @@ describe('CombatTuneCatalog / 敵クラス固有キー', () => {
         },
         'ranged|0': {
           selectedPresetId: 'ranged-baseline',
-          tunedParams: { rangedDodgeBurstMs: 700, followRange: 9 },
+          tunedParams: { rangedDodgeBurstMs: 700, followRange: 9 } as any,
           tunedBestScore: 2,
           paramExploreCount: 5,
           paramAdoptCount: 1,

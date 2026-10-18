@@ -140,13 +140,16 @@ docker compose up -d --build
 | `combat_learning.explore_rate` | プリセット探索率 | `0.12` |
 | `combat_learning.min_trials` | 採用判定に必要な最低試行数 | `3` |
 | `combat_learning.state_path` | 学習状態の保存先 | `data/combat-state.json` |
+| `combat_learning.seed_path` | 箱庭の学習ファイル。採用済みの数値を、本番でまだ数値がない敵種別の初期値にする（空文字で無効） | `data/sim-combat-state.json` |
 
 護衛は **Follow（追従）/ Guard（防衛）** が主モードです（低体力でも逃走Retreatには入りません）。プレイヤー近傍（既定8ブロック）の敵対モブ、またはBot至近（既定3.5ブロック）の敵を護衛対象とし、視野角は交戦の開始条件にしません。遠すぎる敵や壁越しの新規固定は避け、一度狙った敵は短い猶予時間だけ維持します。
 
 - **Follow（追従）** … プレイヤーに付く（戦闘しない）
 - **Guard（防衛）** … 護衛対象を優先して倒す／追い払う。複数敵がいるときは、敵の水平角度spanが狭くなる側へ横移動して囲まれを避ける
 
-学習が有効なときは、敵の種類（近接 / 機敏 / 遠距離 / 爆発）と盾の有無ごとに安全な立ち回りプリセットを比較します。悪化した候補は自動で戻し、結果は `data/combat-state.json` に保存されます（敵数バケットは使いません）。
+戦闘の判断（狙う敵・囲まれたときの位置取り・遠距離の回避と接近・クリーパー対処）は、箱庭と本番で同じ関数（`src/combat/CombatStep.ts`）を使います。
+
+学習が有効なときは、敵の種類（近接 / 機敏 / 遠距離 / 爆発）と盾の有無ごとに安全な立ち回りプリセットを比較します。悪化した候補は自動で戻し、結果は `data/combat-state.json` に保存されます（敵数バケットは使いません）。起動時、箱庭で採用された数値（`data/sim-combat-state.json`）を、本番でまだ数値がない敵種別の初期値として取り込みます。本番で学習済みの数値は上書きしません。
 
 ### ローカル戦闘箱庭（3D）
 
@@ -170,16 +173,16 @@ npx tsx src/simulator/server.ts
 
 **技術メモ**
 
-- 判断は `threatArc` / `CombatIntent` / `CombatProfiles` を共有。表示は Three.js のみ（戦闘ロジックは持たない）
+- 戦闘の判断は本番と同じ `CombatStep`（`decideCombatStep`）を呼ぶ。箱庭は観測の用意と物理だけを持つ。表示は Three.js のみ
 - 座標は XYZ。段差1段・落下・ブロックLOSを簡易再現。脅威弧は本番どおり水平XZ
 - 回帰シナリオ: `single-ranged`、`multi-positioning`、`recovery`、動的3種、加えて `elevated-ranged` / `wall-los-block`
-- 学習状態は箱庭専用の `data/sim-combat-state.json`（本番 `data/combat-state.json` とは分離）
+- 学習状態は箱庭専用の `data/sim-combat-state.json`（本番 `data/combat-state.json` とは分離。本番は起動時に、まだ数値がない敵種別にだけ初期値として読む）
 - 失敗シードの再現例: `curl -s -X POST http://127.0.0.1:4173/api/gym/replay -H "content-type: application/json" -d "{\"seed\":1000}"`
 
 戦闘改善の受け入れ順序:
 
 1. **箱庭・テスト** — 自動ジムと固定シナリオで決定論的に確認する。
-2. **Bot統合** — 合格した純粋ルールだけをMineflayer adapterへ接続する（`src/reflexes/combatPlanAdapter.ts` → `Reflexes`）。
+2. **Bot統合** — 判断は共通なので、本番側は観測（`src/reflexes/liveCombatScene.ts`）と実行（`Reflexes`）だけを確認する。
 3. **Minecraft動作確認** — 最後に実ワールドで移動・視線・被弾・攻撃を確認する。
 
 実ワールド確認の目安:
@@ -188,7 +191,7 @@ npx tsx src/simulator/server.ts
 - スケルトン: 盾なしは回避バースト、接近後に殴る
 - クリーパー: 未着火は処理、着火中だけ退避
 - オーナー被弾: 襲撃者へ即フォーカス
-- 学習 JSON は箱庭 `data/sim-combat-state.json` と本番 `data/combat-state.json` を混ぜない
+- 学習 JSON は箱庭 `data/sim-combat-state.json` と本番 `data/combat-state.json` を混ぜない（本番が未学習の敵種別に初期値として取り込むだけ）
 
 ### 死亡復帰・自分の墓・周辺ドロップ回収・余剰受け渡し・作業退避
 

@@ -35,6 +35,11 @@ export type CombatLearningConfig = {
   min_health_to_explore: number;
   explore_damage_abort: number;
   state_path: string;
+  /**
+   * 箱庭の学習ファイル。ここで採用された数値を、本番がまだ数値を持たない
+   * 文脈の初期値にする。空文字で無効。
+   */
+  seed_path?: string;
 };
 
 export type ReflexConfig = {
@@ -259,7 +264,8 @@ export const DEFAULT_COMPANION: CompanionConfig = {
       min_trials: 3,
       min_health_to_explore: 12,
       explore_damage_abort: 8,
-      state_path: 'data/combat-state.json'
+      state_path: 'data/combat-state.json',
+      seed_path: 'data/sim-combat-state.json'
     }
   },
   chat: {

@@ -10,48 +10,21 @@ export type CombatContext = {
   hasShield: boolean;
 };
 
+/**
+ * 敵クラス×盾ごとに切り替える数値。箱庭と本番で感触がずれる値だけを持ち、
+ * 学習・箱庭チューニングの対象になる（CombatTuneCatalog）。
+ * それ以外の判断の固定値は CombatParams にある。
+ */
 export type CombatPresetParams = {
-  followRange: number;
-  kiteFollowRange: number;
-  backstepRange: number;
-  strafeRange: number;
-  strafeFacingThreshold: number;
-  rangedBackFacingThreshold: number;
-  rangedBackRange: number;
-  strafeSwitchMs: number;
+  /** クリーパーの警戒距離。着火退避・危険帯の目安。 */
   creeperSoftEvadeRange: number;
-  creeperFollowRange: number;
-  /** 対象切り替えを許可するまで、現在の対象を維持する時間。 */
-  focusStickyMs: number;
-  /** 引き撃ち時に敵集団の重心から離れる度合い（0～1）。 */
-  crowdAvoidBias: number;
   /** ワールド座標上で行う1回の遠距離回避バーストの最大時間。 */
   rangedDodgeBurstMs: number;
   /** 各回避バースト後に確保する明示的な攻撃・前進時間。 */
   rangedDodgeReassessMs: number;
-  /** 盾を構える遠距離脅威数の閾値。 */
-  guardRangedThreatThreshold: number;
-  /** 位置取りを開始するために必要な候補評価の最小改善量。 */
-  positioningImprovementMarginDeg: number;
-  /**
-   * 扇狭窄ラッチ開始角（度）。これ以上なら位置取りを開始する。
-   * 学習で調整可。ゼロ固定ではない。
-   */
-  arcNarrowEnterSpanDeg: number;
-  /**
-   * 扇狭窄ラッチ解除角（度）。これ未満になったら位置取りを終えて戦闘へ戻る。
-   * enter より小さく保つ（ヒステリシス）。
-   */
-  arcNarrowExitSpanDeg: number;
 };
 
 export type CombatPresetId = string;
-
-export type SpacingDecision = {
-  followRange: number;
-  needStrafe: boolean;
-  needBackstep: boolean;
-};
 
 const RANGED_NAMES = new Set([
   'skeleton',
@@ -78,45 +51,15 @@ const EXPLOSIVE_NAMES = new Set([
 export const PRESET_BOUNDS: {
   [K in keyof CombatPresetParams]: { min: number; max: number };
 } = {
-  followRange: { min: 1.0, max: 3.2 },
-  kiteFollowRange: { min: 2.2, max: 5.0 },
-  backstepRange: { min: 1.2, max: 2.6 },
-  strafeRange: { min: 2.0, max: 4.5 },
-  strafeFacingThreshold: { min: 0.4, max: 0.95 },
-  rangedBackFacingThreshold: { min: 0.5, max: 0.95 },
-  rangedBackRange: { min: 1.6, max: 3.5 },
-  strafeSwitchMs: { min: 350, max: 1200 },
   creeperSoftEvadeRange: { min: 2.5, max: 5.5 },
-  creeperFollowRange: { min: 3.5, max: 6.5 },
-  focusStickyMs: { min: 400, max: 5000 },
-  crowdAvoidBias: { min: 0, max: 1 },
   rangedDodgeBurstMs: { min: 250, max: 1000 },
-  rangedDodgeReassessMs: { min: 750, max: 3000 },
-  guardRangedThreatThreshold: { min: 1, max: 3 },
-  positioningImprovementMarginDeg: { min: 1, max: 15 },
-  arcNarrowEnterSpanDeg: { min: 20, max: 90 },
-  arcNarrowExitSpanDeg: { min: 10, max: 70 }
+  rangedDodgeReassessMs: { min: 750, max: 3000 }
 };
 
 const MELEE_BASELINE: CombatPresetParams = {
-  followRange: 2.4,
-  kiteFollowRange: 3.4,
-  backstepRange: 1.7,
-  strafeRange: 2.8,
-  strafeFacingThreshold: 0.7,
-  rangedBackFacingThreshold: 0.85,
-  rangedBackRange: 2.2,
-  strafeSwitchMs: 650,
   creeperSoftEvadeRange: 3.2,
-  creeperFollowRange: 4.5,
-  focusStickyMs: 900,
-  crowdAvoidBias: 0.15,
   rangedDodgeBurstMs: 650,
-  rangedDodgeReassessMs: 1500,
-  guardRangedThreatThreshold: 1,
-  positioningImprovementMarginDeg: 4,
-  arcNarrowEnterSpanDeg: 35,
-  arcNarrowExitSpanDeg: 25
+  rangedDodgeReassessMs: 1500
 };
 
 function cloneParams(params: CombatPresetParams): CombatPresetParams {
@@ -135,104 +78,27 @@ function adjust(
  */
 const PRESETS: Record<CombatPresetId, CombatPresetParams> = {
   'melee-baseline': MELEE_BASELINE,
-  'melee-aggressive': adjust(MELEE_BASELINE, {
-    followRange: 2.0,
-    kiteFollowRange: 2.8,
-    backstepRange: 1.4,
-    strafeRange: 2.4,
-    focusStickyMs: 1200,
-    crowdAvoidBias: 0.05
-  }),
-  'melee-defensive': adjust(MELEE_BASELINE, {
-    followRange: 2.8,
-    kiteFollowRange: 4.0,
-    backstepRange: 2.0,
-    strafeRange: 3.2,
-    strafeSwitchMs: 500,
-    focusStickyMs: 700,
-    crowdAvoidBias: 0.35
-  }),
-
-  'agile-baseline': adjust(MELEE_BASELINE, {
-    followRange: 2.2,
-    kiteFollowRange: 3.2,
-    backstepRange: 1.6,
-    strafeRange: 3.0,
-    strafeSwitchMs: 500,
-    focusStickyMs: 800,
-    crowdAvoidBias: 0.25
-  }),
-
   'ranged-baseline': adjust(MELEE_BASELINE, {
-    followRange: 2.0,
-    kiteFollowRange: 3.2,
-    backstepRange: 1.4,
-    strafeRange: 3.0,
-    rangedBackRange: 2.4,
-    strafeSwitchMs: 500,
-    focusStickyMs: 1100,
-    crowdAvoidBias: 0.15,
     rangedDodgeBurstMs: 450,
-    rangedDodgeReassessMs: 1800,
-    positioningImprovementMarginDeg: 6,
-    // 遠距離はゼロ度まで詰めず、やや広い目標で戦闘へ戻す
-    arcNarrowEnterSpanDeg: 50,
-    arcNarrowExitSpanDeg: 35
+    rangedDodgeReassessMs: 1800
   }),
   'ranged-shield-push': adjust(MELEE_BASELINE, {
-    followRange: 1.2,
-    kiteFollowRange: 2.4,
-    backstepRange: 1.4,
-    strafeRange: 2.8,
-    rangedBackRange: 2.0,
-    focusStickyMs: 1400,
-    crowdAvoidBias: 0.1,
     rangedDodgeBurstMs: 300,
-    rangedDodgeReassessMs: 2400,
-    guardRangedThreatThreshold: 2,
-    positioningImprovementMarginDeg: 5,
-    arcNarrowEnterSpanDeg: 45,
-    arcNarrowExitSpanDeg: 30
+    rangedDodgeReassessMs: 2400
   }),
-
-  'explosive-baseline': adjust(MELEE_BASELINE, {
-    followRange: 2.2,
-    kiteFollowRange: 4.2,
-    backstepRange: 1.4,
-    strafeRange: 2.6,
-    creeperSoftEvadeRange: 3.4,
-    creeperFollowRange: 3.8,
-    focusStickyMs: 1100,
-    crowdAvoidBias: 0.2
-  }),
-  'explosive-wide': adjust(MELEE_BASELINE, {
-    followRange: 2.6,
-    kiteFollowRange: 4.8,
-    backstepRange: 1.6,
-    strafeRange: 3.0,
-    creeperSoftEvadeRange: 3.8,
-    creeperFollowRange: 4.2,
-    focusStickyMs: 900,
-    crowdAvoidBias: 0.3
-  }),
-  'explosive-aggressive': adjust(MELEE_BASELINE, {
-    followRange: 2.0,
-    kiteFollowRange: 4.0,
-    backstepRange: 1.3,
-    strafeRange: 2.4,
-    creeperSoftEvadeRange: 3.0,
-    creeperFollowRange: 3.6,
-    focusStickyMs: 1300,
-    crowdAvoidBias: 0.15
-  })
+  'explosive-baseline': adjust(MELEE_BASELINE, { creeperSoftEvadeRange: 3.4 }),
+  'explosive-wide': adjust(MELEE_BASELINE, { creeperSoftEvadeRange: 3.8 }),
+  'explosive-aggressive': adjust(MELEE_BASELINE, { creeperSoftEvadeRange: 3.0 })
 };
 
+/** 先頭が既定、末尾が低HP時の守りのプリセット。 */
 const CONTEXT_PRESETS: Record<string, CombatPresetId[]> = {
-  'melee|0': ['melee-baseline', 'melee-aggressive', 'melee-defensive'],
-  'melee|1': ['melee-baseline', 'melee-aggressive', 'melee-defensive'],
-  'agile|0': ['agile-baseline', 'melee-defensive'],
-  'agile|1': ['agile-baseline', 'melee-defensive'],
-  'ranged|0': ['ranged-baseline', 'melee-defensive'],
+  // 近接・敏捷は原則駆動。数値で比べる候補はない。
+  'melee|0': ['melee-baseline'],
+  'melee|1': ['melee-baseline'],
+  'agile|0': ['melee-baseline'],
+  'agile|1': ['melee-baseline'],
+  'ranged|0': ['ranged-baseline', 'melee-baseline'],
   'ranged|1': ['ranged-baseline', 'ranged-shield-push'],
   // 混成（矢+クリーパー）では過接近プリセットより間合い広めを既定にする
   'explosive|0': ['explosive-wide', 'explosive-baseline', 'explosive-aggressive'],
@@ -315,95 +181,7 @@ export function clampPreset(params: CombatPresetParams): CombatPresetParams {
       ? Math.min(max, Math.max(min, value))
       : min;
   }
-  // ヒステリシス: 解除角は開始角より少なくとも 5° 狭くする
-  if (out.arcNarrowExitSpanDeg > out.arcNarrowEnterSpanDeg - 5) {
-    out.arcNarrowExitSpanDeg = Math.max(
-      PRESET_BOUNDS.arcNarrowExitSpanDeg.min,
-      out.arcNarrowEnterSpanDeg - 5
-    );
-  }
   return out;
-}
-
-export function isRangedClass(enemyClass: EnemyClass): boolean {
-  return enemyClass === 'ranged';
-}
-
-export function isExplosiveClass(enemyClass: EnemyClass): boolean {
-  return enemyClass === 'explosive';
-}
-
-/**
- * 有効なプリセットからPVP経路探索の followRange を選ぶ。
- */
-export function resolveFollowRange(
-  params: CombatPresetParams,
-  enemyClass: EnemyClass,
-  distance: number
-): number {
-  if (enemyClass === 'ranged') return params.kiteFollowRange;
-  if (enemyClass === 'explosive') {
-    // 未着火は近接 follow。着火時は退避パスが pvp を止める。
-    return params.creeperFollowRange;
-  }
-  return distance <= params.backstepRange
-    ? params.kiteFollowRange
-    : params.followRange;
-}
-
-/**
- * 配置とプリセットから横移動・後退の要否を決める。
- */
-export function decideSpacing(opts: {
-  params: CombatPresetParams;
-  enemyClass: EnemyClass;
-  distance: number;
-  enemyFacingBot: number | null;
-}): SpacingDecision {
-  const { params, enemyClass, distance, enemyFacingBot } = opts;
-  const facing = enemyFacingBot;
-  const exposed = distance <= params.strafeRange
-    && (facing == null || facing >= params.strafeFacingThreshold);
-  const needStrafe = enemyClass === 'ranged'
-    || exposed
-    || distance <= params.backstepRange;
-  const needBackstep = distance <= params.backstepRange
-    || (
-      enemyClass === 'ranged'
-      && distance <= params.rangedBackRange
-      && (facing == null || facing >= params.rangedBackFacingThreshold)
-    );
-
-  return {
-    followRange: resolveFollowRange(params, enemyClass, distance),
-    needStrafe,
-    needBackstep
-  };
-}
-
-/**
- * 後退方向へ、近傍敵の重心から離れる方向を混ぜる。
- * bias=0 は対象から真っすぐ離れ、bias=1 は空いている方向だけを使う。
- */
-export function blendCrowdAvoidDirection(opts: {
-  awayFromTarget: { x: number; z: number };
-  awayFromCrowd: { x: number; z: number } | null;
-  bias: number;
-}): { x: number; z: number } {
-  const bias = Math.min(1, Math.max(0, opts.bias));
-  if (!opts.awayFromCrowd || bias <= 0) return normalize2(opts.awayFromTarget);
-  const a = normalize2(opts.awayFromTarget);
-  const b = normalize2(opts.awayFromCrowd);
-  return normalize2({
-    x: a.x * (1 - bias) + b.x * bias,
-    z: a.z * (1 - bias) + b.z * bias
-  });
-}
-
-function normalize2(v: { x: number; z: number }): { x: number; z: number } {
-  const len = Math.hypot(v.x, v.z);
-  if (len < 1e-6) return { x: 0, z: -1 };
-  return { x: v.x / len, z: v.z / len };
 }
 
 export function countNearbyHostiles(
@@ -423,32 +201,6 @@ export function countNearbyHostiles(
     if (dist <= maxDistance) count += 1;
   }
   return count;
-}
-
-/**
- * 近傍敵の平均位置から離れる方向（空間の空き方向への補正）。
- */
-export function crowdAwayDirection(
-  entities: Record<string | number, any> | null | undefined,
-  botPos: { x: number; y: number; z: number },
-  maxDistance: number,
-  isHostileFn: (entity: any) => boolean
-): { x: number; z: number } | null {
-  let sumX = 0;
-  let sumZ = 0;
-  let n = 0;
-  for (const entity of Object.values(entities || {})) {
-    if (!entity?.position || !isHostileFn(entity)) continue;
-    const dx = entity.position.x - botPos.x;
-    const dz = entity.position.z - botPos.z;
-    const dist = Math.hypot(dx, dz);
-    if (dist <= 0.01 || dist > maxDistance) continue;
-    sumX += dx;
-    sumZ += dz;
-    n += 1;
-  }
-  if (n === 0) return null;
-  return normalize2({ x: -(sumX / n), z: -(sumZ / n) });
 }
 
 export function defensivePresetId(ctx: CombatContext): CombatPresetId {
