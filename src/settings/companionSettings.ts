@@ -75,8 +75,8 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
         title: '撤退',
         fields: [
           bool('体力が減ったら撤退する', 'companion.reflexes.self_preservation'),
-          num('撤退する体力', 'companion.reflexes.retreat_health', 1, 19, 'HP'),
-          num('戦闘に戻る体力', 'companion.reflexes.resume_health', 2, 20, 'HP'),
+          num('撤退する体力', 'companion.reflexes.retreat_health', 1, 19, '/ 20'),
+          num('戦闘に戻る体力', 'companion.reflexes.resume_health', 2, 20, '/ 20'),
           num('撤退する距離', 'companion.reflexes.retreat_distance', 2, 32, 'ブロック', { advanced: true })
         ]
       },
@@ -93,8 +93,8 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
           bool('戦い方を自分で調整する', 'companion.reflexes.combat_learning.enabled'),
           pct('新しい戦い方を試す頻度', 'companion.reflexes.combat_learning.explore_rate'),
           num('評価に必要な試行回数', 'companion.reflexes.combat_learning.min_trials', 1, 50, '回', { advanced: true }),
-          num('試すのに必要な体力', 'companion.reflexes.combat_learning.min_health_to_explore', 1, 20, 'HP', { advanced: true }),
-          num('試すのをやめる被ダメージ', 'companion.reflexes.combat_learning.explore_damage_abort', 1, 20, 'HP', { advanced: true })
+          num('試すのに必要な体力', 'companion.reflexes.combat_learning.min_health_to_explore', 1, 20, '/ 20', { advanced: true }),
+          num('試すのをやめる被ダメージ', 'companion.reflexes.combat_learning.explore_damage_abort', 1, 20, '/ 20', { advanced: true })
         ]
       }
     ]
@@ -142,7 +142,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
           sec('重要な発言の最短間隔', 'companion.chat.priority_min_interval_ms', 0, 600, { advanced: true }),
           sec('同じ話題を繰り返さない時間', 'companion.chat.event_cooldown_ms', 0, 1800, { advanced: true }),
           sec('返事の間隔', 'companion.chat.player_reply_cooldown_ms', 0, 60, { advanced: true }),
-          num('体力が少ないと言う体力', 'companion.chat.low_health', 1, 20, 'HP', { advanced: true }),
+          num('体力が少ないと言う体力', 'companion.chat.low_health', 1, 20, '/ 20', { advanced: true }),
           num('詰まったと言うまでの時間', 'companion.chat.stuck_seconds', 1, 60, '秒', { advanced: true }),
           num('敵の接近を知らせる距離', 'companion.chat.hostile_range', 4, 48, 'ブロック', { advanced: true }),
           num('持ち物の空きを知らせ直す空き数', 'companion.chat.inventory_fill_rearm_slots', 1, 36, 'スロット', { advanced: true })

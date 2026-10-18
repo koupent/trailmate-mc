@@ -30,7 +30,7 @@ describe('isHostile', () => {
     assert.equal(isHostile({ name: 'slime', type: 'mob', metadata: { 2: '{"text":"26.2 Sulfur Cube"}' } }), false);
     assert.deepEqual(
       listUnsetEncounters().find((mob) => mob.id === 'sulfur_cube'),
-      { id: 'sulfur_cube', label: 'Sulfur Cube' }
+      { id: 'sulfur_cube', label: 'サルファーキューブ' }
     );
   });
 
@@ -51,9 +51,9 @@ describe('isHostile', () => {
       ]
     });
     assert.deepEqual(catalog, [
-      { id: 'zombie', label: 'Zombie', default: 'attack' },
-      { id: 'allay', label: 'Allay', default: 'ignore' },
-      { id: 'sulfur_cube', label: 'Sulfur Cube', default: null }
+      { id: 'zombie', label: 'ゾンビ', default: 'attack' },
+      { id: 'allay', label: 'アレイ', default: 'ignore' },
+      { id: 'sulfur_cube', label: 'サルファーキューブ', default: null }
     ]);
   });
 });
