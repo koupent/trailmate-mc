@@ -536,7 +536,7 @@ export class Reflexes {
    */
   private buildCombatTree() {
     const step = () => this.step!;
-    return sequence('戦闘', [
+    return sequence('このtickの戦闘', [
       action('敵と状況を見て判断する（CombatStep）', () => this.decideStep()),
       selector('判断した行動', [
         sequence('着火したクリーパーから離れる', [
