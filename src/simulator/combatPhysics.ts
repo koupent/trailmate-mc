@@ -239,14 +239,3 @@ function applyCreeperBlast(
   }
 }
 
-/** 着火中で殴って止められないときだけ強制退避。 */
-export function creeperMustFlee(opts: {
-  creeper: PhysicsEnemy | null;
-  canMeleeStrike: boolean;
-  distance: number;
-  fleeDistance: number;
-}): boolean {
-  if (!opts.creeper || !isSimCreeperIgnited(opts.creeper)) return false;
-  if (opts.canMeleeStrike) return false;
-  return opts.distance < opts.fleeDistance;
-}
