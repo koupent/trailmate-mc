@@ -67,6 +67,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
         fields: [
           bool('敵と戦う', 'companion.reflexes.self_defense'),
           num('敵に反応する距離', 'companion.reflexes.hostile_range', 4, 48, 'ブロック'),
+          num('オーナーを守る範囲', 'companion.reflexes.owner_protect_range', 2, 48, 'ブロック', { help: 'オーナーからこの距離内の敵を倒しに行きます。' }),
           sec('見失ってから諦めるまで', 'companion.reflexes.combat_lost_grace_ms', 0, 30, { advanced: true })
         ]
       },
@@ -77,6 +78,13 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
           num('撤退する体力', 'companion.reflexes.retreat_health', 1, 19, 'HP'),
           num('戦闘に戻る体力', 'companion.reflexes.resume_health', 2, 20, 'HP'),
           num('撤退する距離', 'companion.reflexes.retreat_distance', 2, 32, 'ブロック', { advanced: true })
+        ]
+      },
+      {
+        title: '食事',
+        fields: [
+          num('体力が満タンのとき、食べ始める満腹度', 'companion.auto_eat.healthy_start_at', 0, 19, '以下'),
+          num('体力が減っているとき、食べ始める満腹度', 'companion.auto_eat.injured_start_at', 0, 19, '以下', { help: '満腹度 18 以上で体力が自然回復するため、高めにしています。' })
         ]
       },
       {
@@ -176,6 +184,10 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
           bool('暗い場所に松明を置く', 'companion.reflexes.torch_placing'),
           num('松明を置く明るさ', 'companion.torch_light_threshold', 0, 15, '以下', { help: 'この明るさ以下で置きます。' })
         ]
+      },
+      {
+        title: '畑',
+        fields: [bool('オーナーの近くの畑に種を植え直す', 'companion.crop_replant.enabled')]
       },
       {
         title: '周囲の把握',

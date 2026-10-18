@@ -28,6 +28,14 @@ describe('shouldCompanionEat', () => {
     assert.equal(shouldCompanionEat(15, 10), true);
   });
 
+  it('uses the configured thresholds', () => {
+    const thresholds = { healthy_start_at: 10, injured_start_at: 12 };
+    assert.equal(shouldCompanionEat(11, 20, 20, thresholds), false);
+    assert.equal(shouldCompanionEat(10, 20, 20, thresholds), true);
+    assert.equal(shouldCompanionEat(12, 15, 20, thresholds), true);
+    assert.equal(shouldCompanionEat(13, 15, 20, thresholds), false);
+  });
+
   it('never eats at full hunger', () => {
     assert.equal(shouldCompanionEat(20, 20), false);
     assert.equal(shouldCompanionEat(20, 5), false);
