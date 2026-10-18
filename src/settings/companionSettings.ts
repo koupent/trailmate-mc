@@ -195,8 +195,11 @@ export function readPath(source: unknown, path: string): unknown {
   return path.split('.').reduce<any>((value, key) => (value == null ? undefined : value[key]), source);
 }
 
+export type SchemaField = SettingField & { default: unknown };
+export type SchemaCategory = { id: string; sections: Array<{ title: string; fields: SchemaField[] }> };
+
 /** ダッシュボードに渡す定義（各項目の既定値付き）。 */
-export function settingsSchema(): Array<SettingCategory & { sections: Array<SettingSection & { fields: Array<SettingField & { default: unknown }> }> }> {
+export function settingsSchema(): SchemaCategory[] {
   return SETTING_CATEGORIES.map((category) => ({
     ...category,
     sections: category.sections.map((section) => ({
