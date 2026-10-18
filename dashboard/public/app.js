@@ -464,6 +464,13 @@ function renderStatus(status) {
       <dt>ディメンション</dt><dd>${escapeHtml(status.dimension || '-')}</dd>
       <dt>オーナー</dt><dd>${escapeHtml(status.ownerName || '未ロック')}</dd>
     </dl>
+    ${
+      status.unsetMobs?.length
+        ? `<div class="warn">攻撃するか未設定のモブに出会いました（${escapeHtml(
+            status.unsetMobs.map((mob) => mob.label).join('、')
+          )}）。設定タブの「攻撃するモブ」で選んでください。</div>`
+        : ''
+    }
   `
   );
 }

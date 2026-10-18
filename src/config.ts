@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
+import { normalizeMobHostility, type MobHostilityConfig } from './world/mobHostility.js';
 
 dotenv.config();
 
@@ -45,6 +46,8 @@ export type ReflexConfig = {
   retreat_health: number;
   resume_health: number;
   retreat_distance: number;
+  /** ownerからこの距離内の敵を護衛脅威とみなす。 */
+  owner_protect_range?: number;
   combat_learning: CombatLearningConfig;
 };
 
@@ -136,6 +139,17 @@ export type ItemShareConfig = {
   abort_on_recent_damage: boolean;
 };
 
+export type AutoEatConfig = {
+  /** 体力が満タンのとき、満腹度がこの値以下で食べる。 */
+  healthy_start_at: number;
+  /** 体力が減っているとき、満腹度がこの値以下で食べる（自然回復を続けるため高め）。 */
+  injured_start_at: number;
+};
+
+export type CropReplantConfig = {
+  enabled: boolean;
+};
+
 export type CompanionConfig = {
   scan_radius: number;
   fov_degrees: number;
@@ -154,6 +168,8 @@ export type CompanionConfig = {
   item_share: ItemShareConfig;
   reflexes: ReflexConfig;
   chat: ChatConfig;
+  auto_eat: AutoEatConfig;
+  crop_replant: CropReplantConfig;
 };
 
 export type AppConfig = {
@@ -164,10 +180,12 @@ export type AppConfig = {
   minecraft_version: string;
   language: string;
   chat_ingame: boolean;
+  /** モブごとの攻撃方針（ダッシュボードで設定）。 */
+  mob_hostility: MobHostilityConfig;
   companion: CompanionConfig;
 };
 
-const DEFAULT_COMPANION: CompanionConfig = {
+export const DEFAULT_COMPANION: CompanionConfig = {
   scan_radius: 48,
   fov_degrees: 120,
   follow_distance: 3,
@@ -234,6 +252,7 @@ const DEFAULT_COMPANION: CompanionConfig = {
     retreat_health: 8,
     resume_health: 14,
     retreat_distance: 8,
+    owner_protect_range: 10,
     combat_learning: {
       enabled: true,
       explore_rate: 0.2,
@@ -258,6 +277,13 @@ const DEFAULT_COMPANION: CompanionConfig = {
     hostile_approach_distances: [10, 6, 3],
     inventory_fill_thresholds: [75, 90, 100],
     inventory_fill_rearm_slots: 2
+  },
+  auto_eat: {
+    healthy_start_at: 14,
+    injured_start_at: 17
+  },
+  crop_replant: {
+    enabled: true
   }
 };
 
@@ -313,6 +339,14 @@ export function loadConfig(): AppConfig {
     ...DEFAULT_COMPANION.item_share,
     ...(companionFile.item_share || {})
   };
+  const auto_eat = {
+    ...DEFAULT_COMPANION.auto_eat,
+    ...(companionFile.auto_eat || {})
+  };
+  const crop_replant = {
+    ...DEFAULT_COMPANION.crop_replant,
+    ...(companionFile.crop_replant || {})
+  };
 
   return {
     host: process.env.MC_HOST || 'viaproxy',
@@ -322,6 +356,7 @@ export function loadConfig(): AppConfig {
     minecraft_version: String(file.minecraft_version || '1.21.6'),
     language: String(file.language || 'ja'),
     chat_ingame: file.chat_ingame !== false,
+    mob_hostility: normalizeMobHostility(file.mob_hostility),
     companion: {
       ...DEFAULT_COMPANION,
       ...companionFile,
@@ -332,7 +367,9 @@ export function loadConfig(): AppConfig {
       nearby_loot,
       owner_work,
       eye_contact,
-      item_share
+      item_share,
+      auto_eat,
+      crop_replant
     }
   };
 }

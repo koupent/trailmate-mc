@@ -150,33 +150,75 @@
         <section id="tab-settings" class="tab-panel" role="tabpanel" hidden>
           <header class="page-head">
             <h1 class="page-title">設定</h1>
-            <p class="page-lead">接続先・アカウントと、相棒が手元に残すアイテムを設定します。</p>
+            <p class="page-lead">接続先と、相棒の動きを分類ごとに設定します。</p>
           </header>
-          <div class="columns">
-            <div class="column column-side">
-              <article class="card">
-                <div id="settings-setup-slot"></div>
-              </article>
-            </div>
-            <div class="column column-main">
-              <article class="card" id="retention-zone">
-                <div class="card-head">
-                  <h2 class="card-title">相棒が手元に残すもの</h2>
-                  <p class="card-lead">
-                    チェストを置いて返してもらうとき、相棒が自分用に残すアイテムです。
-                    カテゴリごとの合計と、アイテムごとの上限の両方を指定できます。
-                    保存すると、デスポーンせずに次の返却から反映されます。
-                  </p>
-                </div>
-                <nav class="tabs subtabs" id="retention-tabs" role="tablist" aria-label="保持カテゴリ"></nav>
-                <div id="retention-panels" aria-live="polite">読み込み中…</div>
-                <div class="row retention-actions">
-                  <button type="button" id="retention-save" class="primary" disabled>保持設定を保存</button>
-                  <button type="button" id="retention-reset" disabled>既定に戻す</button>
-                  <span id="retention-msg" class="msg"></span>
-                </div>
-              </article>
-            </div>
+          <nav class="tabs subtabs" id="settings-cats" role="tablist" aria-label="設定の分類">
+            <button type="button" class="tab is-active" role="tab" aria-selected="true" data-settings-cat="connection">接続</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-settings-cat="movement">移動・追従</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-settings-cat="combat">戦闘・安全</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-settings-cat="items">アイテム</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-settings-cat="chat">会話</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-settings-cat="recovery">死亡・復帰</button>
+            <button type="button" class="tab" role="tab" aria-selected="false" data-settings-cat="world">松明・畑・周囲</button>
+          </nav>
+          <div class="settings-panel" data-settings-panel="connection">
+            <article class="card">
+              <div id="settings-setup-slot"></div>
+            </article>
+          </div>
+          <div class="settings-panel" data-settings-panel="movement" hidden>
+            <div class="settings-fields" data-settings-fields="movement"></div>
+          </div>
+          <div class="settings-panel" data-settings-panel="combat" hidden>
+            <div class="settings-fields" data-settings-fields="combat"></div>
+            <article class="card" id="mobs-zone">
+              <div class="card-head">
+                <h2 class="card-title">攻撃するモブ</h2>
+                <p class="card-lead">
+                  相棒が攻撃するかどうかをモブごとに決めます。「未設定」のモブは攻撃しません。
+                  ゲームの更新で増えたモブは、相棒が出会ったときにここへ追加されます。
+                </p>
+              </div>
+              <div id="mobs-summary"></div>
+              <div id="mobs-list" aria-live="polite">読み込み中…</div>
+              <div class="row">
+                <button type="button" id="mobs-save" class="primary" disabled>モブ設定を保存</button>
+                <span id="mobs-msg" class="msg"></span>
+              </div>
+            </article>
+          </div>
+          <div class="settings-panel" data-settings-panel="items" hidden>
+            <div class="settings-fields" data-settings-fields="items"></div>
+            <article class="card" id="retention-zone">
+              <div class="card-head">
+                <h2 class="card-title">相棒が手元に残すもの</h2>
+                <p class="card-lead">
+                  チェストを置いて返してもらうとき、相棒が自分用に残すアイテムです。
+                  カテゴリごとの合計と、アイテムごとの上限の両方を指定できます。
+                  保存すると、デスポーンせずに次の返却から反映されます。
+                </p>
+              </div>
+              <nav class="tabs subtabs" id="retention-tabs" role="tablist" aria-label="保持カテゴリ"></nav>
+              <div id="retention-panels" aria-live="polite">読み込み中…</div>
+              <div class="row retention-actions">
+                <button type="button" id="retention-save" class="primary" disabled>保持設定を保存</button>
+                <button type="button" id="retention-reset" disabled>既定に戻す</button>
+                <span id="retention-msg" class="msg"></span>
+              </div>
+            </article>
+          </div>
+          <div class="settings-panel" data-settings-panel="chat" hidden>
+            <div class="settings-fields" data-settings-fields="chat"></div>
+          </div>
+          <div class="settings-panel" data-settings-panel="recovery" hidden>
+            <div class="settings-fields" data-settings-fields="recovery"></div>
+          </div>
+          <div class="settings-panel" data-settings-panel="world" hidden>
+            <div class="settings-fields" data-settings-fields="world"></div>
+          </div>
+          <div class="row settings-save" id="settings-save-bar" hidden>
+            <button type="button" id="settings-save" class="primary" disabled>設定を保存</button>
+            <span id="settings-msg" class="msg"></span>
           </div>
         </section>
       </div>
@@ -238,5 +280,7 @@
   </div>
   <script type="module" src="/app.js"></script>
   <script type="module" src="/retention.js"></script>
+  <script type="module" src="/mobs.js"></script>
+  <script type="module" src="/companionSettings.js"></script>
 </body>
 </html>

@@ -499,7 +499,8 @@ export class Reflexes {
   private protectRanges(): ProtectRanges {
     return {
       ...DEFAULT_PROTECT_RANGES,
-      botChaseRange: this.config.hostile_range
+      botChaseRange: this.config.hostile_range,
+      ownerProtectRange: this.config.owner_protect_range ?? DEFAULT_PROTECT_RANGES.ownerProtectRange
     };
   }
 

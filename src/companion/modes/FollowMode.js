@@ -153,6 +153,7 @@ export class FollowMode extends Mode {
             ctx.agent?.companion?.manager?.targets?._dutyPending
         );
         if (!dutyPending
+            && ctx.config?.crop_replant?.enabled !== false
             && currentControlOwner(ctx, 'follow') === 'follow'
             && bot.entity.position.distanceTo(owner.position) <= CROP_OWNER_MAX_DISTANCE
             && await this._tryPlantNearbyCrop(ctx)) {
