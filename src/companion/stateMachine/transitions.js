@@ -113,11 +113,3 @@ export function shouldEnterPassageTransit(targets) {
     if (shouldEnterCombat(targets)) return false;
     return !safetyDutyPending(targets);
 }
-
-/**
- * @param {object} targets
- * @returns {'follow'|'wait'}
- */
-export function resumeUpperMode(targets) {
-    return targets.preferredMode === 'wait' ? 'wait' : 'follow';
-}

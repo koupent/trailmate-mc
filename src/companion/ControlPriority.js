@@ -60,3 +60,17 @@ export function currentControlOwner(ctx, upperMode = 'follow', now = Date.now())
         upperMode
     });
 }
+
+/**
+ * A mode ticked without the state machine (tests, tools) has nobody to keep
+ * it out of combat, so it checks ownership itself. Under the machine the
+ * normal state only runs a mode when nothing else owns the bot.
+ * Waitが所有するのは待機目的地であり、戦術的な戦闘移動ではない。
+ * @param {object} ctx
+ * @param {'follow'|'wait'} mode
+ */
+export function yieldsOutsideMachine(ctx, mode) {
+    if (ctx?.agent?.companion?.manager?.getActiveFsmId) return false;
+    if (currentControlOwner(ctx, mode) !== mode) return true;
+    return mode === 'wait' && Boolean(ctx?.agent?.reflexes?.isControllingMovement);
+}

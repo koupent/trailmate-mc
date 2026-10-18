@@ -3,7 +3,7 @@
  */
 
 /**
- * @typedef {'follow'|'wait'|'combat'|'passage_transit'|'duty'} CompanionFsmStateId
+ * @typedef {'normal'|'combat'|'passage_transit'|'duty'} CompanionFsmStateId
  */
 
 /**
@@ -21,15 +21,13 @@ export function createCompanionTargets(opts) {
         followMode: opts.followMode,
         waitMode: opts.waitMode,
         interrupts: opts.interrupts || [],
-        /** @type {'follow'|'wait'} Player-selected upper mode (dialogue). */
+        /** @type {'follow'|'wait'} Player-selected mode, read by the normal state's tree. */
         preferredMode: 'follow',
         /** Item transfer etc. — skip FSM behavior work. */
         paused: false,
         /** @type {CompanionFsmStateId} */
-        activeId: 'follow',
+        activeId: 'normal',
         /** A passage transaction must finish before normal work resumes. */
-        _passagePending: false,
-        /** Last non-combat/duty mode for return transitions. */
-        resumeMode: 'follow'
+        _passagePending: false
     };
 }

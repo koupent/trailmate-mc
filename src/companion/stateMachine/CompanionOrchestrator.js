@@ -10,6 +10,7 @@ import { createRootMachine } from './createRootMachine.js';
 import { prepareCompanionWorldTick } from './prepareTick.js';
 import { startPassageUpkeep, syncPassageTransit } from './passageUpkeep.js';
 import { refreshDutyFlags, shouldEnterPassageTransit } from './transitions.js';
+import { describeTree } from '../behaviorTree/bt.js';
 
 /** Recent transitions kept for the dashboard timeline. */
 const HISTORY_LIMIT = 12;
@@ -51,7 +52,7 @@ export class CompanionOrchestrator {
         this.fsmStates = built.states;
         this.root.active = true;
         this.root.onStateEntered();
-        /** @type {Array<{ name: string, from: string, to: string, at: number }>} newest last */
+        /** @type {Array<{ kind: 'state'|'mode', name: string, from: string, to: string, at: number }>} newest last */
         this.transitionHistory = [];
     }
 
@@ -75,14 +76,14 @@ export class CompanionOrchestrator {
     }
 
     /**
-     * Dialogue-facing mode id (follow/wait), not combat/duty overlays.
+     * Player-selected mode (follow/wait). Independent of the active state.
      */
     getCurrentModeId() {
         return this.targets.preferredMode;
     }
 
     /**
-     * Active NestedStateMachine leaf id (follow|wait|combat|passage_transit|duty).
+     * Active NestedStateMachine leaf id (normal|combat|passage_transit|duty).
      */
     getActiveFsmId() {
         return this.targets.activeId;
@@ -107,6 +108,10 @@ export class CompanionOrchestrator {
                 name: interrupt.name,
                 pending: interrupt._lastShouldRun === true
             })),
+            // Each state's behavior tree with the result of its last tick.
+            trees: Object.fromEntries(
+                Object.values(this.fsmStates).map((state) => [state.stateName, describeTree(state.tree)])
+            ),
             history: this.transitionHistory
         };
     }
@@ -121,13 +126,16 @@ export class CompanionOrchestrator {
             console.warn(`[companion] ignored unknown mode: ${modeId}`);
             return false;
         }
+        const from = this.targets.preferredMode;
         this.targets.preferredMode = modeId === 'wait' ? 'wait' : 'follow';
+        // Not a state transition, but the player wants to see it in the timeline.
+        this._recordHistory({ kind: 'mode', name: `mode_${from}_to_${modeId}`, from, to: modeId });
         console.log(`[companion] mode -> ${modeId}`);
         return true;
     }
 
     async start() {
-        // Root enter already called FollowBehavior.onStateEntered.
+        // Root enter already called NormalBehavior.onStateEntered.
     }
 
     async tick() {
@@ -180,6 +188,12 @@ export class CompanionOrchestrator {
         }
     }
 
+    /** @param {{ kind: 'state'|'mode', name: string, from: string, to: string }} entry */
+    _recordHistory(entry) {
+        this.transitionHistory.push({ ...entry, at: Date.now() });
+        if (this.transitionHistory.length > HISTORY_LIMIT) this.transitionHistory.shift();
+    }
+
     /**
      * NestedStateMachine.update() runs behavior then transitions without awaiting.
      * We await runTick ourselves, then only evaluate transitions here.
@@ -192,13 +206,12 @@ export class CompanionOrchestrator {
             if (transition.parentState !== nested.activeState) continue;
             if (!(transition.isTriggered() || transition.shouldTransition())) continue;
             transition.resetTrigger();
-            this.transitionHistory.push({
+            this._recordHistory({
+                kind: 'state',
                 name: transition.name,
                 from: nested.activeState.stateName,
-                to: transition.childState.stateName,
-                at: Date.now()
+                to: transition.childState.stateName
             });
-            if (this.transitionHistory.length > HISTORY_LIMIT) this.transitionHistory.shift();
             nested.activeState.active = false;
             nested.activeState.onStateExited?.();
             transition.onTransition();

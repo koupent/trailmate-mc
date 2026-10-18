@@ -1,6 +1,7 @@
 import { createLogFollowState } from './logFollow.js';
 import { syncHtml, syncProp, syncText, syncTextKeepingScroll } from './domSync.js';
 import { renderFsmSvg } from './fsmGraph.js';
+import { renderBtTree } from './btTree.js';
 
 /* ===== helpers ===== */
 const POLL_INTERVAL_MS = 2000;
@@ -56,6 +57,8 @@ const inventoryPanel = document.getElementById('inventory-panel');
 const fsmGraphEl = document.getElementById('fsm-graph');
 const fsmCurrentEl = document.getElementById('fsm-current');
 const fsmHistoryEl = document.getElementById('fsm-history');
+const btTitleEl = document.getElementById('bt-title');
+const btTreeEl = document.getElementById('bt-tree');
 const modeSwitchEl = document.getElementById('mode-switch');
 const commandListEl = document.getElementById('command-list');
 const commandMsg = document.getElementById('command-msg');
@@ -474,6 +477,7 @@ function renderStatus(status) {
  * still appears in the diagram under its raw id.
  */
 const STATE_TEXT = {
+  normal: ['平常', 'モードに従って動く'],
   follow: ['追従', 'オーナーについていく'],
   wait: ['待機', 'その場で待つ'],
   combat: ['戦闘', '敵に対処する'],
@@ -494,6 +498,7 @@ function stateLabel(id) {
 
 /** Duty says which interrupt it is actually running, when one is pending. */
 function stateNote(fsm, id) {
+  if (id === 'normal' && fsm.preferredMode) return `${stateLabel(fsm.preferredMode)}モード`;
   if (id === 'duty') {
     const pending = (fsm.duties || []).find((duty) => duty.pending);
     if (pending) return DUTY_TEXT[pending.name] || pending.name;
@@ -505,25 +510,45 @@ function formatTime(at) {
   return new Date(at).toLocaleTimeString('ja-JP', { hour12: false });
 }
 
+/** State whose tree is open; `null` follows the active state. */
+let btSelected = null;
+/** @type {object|null} Last status, so a click can redraw without waiting for the poll. */
+let lastFsm = null;
+
 function renderFsm(fsm) {
+  lastFsm = fsm;
   if (!fsm) {
     syncHtml(fsmGraphEl, '<div class="empty">スポーンすると表示されます</div>');
     syncHtml(fsmCurrentEl, '');
     syncHtml(fsmHistoryEl, '<li class="muted">まだありません</li>');
+    syncText(btTitleEl, '状態の中身');
+    syncHtml(btTreeEl, '<div class="empty">スポーンすると表示されます</div>');
     return;
   }
 
+  const shown = btSelected && fsm.trees?.[btSelected] ? btSelected : fsm.active;
   syncHtml(
     fsmGraphEl,
-    renderFsmSvg(fsm, { label: stateLabel, note: (id) => stateNote(fsm, id) })
+    renderFsmSvg(fsm, {
+      label: stateLabel,
+      note: (id) => stateNote(fsm, id),
+      selected: btSelected ? shown : null
+    })
   );
   syncHtml(
     fsmCurrentEl,
     `<div class="fsm-current-label">${escapeHtml(stateLabel(fsm.active))}</div>
-    <div class="fsm-current-note">${escapeHtml(stateNote(fsm, fsm.active))} · 希望モード ${escapeHtml(
+    <div class="fsm-current-note">${escapeHtml(stateNote(fsm, fsm.active))} · モード ${escapeHtml(
       stateLabel(fsm.preferredMode)
     )}</div>`
   );
+
+  const live = shown === fsm.active;
+  syncText(
+    btTitleEl,
+    `「${stateLabel(shown)}」の中身${live ? '（いま動いている状態）' : '（待機中の状態・今回は未実行）'}`
+  );
+  syncHtml(btTreeEl, renderBtTree(fsm.trees?.[shown], { live, mode: fsm.preferredMode }));
 
   const history = [...(fsm.history || [])].reverse();
   syncHtml(
@@ -531,7 +556,9 @@ function renderFsm(fsm) {
     history.length
       ? history
           .map(
-            (entry) => `<li title="${escapeHtml(entry.name)}"><time>${formatTime(entry.at)}</time><span>${escapeHtml(
+            (entry) => `<li title="${escapeHtml(entry.name)}"${entry.kind === 'mode' ? ' class="is-mode"' : ''}><time>${formatTime(
+              entry.at
+            )}</time><span>${entry.kind === 'mode' ? '<span class="tag">モード</span>' : ''}${escapeHtml(
               stateLabel(entry.from)
             )}<span class="arrow">→</span><strong>${escapeHtml(stateLabel(entry.to))}</strong></span></li>`
           )
@@ -539,6 +566,24 @@ function renderFsm(fsm) {
       : '<li class="muted">スポーンしてからの遷移はまだありません</li>'
   );
 }
+
+/** Clicking a state opens its tree; clicking it again goes back to following the active state. */
+function selectFsmState(id) {
+  btSelected = btSelected === id ? null : id;
+  renderFsm(lastFsm);
+}
+
+fsmGraphEl.addEventListener('click', (event) => {
+  const node = event.target.closest?.('[data-state]');
+  if (node) selectFsmState(node.getAttribute('data-state'));
+});
+fsmGraphEl.addEventListener('keydown', (event) => {
+  if (event.key !== 'Enter' && event.key !== ' ') return;
+  const node = event.target.closest?.('[data-state]');
+  if (!node) return;
+  event.preventDefault();
+  selectFsmState(node.getAttribute('data-state'));
+});
 
 /* ===== modes / commands ===== */
 /** @type {Array<{ id: string, kind: 'mode'|'action', word: string, description: string }>|null} */

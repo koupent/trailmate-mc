@@ -98,7 +98,7 @@ function makeCtx(options = {}) {
     if (options.fsmId || options.dutyPending) {
         agent.companion = {
             manager: {
-                getActiveFsmId: () => options.fsmId || 'follow',
+                getActiveFsmId: () => options.fsmId || 'normal',
                 targets: { _dutyPending: Boolean(options.dutyPending) }
             }
         };
@@ -226,15 +226,11 @@ describe('follow crop planting', () => {
         await new FollowMode().tick(ownerFar.ctx);
         assert.equal(ownerFar.findCalls, 0);
 
-        const waiting = makeCtx({ fsmId: 'wait' });
-        await new FollowMode().tick(waiting.ctx);
-        assert.equal(waiting.findCalls, 0);
-
-        const combat = makeCtx({ fsmId: 'follow', reflexes: { wantsCombat: true } });
+        const combat = makeCtx({ fsmId: 'normal', reflexes: { wantsCombat: true } });
         await new FollowMode().tick(combat.ctx);
         assert.equal(combat.findCalls, 0);
 
-        const recovery = makeCtx({ fsmId: 'follow', recoveryActive: true });
+        const recovery = makeCtx({ fsmId: 'normal', recoveryActive: true });
         await new FollowMode().tick(recovery.ctx);
         assert.equal(recovery.findCalls, 0);
 

@@ -110,7 +110,7 @@ export class EyeContactReaction {
 
         const manager = this.manager || ctx.agent?.companion?.manager;
         const fsmId = manager?.getActiveFsmId?.();
-        if (fsmId !== 'follow' && fsmId !== 'wait') return false;
+        if (fsmId !== 'normal') return false;
 
         if (ctx.movement?.hasGoal || ctx.movement?.isMoving) return false;
         if (MOVEMENT_CONTROLS.some((control) => ctx.bot.getControlState?.(control))) return false;

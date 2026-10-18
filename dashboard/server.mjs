@@ -1016,7 +1016,7 @@ async function waitForViaProxyHealthy(timeoutMs) {
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
   if (
-    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'logFollow.js', 'retention.js', 'styles.css'].includes(
+    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'btTree.js', 'logFollow.js', 'retention.js', 'styles.css'].includes(
       file
     )
   ) {

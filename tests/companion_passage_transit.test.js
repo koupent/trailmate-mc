@@ -235,14 +235,14 @@ function makePassageWorld(options = {}) {
         const manager = new CompanionOrchestrator(ctx, agent, interrupts, 'follow');
         agent.companion = { manager };
         // Owner search is irrelevant here; normal movement is driven explicitly.
-        manager.fsmStates.follow.runTick = async () => {};
+        manager.fsmStates.normal.runTick = async () => {};
         world.manager = manager;
         return manager;
     };
 
     /** Ordinary follow: walk toward a fixed point, tick after tick. */
     world.followToward = (z) => {
-        world.manager.fsmStates.follow.runTick = async () => {
+        world.manager.fsmStates.normal.runTick = async () => {
             movement.goToward({ x: 0.5, y: 64, z }, 1);
         };
     };

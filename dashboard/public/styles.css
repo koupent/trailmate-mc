@@ -589,9 +589,20 @@ button.small { padding: 2px 10px; font-size: 13px; }
   filter: drop-shadow(0 2px 6px rgba(0, 0, 0, 0.05));
 }
 
-.fsm-node.is-auto rect { stroke: #c9c4be; stroke-dasharray: 4 3; }
-.fsm-node.is-preferred rect { stroke: var(--primary); stroke-width: 1.6; stroke-dasharray: none; }
+.fsm-node { cursor: pointer; outline: none; }
+.fsm-node rect { stroke: #c9c4be; stroke-dasharray: 4 3; }
+.fsm-node:hover rect,
+.fsm-node:focus-visible rect { stroke: var(--primary); }
 .fsm-node.is-active rect { fill: var(--primary); stroke: var(--primary); }
+.fsm-node.is-selected rect { stroke: var(--orange); stroke-width: 2.4; stroke-dasharray: none; }
+
+.fsm-bt {
+  text-anchor: end;
+  font-size: 9px;
+  font-weight: 700;
+  fill: var(--ink-faint);
+}
+.fsm-node.is-active .fsm-bt { fill: rgba(255, 255, 255, 0.8); }
 
 .fsm-label {
   text-anchor: middle;
@@ -629,9 +640,79 @@ button.small { padding: 2px 10px; font-size: 13px; }
   vertical-align: -1px;
 }
 
-.swatch-mode { border-color: #bdb8b2; }
 .swatch-auto { border-style: dashed; border-color: #bdb8b2; }
 .swatch-active { background: var(--primary); border-color: var(--primary); }
+.swatch-selected { border-color: var(--orange); border-width: 2px; }
+
+/* ===== behavior tree ===== */
+.bt-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+.bt-legend b { margin-right: 4px; color: var(--ink-secondary); }
+.bt-legend b.is-ok { color: var(--green); }
+.bt-legend b.is-ng { color: var(--ink-faint); }
+
+.bt-panel { overflow-x: auto; }
+
+.bt-tree,
+.bt-tree ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.bt-tree ul {
+  margin-left: 11px;
+  padding-left: 14px;
+  border-left: 1px solid var(--hairline);
+}
+
+.bt-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 6px;
+  border-radius: 5px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.bt-kind {
+  flex: none;
+  min-width: 3em;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  text-align: center;
+  color: var(--ink-muted);
+  background: var(--canvas-soft);
+}
+.bt-condition > .bt-row .bt-kind { background: var(--primary-soft); color: var(--primary-active); }
+.bt-action > .bt-row .bt-kind { background: var(--green-soft); color: #137a2a; }
+
+.bt-mark { margin-left: auto; font-weight: 700; }
+.bt-tree.is-live .is-success > .bt-row { background: var(--green-soft); }
+.bt-tree.is-live .is-success > .bt-row .bt-mark { color: var(--green); }
+.bt-tree.is-live .is-failure > .bt-row { color: var(--ink-muted); }
+.bt-tree.is-live .is-failure > .bt-row .bt-mark { color: var(--ink-faint); }
+.bt-tree.is-live .is-skipped > .bt-row { color: var(--ink-faint); }
+
+/* The branch that the player-selected mode turns on. */
+.bt-node.is-mode-branch > .bt-row { font-weight: 700; }
+.bt-node.is-current-mode > .bt-row { box-shadow: inset 3px 0 0 var(--primary); }
+
+.timeline .tag {
+  margin-right: 6px;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--primary-active);
+  background: var(--primary-soft);
+}
 
 .timeline {
   list-style: none;

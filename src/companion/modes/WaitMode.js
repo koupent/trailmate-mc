@@ -1,5 +1,6 @@
 import { Mode } from '../Mode.js';
-import { currentControlOwner } from '../ControlPriority.js';
+import { action, condition, FAILURE, runTree, selector, sequence } from '../behaviorTree/bt.js';
+import { yieldsOutsideMachine } from '../ControlPriority.js';
 
 /**
  * Stay put until another mode is selected (e.g. follow again).
@@ -10,6 +11,16 @@ export class WaitMode extends Mode {
             id: 'wait',
             description: 'Stop moving and wait in place until told otherwise'
         });
+        this.tree = selector('待機の手順', [
+            sequence('動いていたら止まる', [
+                condition('移動の目標が残っている', (ctx) => Boolean(ctx.movement.hasGoal)),
+                action('立ち止まる', (ctx) => {
+                    ctx.movement.stop();
+                    return true;
+                })
+            ]),
+            action('その場で待つ', () => true)
+        ]);
     }
 
     async onEnter(ctx) {
@@ -25,16 +36,12 @@ export class WaitMode extends Mode {
         ctx.movement.stop();
     }
 
+    /**
+     * @param {import('../CompanionContext.js').CompanionContext} ctx
+     * @returns {Promise<'success'|'failure'>}
+     */
     async tick(ctx) {
-        const fsmId = ctx.agent?.companion?.manager?.getActiveFsmId?.();
-        if (fsmId && fsmId !== 'wait') return;
-        if (!fsmId && currentControlOwner(ctx, 'wait') !== 'wait') return;
-        // Waitが所有するのは待機目的地であり、戦術的な戦闘移動ではない。
-        // Reflexesによる緊急自己防衛・owner防衛は引き続き許可する。
-        if (!fsmId && ctx.agent.reflexes?.isControllingMovement) return;
-        // Keep pathfinder idle; recovery interrupt still runs for stuck/hole cases.
-        if (ctx.movement.hasGoal) {
-            ctx.movement.stop();
-        }
+        if (yieldsOutsideMachine(ctx, 'wait')) return FAILURE;
+        return runTree(this.tree, ctx);
     }
 }

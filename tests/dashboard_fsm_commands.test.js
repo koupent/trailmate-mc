@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { layoutNodes, renderFsmSvg } from '../dashboard/public/fsmGraph.js';
+import { renderBtTree } from '../dashboard/public/btTree.js';
 import { CompanionOrchestrator } from '../src/companion/stateMachine/CompanionOrchestrator.js';
 import {
   buildStatus,
@@ -15,33 +16,33 @@ describe('dashboard state machine diagram', () => {
   it('draws every reported state and one arrow per state pair', () => {
     const svg = renderFsmSvg(
       {
-        active: 'follow',
-        preferredMode: 'follow',
-        modes: ['follow', 'wait'],
-        states: ['follow', 'wait', 'combat'],
+        active: 'normal',
+        states: ['normal', 'duty', 'combat'],
         transitions: [
-          { name: 'follow_to_wait', from: 'follow', to: 'wait' },
-          { name: 'combat_to_wait', from: 'combat', to: 'wait' },
-          { name: 'combat_to_safe_wait', from: 'combat', to: 'wait' }
-        ]
+          { name: 'normal_to_duty', from: 'normal', to: 'duty' },
+          { name: 'combat_to_duty', from: 'combat', to: 'duty' },
+          { name: 'combat_to_safety_duty', from: 'combat', to: 'duty' }
+        ],
+        trees: { normal: { label: 'root', kind: 'action', status: null } }
       },
-      text
+      { ...text, selected: 'duty' }
     );
     assert.equal(svg.match(/class="fsm-node/g).length, 3);
     assert.equal(svg.match(/<path class="fsm-edge/g).length, 2);
-    assert.match(svg, /fsm-node is-mode is-active is-preferred/);
-    assert.match(svg, /fsm-node is-auto/);
+    assert.match(svg, /class="fsm-node is-active" data-state="normal"/);
+    assert.match(svg, /class="fsm-node is-selected" data-state="duty"/);
     assert.match(svg, /fsm-edge is-out/);
+    assert.equal(svg.match(/class="fsm-bt"/g).length, 1, 'only states with a tree get the BT mark');
   });
 
   it('follows a state that the diagram has never heard of', () => {
-    const states = ['follow', 'wait', 'combat', 'duty', 'passage_transit', 'mining'];
-    assert.equal(layoutNodes(states).size, 6);
+    const states = ['normal', 'combat', 'duty', 'passage_transit', 'mining'];
+    assert.equal(layoutNodes(states).size, 5);
     const svg = renderFsmSvg(
       {
         active: 'mining',
         states,
-        transitions: [{ name: 'follow_to_mining', from: 'follow', to: 'mining' }]
+        transitions: [{ name: 'normal_to_mining', from: 'normal', to: 'mining' }]
       },
       text
     );
@@ -51,35 +52,62 @@ describe('dashboard state machine diagram', () => {
   it('marks the transition that just happened', () => {
     const fsm = {
       active: 'combat',
-      states: ['follow', 'combat'],
-      transitions: [{ name: 'follow_to_combat', from: 'follow', to: 'combat' }],
-      history: [{ name: 'follow_to_combat', from: 'follow', to: 'combat', at: 1000 }]
+      states: ['normal', 'combat'],
+      transitions: [{ name: 'normal_to_combat', from: 'normal', to: 'combat' }],
+      history: [{ kind: 'state', name: 'normal_to_combat', from: 'normal', to: 'combat', at: 1000 }]
     };
     assert.match(renderFsmSvg(fsm, { ...text, now: 2000 }), /is-recent/);
     assert.doesNotMatch(renderFsmSvg(fsm, { ...text, now: 60000 }), /is-recent/);
   });
 });
 
+describe('dashboard behavior tree panel', () => {
+  const tree = {
+    label: 'モードで分岐',
+    kind: 'selector',
+    status: 'success',
+    children: [
+      { label: '追従モード時の動作', kind: 'sequence', status: 'failure', mode: 'follow', children: [] },
+      { label: '待機モード時の動作', kind: 'sequence', status: 'success', mode: 'wait' },
+      { label: '<未評価>', kind: 'action', status: null }
+    ]
+  };
+
+  it('shows this tick\'s results only for the live state', () => {
+    const live = renderBtTree(tree, { live: true, mode: 'wait' });
+    assert.match(live, /bt-node bt-sequence is-success is-mode-branch is-current-mode/);
+    assert.match(live, /bt-node bt-sequence is-failure is-mode-branch"/);
+    assert.match(live, /bt-node bt-action is-skipped/);
+    assert.match(live, /&lt;未評価&gt;/);
+
+    const idle = renderBtTree(tree, { live: false, mode: 'wait' });
+    assert.doesNotMatch(idle, /is-success|is-failure|bt-mark/);
+  });
+});
+
 describe('orchestrator describes its live machine', () => {
-  it('lists states, wired transitions and the transition history', () => {
+  it('keeps modes out of the states and records a switch in the timeline', async () => {
     const ctx = { bot: {}, config: {}, movement: { stop() {} } };
     const orchestrator = new CompanionOrchestrator(ctx, {}, [{ name: 'recovery' }]);
-    orchestrator.targets.preferredMode = 'wait';
+    assert.equal(await orchestrator.switchMode('wait'), true);
     orchestrator._applyTransitions();
 
     const fsm = orchestrator.describeFsm();
-    assert.equal(fsm.active, 'wait');
+    assert.equal(fsm.active, 'normal');
+    assert.equal(fsm.preferredMode, 'wait');
     assert.deepEqual(fsm.modes, ['follow', 'wait']);
-    assert.deepEqual(
-      [...fsm.states].sort(),
-      ['combat', 'duty', 'follow', 'passage_transit', 'wait']
-    );
-    assert.ok(
-      fsm.transitions.some((t) => t.name === 'follow_to_wait' && t.from === 'follow' && t.to === 'wait')
-    );
+    assert.deepEqual([...fsm.states].sort(), ['combat', 'duty', 'normal', 'passage_transit']);
+    assert.ok(fsm.transitions.every((t) => fsm.states.includes(t.from) && fsm.states.includes(t.to)));
     assert.deepEqual(fsm.duties, [{ name: 'recovery', pending: false }]);
+    assert.deepEqual(Object.keys(fsm.trees).sort(), [...fsm.states].sort());
+    assert.deepEqual(
+      fsm.trees.normal.children.map((branch) => branch.mode),
+      ['follow', 'wait']
+    );
     assert.equal(fsm.history.length, 1);
-    assert.equal(fsm.history[0].name, 'follow_to_wait');
+    assert.equal(fsm.history[0].kind, 'mode');
+    assert.equal(fsm.history[0].from, 'follow');
+    assert.equal(fsm.history[0].to, 'wait');
   });
 });
 
@@ -129,8 +157,8 @@ describe('dashboard chat commands', () => {
     const state = createControlState();
     state.host = /** @type {any} */ ({
       bot: { username: 'bot', entity: null, inventory: { items: () => [] } },
-      companion: { ctx: {}, manager: { describeFsm: () => ({ active: 'follow' }) } }
+      companion: { ctx: {}, manager: { describeFsm: () => ({ active: 'normal' }) } }
     });
-    assert.deepEqual(buildStatus(state).fsm, { active: 'follow' });
+    assert.deepEqual(buildStatus(state).fsm, { active: 'normal' });
   });
 });

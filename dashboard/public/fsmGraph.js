@@ -69,18 +69,16 @@ function edgePath(from, to) {
 /**
  * @param {{
  *   active: string,
- *   preferredMode?: string,
- *   modes?: string[],
  *   states: string[],
  *   transitions: Array<{ name: string, from: string, to: string }>,
  *   history?: Array<{ from: string, to: string, at: number }>
  * }} fsm
- * @param {{ label: (id: string) => string, note: (id: string) => string, now?: number }} text
+ * @param {{ label: (id: string) => string, note: (id: string) => string, now?: number, selected?: string|null }} text
+ *   `selected` is the state whose behavior tree is shown under the diagram.
  */
 export function renderFsmSvg(fsm, text) {
   const states = Array.isArray(fsm?.states) ? fsm.states : [];
   const positions = layoutNodes(states);
-  const modes = new Set(fsm?.modes || []);
   const now = text.now ?? Date.now();
   const last = (fsm?.history || []).at(-1);
   const recent = last && now - last.at < RECENT_MS ? last : null;
@@ -117,16 +115,16 @@ export function renderFsmSvg(fsm, text) {
   const nodes = states
     .map((id) => {
       const p = positions.get(id);
-      const classes = ['fsm-node', modes.has(id) ? 'is-mode' : 'is-auto'];
+      const classes = ['fsm-node'];
       if (id === fsm.active) classes.push('is-active');
-      if (id === fsm.preferredMode) classes.push('is-preferred');
-      return `<g class="${classes.join(' ')}" transform="translate(${Math.round(p.x - NODE_W / 2)},${Math.round(
+      if (id === text.selected) classes.push('is-selected');
+      return `<g class="${classes.join(' ')}" data-state="${escapeXml(id)}" tabindex="0" role="button" transform="translate(${Math.round(p.x - NODE_W / 2)},${Math.round(
         p.y - NODE_H / 2
       )})"><title>${escapeXml(id)}</title><rect width="${NODE_W}" height="${NODE_H}" rx="8" /><text class="fsm-label" x="${
         NODE_W / 2
       }" y="21">${escapeXml(text.label(id))}</text><text class="fsm-note" x="${NODE_W / 2}" y="37">${escapeXml(
         text.note(id)
-      )}</text></g>`;
+      )}</text>${fsm?.trees?.[id] ? `<text class="fsm-bt" x="${NODE_W - 6}" y="11">BT</text>` : ''}</g>`;
     })
     .join('');
 

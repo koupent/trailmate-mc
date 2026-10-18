@@ -2,6 +2,7 @@ import { AsyncTickBehavior } from './AsyncTickBehavior.js';
 import { getActiveOwnerThreat } from '../../ownerThreatTracker.js';
 import { preferGearRecovery } from '../transitions.js';
 import { shouldDeferRecoveryForCombat } from '../../combatGate.js';
+import { action, runTree } from '../../behaviorTree/bt.js';
 
 /**
  * Runs Reflexes combat as the active FSM state (single-loop ownership).
@@ -13,6 +14,9 @@ export class CombatBehavior extends AsyncTickBehavior {
     constructor(targets) {
         super('combat');
         this.targets = targets;
+        // Combat has its own utility-based planner in Reflexes; the tree only
+        // marks where it plugs in.
+        this.tree = action('戦闘処理（Reflexes）に任せる', () => this._tickReflexes());
     }
 
     onStateEntered() {
@@ -21,8 +25,12 @@ export class CombatBehavior extends AsyncTickBehavior {
     }
 
     async runTick() {
+        if (this.targets.paused) return;
+        await runTree(this.tree, this.targets.ctx);
+    }
+
+    async _tickReflexes() {
         const { targets } = this;
-        if (targets.paused) return;
         const ctx = targets.ctx;
         const agent = targets.agent;
         const recoveryActive = Boolean(ctx.deathRecovery?.active);
@@ -38,5 +46,6 @@ export class CombatBehavior extends AsyncTickBehavior {
             ownerThreat: getActiveOwnerThreat(ctx),
             movement: ctx.movement
         });
+        return true;
     }
 }
