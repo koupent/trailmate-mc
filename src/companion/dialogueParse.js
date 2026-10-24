@@ -3,6 +3,7 @@
  * Mode/owner come from deterministic keywords; commentary uses locale catalogs.
  */
 
+import { entityDisplayNameJa } from '../i18n/entityNames.js';
 import { tEvent, tSupplyCategory } from '../i18n/index.js';
 import { DEFAULT_FOLLOW_DISTANCE } from './movement/followConstants.js';
 import { isNearOwnerHorizontally } from './movement/followGeometry.js';
@@ -284,6 +285,13 @@ function supplyCategoryText(language, categories) {
         .join(SUPPLY_CATEGORY_SEPARATOR);
 }
 
+/** Chat shows the Japanese mob name. Detection still compares the raw id. */
+function hostileLabel(id) {
+    const key = String(id || '').trim();
+    if (!key) return '敵';
+    return entityDisplayNameJa(key);
+}
+
 /**
  * Snapshot-driven commentary via locale catalog (no LLM / no runtime MT).
  * @param {string} language
@@ -301,7 +309,7 @@ export function renderCommentary(language, eventId, snap = {}, options = {}) {
             ? Math.round(snap.lastDamageTaken)
             : null,
         stuckSeconds: snap.stuckSeconds != null ? snap.stuckSeconds : '?',
-        hostile: snap.combatTarget || snap.hostile?.name || '敵',
+        hostile: hostileLabel(snap.combatTarget || snap.hostile?.name),
         hostileDistance: snap.hostile?.distance != null ? snap.hostile.distance : '?',
         mode: snap.mode || '?',
         inventoryFillPercent: snap.inventoryFillPercent ?? '?',

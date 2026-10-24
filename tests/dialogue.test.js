@@ -364,7 +364,7 @@ describe('rule commentary', () => {
       hostile: { name: 'zombie', distance: 4.2 },
       owner: 'Alice'
     });
-    assert.match(text, /zombie/);
+    assert.match(text, /ゾンビ/);
   });
 
   it('embeds distance when template includes it', () => {
@@ -559,7 +559,7 @@ describe('combat commentary', () => {
     const text = renderCommentary('ja', 'control_combat', {
       hostile: { name: 'creeper', distance: 5 }
     });
-    assert.match(text, /creeper/);
+    assert.match(text, /クリーパー/);
   });
 
   it('detects combat_target_switch when target changes in combat', () => {
@@ -615,7 +615,7 @@ describe('combat commentary', () => {
       combatTarget: 'skeleton',
       hostile: { name: 'zombie', distance: 3 }
     });
-    assert.match(text, /skeleton/);
+    assert.match(text, /スケルトン/);
   });
 });
 

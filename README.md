@@ -121,8 +121,30 @@ docker compose up -d --build
 
 - `.env` … ViaProxy への接続と、オフライン時のボット名（オンライン時のワールド内名は Microsoft プロフィール名）
 - `config.json` … 追従距離、実況クールダウン、reflexes、死亡復帰 / 墓回収など
-- `locales/ja.json` … 独り言・コマンド返答（英語を足すなら `locales/en.json`）
+- `locales/ja.json` … 独り言・コマンド返答（英語を足すなら `locales/en.json`）。状態の表示名は `fsm_states`（キーは状態名のまま）
 - `services/viaproxy/viaproxy.yml` … **実際の Minecraft サーバー**（`target-address`）
+
+### アイテムとモブの日本語名
+
+持ち物・モブ一覧・戦闘箱庭の表示名は、`config.json` の `minecraft_version` に対応する公式言語ファイル（ja_jp）から作ります。対応表は手で編集しません。
+
+```bash
+npm run i18n:sync
+```
+
+ボットが今の言語データより新しいサーバーへ ViaProxy 経由で入るときは、そのバージョンを指定して作り直します。
+
+```bash
+node scripts/sync-minecraft-ja.mjs --version 1.21.6
+```
+
+書き出されるファイル:
+
+- `src/i18n/items-ja.json` と `locales/items-ja.json`（アイテム。空でない `locales/items-ja.json` が優先されます）
+- `src/i18n/entities-ja.json`（モブ）
+- `src/i18n/ja-lang.manifest.json`（どのバージョンから作ったか）
+
+辞書に無い ID は英語名に戻さず `minecraft:＜id＞` と出します。状態の表示名（平常、戦闘など）はゲームの言語ではなくアプリの語彙なので、`locales/ja.json` の `fsm_states` を編集します。
 
 ### 戦闘
 

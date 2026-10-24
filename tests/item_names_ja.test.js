@@ -9,8 +9,10 @@ describe('itemDisplayNameJa', () => {
     assert.equal(itemDisplayNameJa('diamond_sword'), 'ダイヤモンドの剣');
   });
 
-  it('falls back to registry name when unknown', () => {
-    assert.equal(itemDisplayNameJa('totally_not_a_real_item_zz'), 'totally_not_a_real_item_zz');
+  it('shows a raw id when the language table has no entry', () => {
+    assert.equal(itemDisplayNameJa('minecraft:diamond_sword'), 'ダイヤモンドの剣');
+    assert.equal(itemDisplayNameJa('totally_not_a_real_item_zz'), 'minecraft:totally_not_a_real_item_zz');
+    assert.equal(itemDisplayNameJa(''), '不明');
   });
 
   it('keeps a bundled copy under src/i18n for volume-mounted locales', async () => {

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { kindLabel } from './names.js';
 
 const ENEMY_COLORS = {
   skeleton: 0xfb7185,
@@ -283,13 +284,15 @@ export function createScene(container) {
       const bd = (isPrimary ? 0.85 : 0.7) * swell;
       addBox(root, enemy.x, enemy.y + bh / 2, enemy.z, bw, bh, bd, color);
       addHpBar(root, enemy.x, enemy.y + bh + 0.55, enemy.z, (enemy.hp ?? 0) / 20, isPrimary ? 1.35 : 1.1);
+      const name = kindLabel(enemy.kind);
       const tags = fuseStarted
-        ? [`${enemy.kind} 着火 ${Math.round(fuseProgress * 100)}%`, `HP${Math.max(0, Math.round(enemy.hp ?? 0))}`]
-        : [`${enemy.kind}`, `HP${Math.max(0, Math.round(enemy.hp ?? 0))}`];
+        ? [`${name} 着火 ${Math.round(fuseProgress * 100)}%`, `HP${Math.max(0, Math.round(enemy.hp ?? 0))}`]
+        : [name, `HP${Math.max(0, Math.round(enemy.hp ?? 0))}`];
+      const labelWidth = Math.max(220, name.length * 22 + 36);
       const label = makeLabelSprite(
         tags,
         {
-          width: 220,
+          width: labelWidth,
           height: 88,
           scale: 1.7,
           color: fuseStarted ? '#fef08a' : (isPrimary ? '#fde68a' : '#fecaca')

@@ -110,7 +110,10 @@ describe('buildRetentionCatalog', () => {
     });
 
     it('labels every candidate in Japanese', () => {
-        const unlabelled = allNames().filter((name) => itemDisplayNameJa(name) === name);
+        const unlabelled = allNames().filter((name) => {
+            const label = itemDisplayNameJa(name);
+            return label === name || label.startsWith('minecraft:');
+        });
         assert.deepEqual(unlabelled, []);
         assert.equal(
             items('weapon').find((item) => item.name === 'netherite_sword').label,

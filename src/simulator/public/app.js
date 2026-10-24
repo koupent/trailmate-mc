@@ -1,4 +1,5 @@
 import { createScene } from './scene.js';
+import { kindLabel, loadEntityLabels } from './names.js';
 
 const $ = (id) => document.getElementById(id);
 const viewport = $('viewport');
@@ -37,7 +38,15 @@ let learnLoopPromise = null;
 let nextSeed = Date.now() % 1_000_000;
 let watchMode = false; // 学習中のライブ観戦
 
+function labelKindOptions() {
+  const select = $('enemy-kind');
+  if (!select) return;
+  for (const option of select.options) option.textContent = kindLabel(option.value);
+}
+
 async function boot() {
+  await loadEntityLabels();
+  labelKindOptions();
   scenarios = await fetch('/api/scenarios').then((response) => response.json());
   $('scenario').innerHTML = scenarios.map((item) => (
     `<option value="${item.name}">${scenarioLabel(item.name)}</option>`
@@ -129,7 +138,7 @@ function buildEvents(before, after, nextDecision) {
     const primary = after.enemies.find((enemy) => enemy.id === nextDecision?.primaryId);
     events.lines.push({
       kind: 'attack',
-      text: `t${after.tick} 近接攻撃 ${primary ? primary.kind : '敵'}へ -4`
+      text: `t${after.tick} 近接攻撃 ${primary ? kindLabel(primary.kind) : '敵'}へ -4`
     });
   }
 
@@ -143,17 +152,17 @@ function buildEvents(before, after, nextDecision) {
         const victim = after.enemies.find((item) => item.id === motion.hitEntityId);
         events.lines.push({
           kind: 'shot',
-          text: `t${after.tick} 敵同士被弾 ← 矢が${victim?.kind || '敵'}に当たった（相棒には未到達）`
+          text: `t${after.tick} 敵同士被弾 ← 矢が${victim?.kind ? kindLabel(victim.kind) : '敵'}に当たった（相棒には未到達）`
         });
       } else if (motion.hitKind === 'block') {
         events.lines.push({
           kind: 'shot',
-          text: `t${after.tick} 敵射撃 ${enemy?.kind || ''} → 壁に当たって無効`
+          text: `t${after.tick} 敵射撃 ${enemy?.kind ? kindLabel(enemy.kind) : ''} → 壁に当たって無効`
         });
       } else {
         events.lines.push({
           kind: 'shot',
-          text: `t${after.tick} 敵射撃 ${enemy?.kind || ''} → 相棒`
+          text: `t${after.tick} 敵射撃 ${enemy?.kind ? kindLabel(enemy.kind) : ''} → 相棒`
         });
       }
     }
@@ -219,7 +228,7 @@ function renderHud(events = {}) {
     klass = 'hurt';
   } else if (movement === 'attack') {
     const primary = state.enemies.find((enemy) => enemy.id === decision?.primaryId);
-    text = `近接攻撃 → ${primary ? primary.kind : '敵'}`;
+    text = `近接攻撃 → ${primary ? kindLabel(primary.kind) : '敵'}`;
     klass = 'attack';
   } else if (movement === 'dodge') {
     text = '遠距離回避中';
@@ -258,7 +267,7 @@ function renderDecision() {
     制御: ownerLabel(decision?.controlOwner || state.lastOwner),
     意図: intentLabel(decision?.intent?.priority) || '—',
     移動: movementLabel(decision?.movement) || '—',
-    主対象: primary ? `${primary.kind}#${primary.id} HP${primary.hp}` : '—',
+    主対象: primary ? `${kindLabel(primary.kind)}#${primary.id} HP${primary.hp}` : '—',
     HP: state.botDead ? '0（死亡）' : (state.bot?.hp ?? '—'),
     盾: state.inventory?.includes('shield') ? 'あり' : 'なし',
     被弾: state.damageTaken ?? 0,
@@ -336,9 +345,9 @@ function renderEntityOptions() {
   if (!$('entity') || !state) return;
   const current = $('entity').value;
   const items = [
-    ['bot', 'Bot'],
+    ['bot', '相棒'],
     ...(state.owner ? [['owner', 'オーナー']] : []),
-    ...state.enemies.map((item) => [`enemy:${item.id}`, `${item.kind} #${item.id}`])
+    ...state.enemies.map((item) => [`enemy:${item.id}`, `${kindLabel(item.kind)} #${item.id}`])
   ];
   $('entity').innerHTML = items.map(([value, label]) => `<option value="${value}">${label}</option>`).join('');
   if (items.some(([value]) => value === current)) $('entity').value = current;

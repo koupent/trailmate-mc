@@ -90,7 +90,7 @@ export function isAttackableMob(mob: MobLike): boolean {
 }
 
 export function listUnsetEncounters(): Array<{ id: string; label: string }> {
-  return [...unsetEncounters].map(([id, label]) => ({ id, label: entityDisplayNameJa(id) ?? label }));
+  return [...unsetEncounters].map(([id]) => ({ id, label: entityDisplayNameJa(id) }));
 }
 
 /**
@@ -106,7 +106,7 @@ export function buildMobCatalog(
     if (entity.type !== 'hostile' && entity.type !== 'mob') continue;
     mobs.set(entity.name, {
       id: entity.name,
-      label: entityDisplayNameJa(entity.name) ?? entity.displayName ?? entity.name,
+      label: entityDisplayNameJa(entity.name),
       default: defaultMobDecision(entity.name, entity.type)
     });
   }
@@ -114,7 +114,7 @@ export function buildMobCatalog(
     if (!mobs.has(id)) mobs.set(id, { id, label, default: null });
   }
   for (const id of configuredIds) {
-    if (!mobs.has(id)) mobs.set(id, { id, label: entityDisplayNameJa(id) ?? id, default: null });
+    if (!mobs.has(id)) mobs.set(id, { id, label: entityDisplayNameJa(id), default: null });
   }
   return [...mobs.values()];
 }

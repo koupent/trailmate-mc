@@ -12,7 +12,8 @@
     "start": "tsx src/index.ts",
     "sim": "tsx src/simulator/server.ts",
     "test": "tsx --test tests/",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "i18n:sync": "node scripts/sync-minecraft-ja.mjs"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
