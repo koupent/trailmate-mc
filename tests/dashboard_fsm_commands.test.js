@@ -2,7 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { layoutNodes, renderFsmSvg } from '../dashboard/public/fsmGraph.js';
-import { stateLabel, stateNote } from '../dashboard/public/fsmLabels.js';
+import { bundledFsmStates, stateLabel, stateNote } from '../dashboard/public/fsmLabels.js';
 import { renderBtTree } from '../dashboard/public/btTree.js';
 import { CompanionOrchestrator } from '../src/companion/stateMachine/CompanionOrchestrator.js';
 import {
@@ -73,6 +73,7 @@ describe('dashboard state machine diagram', () => {
   it('draws Japanese labels and keeps transition ids out of the picture', () => {
     const bundle = JSON.parse(fs.readFileSync(new URL('../locales/ja.json', import.meta.url), 'utf8'));
     const fsmStates = bundle.fsm_states;
+    assert.deepEqual(bundledFsmStates, fsmStates);
     const label = (id) => stateLabel(fsmStates, id);
     const note = (id) => stateNote(fsmStates, { preferredMode: 'follow' }, id);
     assert.equal(label('combat'), '戦闘');
