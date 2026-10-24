@@ -144,7 +144,7 @@ node scripts/sync-minecraft-ja.mjs --version 1.21.6
 - `src/i18n/entities-ja.json`（モブ）
 - `src/i18n/ja-lang.manifest.json`（どのバージョンから作ったか）
 
-辞書に無い ID は英語名に戻さず `minecraft:＜id＞` と出します。状態の表示名（平常、戦闘など）はゲームの言語ではなくアプリの語彙なので、`locales/ja.json` の `fsm_states` を編集します。
+辞書に無い ID は英語名に戻さず `minecraft:＜id＞` と出します。状態の表示名（平常、戦闘など）はゲームの言語ではなくアプリの語彙なので、`locales/ja.json` の `fsm_states` を編集します。同じ表を `dashboard/public/fsmLabels.js` の `bundledFsmStates` にも置き、ダッシュボードイメージの `public/` に焼き込みます。ホストの `locales/ja.json` に `fsm_states` があるときはそちらが優先されます。
 
 ### 戦闘
 

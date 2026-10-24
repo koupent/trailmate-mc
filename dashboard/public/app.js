@@ -1,7 +1,7 @@
 import { createLogFollowState } from './logFollow.js';
 import { syncHtml, syncProp, syncText, syncTextKeepingScroll } from './domSync.js';
 import { renderFsmSvg } from './fsmGraph.js';
-import { stateLabel as labelForState, stateNote as noteForState } from './fsmLabels.js';
+import { bundledFsmStates, stateLabel as labelForState, stateNote as noteForState } from './fsmLabels.js';
 import { renderBtTree } from './btTree.js';
 
 /* ===== helpers ===== */
@@ -494,15 +494,16 @@ function dimensionLabel(dimension) {
 }
 
 /* ===== state machine ===== */
-/** Display copy from GET /api/ui-copy. Keys stay state ids. */
-let fsmStates = {};
+/** Display copy. The image bundle shows Japanese before locales/ja.json is replaced. */
+let fsmStates = bundledFsmStates;
 
 async function loadUiCopy() {
   try {
     const data = await api('/api/ui-copy');
-    if (data?.fsm_states && typeof data.fsm_states === 'object') fsmStates = data.fsm_states;
+    const states = data?.fsm_states;
+    if (states && typeof states === 'object' && Object.keys(states).length > 0) fsmStates = states;
   } catch {
-    fsmStates = {};
+    fsmStates = bundledFsmStates;
   }
 }
 
