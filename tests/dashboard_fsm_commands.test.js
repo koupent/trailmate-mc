@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { layoutNodes, renderFsmSvg } from '../dashboard/public/fsmGraph.js';
+import { stateLabel, stateNote } from '../dashboard/public/fsmLabels.js';
 import { renderBtTree } from '../dashboard/public/btTree.js';
 import { CompanionOrchestrator } from '../src/companion/stateMachine/CompanionOrchestrator.js';
 import {
@@ -66,6 +68,33 @@ describe('dashboard state machine diagram', () => {
       text
     );
     assert.match(svg, />mining</);
+  });
+
+  it('draws Japanese labels and keeps transition ids out of the picture', () => {
+    const bundle = JSON.parse(fs.readFileSync(new URL('../locales/ja.json', import.meta.url), 'utf8'));
+    const fsmStates = bundle.fsm_states;
+    const label = (id) => stateLabel(fsmStates, id);
+    const note = (id) => stateNote(fsmStates, { preferredMode: 'follow' }, id);
+    assert.equal(label('combat'), '戦闘');
+    assert.equal(label('not_a_state'), 'not_a_state');
+    assert.equal(note('normal'), '追従モードの動き');
+    assert.equal(note('not_a_state'), 'not_a_state');
+    const svg = renderFsmSvg(
+      {
+        active: 'normal',
+        states: ['normal', 'combat'],
+        transitions: [{ name: 'normal_to_combat', from: 'normal', to: 'combat' }],
+        trees: { normal: { label: 'root', kind: 'action', status: null } }
+      },
+      { label, note }
+    );
+    assert.match(svg, />平常</);
+    assert.match(svg, />戦闘</);
+    assert.match(svg, />内</);
+    assert.match(svg, /data-state="normal"/);
+    assert.match(svg, /<title>平常<\/title>/);
+    assert.doesNotMatch(svg, /normal_to_combat/);
+    assert.doesNotMatch(svg, /<title>normal<\/title>/);
   });
 
   it('marks the transition that just happened', () => {

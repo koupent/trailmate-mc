@@ -1,6 +1,7 @@
 import { createLogFollowState } from './logFollow.js';
 import { syncHtml, syncProp, syncText, syncTextKeepingScroll } from './domSync.js';
 import { renderFsmSvg } from './fsmGraph.js';
+import { stateLabel as labelForState, stateNote as noteForState } from './fsmLabels.js';
 import { renderBtTree } from './btTree.js';
 
 /* ===== helpers ===== */
@@ -493,37 +494,28 @@ function dimensionLabel(dimension) {
 }
 
 /* ===== state machine ===== */
-/**
- * Japanese names for the states the bot reports. A state without an entry
- * still appears in the diagram under its raw id.
- */
-const STATE_TEXT = {
-  normal: ['平常', 'モードに従って動く'],
-  planting: ['作物を植える', '追従モードのときだけ'],
-  combat: ['戦闘', '敵に対処する'],
-  passage_transit: ['扉・ゲート通過', '開けて通って閉める'],
-  loot: ['アイテム回収', '落ちている物を拾いに行く'],
-  death_recovery: ['死亡からの復帰', '死亡地点・墓へ戻る'],
-  stuck_recovery: ['スタック復帰', '穴や詰まりから抜ける'],
-  hazard_escape: ['危険回避', '炎・危険ブロック・水'],
-  boat_passenger: ['ボート同乗', '操作せず乗っている'],
-  item_transfer: ['受け渡し', '渡す・チェストに預ける'],
-  any: ['どの状態からでも', ''],
-  follow: ['追従', 'オーナーについていく'],
-  wait: ['待機', 'その場で待つ']
-};
+/** Display copy from GET /api/ui-copy. Keys stay state ids. */
+let fsmStates = {};
+
+async function loadUiCopy() {
+  try {
+    const data = await api('/api/ui-copy');
+    if (data?.fsm_states && typeof data.fsm_states === 'object') fsmStates = data.fsm_states;
+  } catch {
+    fsmStates = {};
+  }
+}
 
 /** Modes are chosen by the player, above the state machine. */
 const MODE_IDS = ['follow', 'wait'];
 
 function stateLabel(id) {
-  return STATE_TEXT[id]?.[0] || id;
+  return labelForState(fsmStates, id);
 }
 
 /** The normal state does what the selected mode says. */
 function stateNote(fsm, id) {
-  if (id === 'normal' && fsm.preferredMode) return `${stateLabel(fsm.preferredMode)}モードの動き`;
-  return STATE_TEXT[id]?.[1] ?? id;
+  return noteForState(fsmStates, fsm, id);
 }
 
 function formatTime(at) {
@@ -587,7 +579,7 @@ function renderFsm(fsm) {
     history.length
       ? history
           .map(
-            (entry) => `<li title="${escapeHtml(entry.name)}"${entry.kind === 'mode' ? ' class="is-mode"' : ''}><time>${formatTime(
+            (entry) => `<li${entry.kind === 'mode' ? ' class="is-mode"' : ''}><time>${formatTime(
               entry.at
             )}</time><span>${entry.kind === 'mode' ? '<span class="tag">モード</span>' : ''}${escapeHtml(
               stateLabel(entry.from)
@@ -1159,6 +1151,7 @@ refreshLogsBtn.addEventListener('click', () => void refreshLogs());
 
 /* ===== boot / polling ===== */
 async function boot() {
+  await loadUiCopy();
   await loadSettings({ fillForm: true });
   if (readyToSpawn) {
     await refreshStatus();

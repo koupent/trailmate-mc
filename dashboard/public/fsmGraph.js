@@ -123,7 +123,7 @@ export function renderFsmSvg(fsm, text) {
         positions.get(edge.from),
         positions.get(edge.to)
       )}" marker-end="url(#${marker})"><title>${escapeXml(
-        `${text.label(edge.from)} → ${text.label(edge.to)}\n${edge.names.join('\n')}`
+        `${text.label(edge.from)} → ${text.label(edge.to)}`
       )}</title></path>`;
     })
     .join('');
@@ -144,11 +144,11 @@ export function renderFsmSvg(fsm, text) {
       if (id === text.selected) classes.push('is-selected');
       return `<g class="${classes.join(' ')}" data-state="${escapeXml(id)}" tabindex="0" role="button" transform="translate(${Math.round(p.x - NODE_W / 2)},${Math.round(
         p.y - NODE_H / 2
-      )})"><title>${escapeXml(id)}</title><rect width="${NODE_W}" height="${NODE_H}" rx="8" /><text class="fsm-label" x="${
+      )})"><title>${escapeXml(text.label(id))}</title><rect width="${NODE_W}" height="${NODE_H}" rx="8" /><text class="fsm-label" x="${
         NODE_W / 2
       }" y="21">${escapeXml(text.label(id))}</text><text class="fsm-note" x="${NODE_W / 2}" y="37">${escapeXml(
         text.note(id)
-      )}</text>${fsm?.trees?.[id] ? `<text class="fsm-bt" x="${NODE_W - 6}" y="11">BT</text>` : ''}</g>`;
+      )}</text>${fsm?.trees?.[id] ? `<text class="fsm-bt" x="${NODE_W - 6}" y="11">内</text>` : ''}</g>`;
     })
     .join('');
 

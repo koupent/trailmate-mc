@@ -1,10 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { lookupJa } from './registryLabel.js';
 
 /**
- * モブ（エンティティ）の日本語名。entities-ja.json は公式の ja_jp 言語ファイル
- * （26.2）の entity.minecraft.* から作ったもの。
+ * モブ（エンティティ）の日本語名。
+ * entities-ja.json は対象バージョンの公式 ja_jp（entity.minecraft.*）から
+ * `npm run i18n:sync` で作る。
  */
 let entityNamesJa: Record<string, string> | null = null;
 
@@ -19,7 +21,15 @@ function loadEntityNamesJa(): Record<string, string> {
   return entityNamesJa;
 }
 
-/** 日本語名が無いモブは null（呼び出し側が英語名などに戻す）。 */
-export function entityDisplayNameJa(id: string): string | null {
-  return loadEntityNamesJa()[id] ?? null;
+/** ダッシュボードや箱庭へ渡す、id → 日本語名の表。 */
+export function entityLabelsJa(): Record<string, string> {
+  return { ...loadEntityNamesJa() };
+}
+
+/**
+ * 日本語名が無いモブは `minecraft:<id>`。
+ * 英語の displayName には戻さない。空は「不明」。
+ */
+export function entityDisplayNameJa(id: string): string {
+  return lookupJa(loadEntityNamesJa(), id);
 }

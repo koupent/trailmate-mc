@@ -113,6 +113,9 @@ const server = http.createServer(async (request, response) => {
       const body = await readJson(request);
       return json(response, 200, await writeMobSettings(body?.mobHostility));
     }
+    if (request.method === 'GET' && url.pathname === '/api/ui-copy') {
+      return sendUiCopy(response);
+    }
     if (request.method === 'GET' && url.pathname === '/api/status') {
       return sendControlStatus(response);
     }
@@ -1156,10 +1159,17 @@ async function waitForViaProxyHealthy(timeoutMs) {
   return null;
 }
 
+async function sendUiCopy(response) {
+  const file = path.join(projectRoot, 'locales', 'ja.json');
+  const bundle = JSON.parse(await fs.readFile(file, 'utf8'));
+  const states = bundle.fsm_states && typeof bundle.fsm_states === 'object' ? bundle.fsm_states : {};
+  return json(response, 200, { fsm_states: states });
+}
+
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
   if (
-    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'btTree.js', 'logFollow.js', 'retention.js', 'mobs.js', 'companionSettings.js', 'styles.css'].includes(
+    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'fsmLabels.js', 'btTree.js', 'logFollow.js', 'retention.js', 'mobs.js', 'companionSettings.js', 'styles.css'].includes(
       file
     )
   ) {

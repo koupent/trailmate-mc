@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { projectRoot } from '../config.js';
+import { lookupJa } from './registryLabel.js';
 
 /** @type {Record<string, string> | null} */
 let itemNamesJa: Record<string, string> | null = null;
@@ -38,11 +39,8 @@ function loadItemNamesJa(): Record<string, string> {
 
 /**
  * Mineflayer registry name → Japanese display label.
- * Falls back to the registry name when unknown.
+ * Unknown ids stay `minecraft:<id>` so a missing language entry is visible.
  */
 export function itemDisplayNameJa(registryName: string): string {
-  const key = String(registryName || '').trim();
-  if (!key) return '不明';
-  const map = loadItemNamesJa();
-  return map[key] || key;
+  return lookupJa(loadItemNamesJa(), registryName);
 }

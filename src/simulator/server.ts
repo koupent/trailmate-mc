@@ -10,6 +10,7 @@ import {
 } from './SimulationCore.js';
 import { generateArena, type ArenaKind } from './ArenaGenerator.js';
 import { GymRunner } from './GymRunner.js';
+import { entityLabelsJa } from '../i18n/entityNames.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
@@ -20,6 +21,7 @@ const gym = new GymRunner();
 const STATIC_FILES = new Set([
   'index.html',
   'app.js',
+  'names.js',
   'scene.js',
   'styles.css'
 ]);
@@ -28,6 +30,9 @@ const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
 
+    if (request.method === 'GET' && url.pathname === '/api/entity-labels') {
+      return json(response, 200, entityLabelsJa());
+    }
     if (request.method === 'GET' && url.pathname === '/api/scenarios') {
       return json(response, 200, listScenarioIds().map((id) => createScenario(id)));
     }
