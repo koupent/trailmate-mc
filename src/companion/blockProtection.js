@@ -282,7 +282,14 @@ export function applySafeMovementFlags(movements, options = {}) {
     movements.canDig = false;
     movements.allow1by1towers = false;
     movements.allowParkour = options.allowParkour !== false;
-    movements.allowSprinting = options.allowSprinting === true;
+    // プラグインが差し替える Movements はライブラリ既定でダッシュ許可なので、
+    // 意図が無いものは歩く。追従や戦闘が立てた意図は setMovements の再適用で消さない。
+    if (typeof options.allowSprinting === 'boolean') {
+        movements._trailmateSprintIntent = options.allowSprinting;
+    } else if (movements._trailmateSprintIntent !== true) {
+        movements._trailmateSprintIntent = false;
+    }
+    movements.allowSprinting = movements._trailmateSprintIntent === true;
     movements.maxDropDown = options.maxDropDown ?? DEFAULT_SAFE_MAX_DROP_DOWN;
     // Library typo: scafoldingBlocks. Empty = no blocks to place.
     movements.scafoldingBlocks = [];
@@ -290,6 +297,30 @@ export function applySafeMovementFlags(movements, options = {}) {
     configureDamageBlockAvoidance(movements);
     configureFarmlandJumpAvoidance(movements);
     configureDoorAwareMovements(movements);
+    capParkourToWalkingDistance(movements);
+    return movements;
+}
+
+/**
+ * ダッシュは直線を速く走るためだけに使う。経路の跳躍は歩きの長さのままにする。
+ * allowSprinting を残すと、経路探索が 4 マス先のパルクールを候補に入れる。
+ * 探索中だけフラグを戻し、実行時に pathfinder が見る値はそのまま残す。
+ * @param {import('mineflayer-pathfinder').Movements} movements
+ */
+export function capParkourToWalkingDistance(movements) {
+    if (!movements || movements._trailmateWalkParkour) return movements;
+    if (typeof movements.getMoveParkourForward !== 'function') return movements;
+    movements._trailmateWalkParkour = true;
+    const original = movements.getMoveParkourForward.bind(movements);
+    movements.getMoveParkourForward = (node, dir, neighbors) => {
+        const sprinting = movements.allowSprinting === true;
+        movements.allowSprinting = false;
+        try {
+            return original(node, dir, neighbors);
+        } finally {
+            movements.allowSprinting = sprinting;
+        }
+    };
     return movements;
 }
 

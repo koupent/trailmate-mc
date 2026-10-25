@@ -622,8 +622,9 @@ export class Reflexes {
 
     const lookAt = this.entityById(step.strikeTarget?.id) ?? this.entityById(step.primary.id);
     if (lookAt) this.maintainCombatLook(lookAt, now);
-    if (!this.sprintAllowedByCombat && this.combatMovement?.setSprintAllowed) {
-      // 毎tick切り替えると pathfinder の経路がリセットされるので、戦闘中は許可したままにする。
+    if (this.combatMovement?.setSprintAllowed) {
+      // 危険回避がダッシュ固定を戻したあとも、戦闘中は許可を維持する。
+      // フラグだけを書くので、同じ値の再指定では経路を捨てない。
       this.combatMovement.setSprintAllowed(true);
       this.sprintAllowedByCombat = true;
     }
