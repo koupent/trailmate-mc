@@ -34,6 +34,19 @@ import {
 
 const DEFAULT_PRIORITY_LOOT_MS = 45_000;
 
+/** 墓への移動と回収が終わっていないあいだのフェーズ。 */
+const ACTIVE_RECOVERY_PHASES = new Set(['travel', 'grave', 'items', 'equip']);
+
+/**
+ * 死亡地点への移動、または墓・ドロップの回収が終わるまで true。
+ * この間は追従へ戻さない。
+ * @param {import('./CompanionContext.js').CompanionContext | { deathRecovery?: DeathRecoveryState } | null | undefined} ctx
+ */
+export function deathRecoveryInProgress(ctx) {
+    const dr = ctx?.deathRecovery;
+    return Boolean(dr?.active && dr.deathPos && ACTIVE_RECOVERY_PHASES.has(dr.phase));
+}
+
 /** @returns {DeathRecoveryState} */
 export function createDeathRecoveryState() {
     return {
