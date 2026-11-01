@@ -509,6 +509,7 @@ describe('HazardEscapeController', () => {
         assert.equal(escape.tick(), true);
         assert.equal(escape.active, true);
         assert.ok(world.events.includes('water:5.5,64,0.5:0'));
+        assert.ok(world.events.includes('sprint-allowed:true'));
 
         world.bot.entity.position = new Vec3(5.5, 64, 0.5);
         assert.equal(escape.tick(), true, 'stay submerged while still burning');
@@ -517,6 +518,7 @@ describe('HazardEscapeController', () => {
         world.bot.entity.metadata[0] = 0;
         assert.equal(escape.tick(), false);
         assert.equal(escape.active, false);
+        assert.ok(world.events.includes('sprint-allowed:false'));
     });
 
     it('does not freeze ordinary behavior when no extinguishing water is loaded', () => {

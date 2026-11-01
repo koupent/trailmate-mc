@@ -7,6 +7,9 @@ import {
     enforceSafeMovements
 } from '../blockProtection.js';
 import { hasLineOfSightFrom } from '../../world/lineOfSight.js';
+import { DEFAULT_FOLLOW_DISTANCE } from './followConstants.js';
+import { horizontalDistanceBetween } from './followGeometry.js';
+import { shouldSprintForMove } from './sprintPolicy.js';
 
 /** Climb goals may block Follow only briefly. */
 const DEFAULT_CLIMB_HOLD_MS = 2000;
@@ -151,6 +154,12 @@ export class MovementController {
         this._blockedFollowAt = 0;
         this._followOwnerId = null;
         this._followDimension = null;
+        /** 戦闘・消火がダッシュを固定している。距離の判断より優先する。 */
+        this._sprintLocked = false;
+        /** @type {{ role?: string, distance?: number, ownerSpeed?: number, followDistance?: number }} */
+        this._sprintSpec = { role: 'other', distance: 0 };
+        /** @type {{ id: number, x: number, z: number, at: number }|null} */
+        this._ownerPace = null;
 
         bot.on('path_update', (result) => this._handlePathUpdate(result));
 
@@ -272,7 +281,8 @@ export class MovementController {
      * @param {number} range
      * @param {{
      *   rejectIf?: () => boolean,
-     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null
+     *   endpointVisibilityTarget?: import('prismarine-entity').Entity|null,
+     *   followDistance?: number
      * }} [options]
      */
     followEntity(entity, range, options = {}) {
@@ -300,6 +310,8 @@ export class MovementController {
             this._ensureLastReachableGoal(range);
             return false;
         }
+
+        this._rememberSprint(this._followSprintSpec(entity, options));
 
         if (this._goalRole === 'follow'
             && this._activeFollowKey === key
@@ -345,6 +357,10 @@ export class MovementController {
         const last = this._lastSeekPos;
         const drifted = !last
             || Math.hypot(pos.x - last.x, pos.y - last.y, pos.z - last.z) > 0.5;
+        this._rememberSprint({
+            role: 'seek',
+            distance: this._horizontalDistanceTo(pos)
+        });
         // Refresh when the continuous target drifts, even if the floor key is unchanged.
         if (this._goalKey === key && this.hasGoal && !drifted) return false;
         this._goalKey = key;
@@ -363,6 +379,10 @@ export class MovementController {
         this._holdUntil = this.now() + holdMs;
         this._holdOrigin = this.bot.entity.position.clone();
         this._holdStartedAt = this.now();
+        this._rememberSprint({
+            role: 'climb',
+            distance: this._horizontalDistanceTo(pos)
+        });
         if (this._goalKey === key && this.hasGoal) return false;
         this._goalKey = key;
         this._setGoal(new pf.goals.GoalNear(pos.x, pos.y, pos.z, 1));
@@ -401,6 +421,7 @@ export class MovementController {
         this._endpointVisibilityTarget = null;
         this.status = 'idle';
         this._clearHold();
+        this._clearSprintSpec();
         try {
             this.bot.pathfinder.setGoal(null);
         } catch {
@@ -409,18 +430,13 @@ export class MovementController {
     }
 
     /**
-     * pathfinderのダッシュを切り替える。Followは歩行を維持し、戦闘退避時だけ有効にする。
+     * 戦闘や消火がダッシュを固定する。解除すると距離の判断に戻す。
+     * setMovements は経路を捨てるので、フラグだけを同じ Movements に書く。
      * @param {boolean} allowed
      */
     setSprintAllowed(allowed) {
-        const next = allowed === true;
-        if (this.movements.allowSprinting === next) return;
-        this.movements.allowSprinting = next;
-        try {
-            this.bot.pathfinder.setMovements(this.movements);
-        } catch {
-            // pathfinderがまだ準備できていない場合がある
-        }
+        this._sprintLocked = allowed === true;
+        this._publishSprint();
     }
 
     _clearHold() {
@@ -472,6 +488,10 @@ export class MovementController {
         }
 
         const botPosition = this.bot.entity?.position;
+        this._rememberSprint({
+            role: 'follow-fallback',
+            distance: botPosition ? horizontalDistanceBetween(botPosition, target) : 0
+        });
         if (botPosition && botPosition.distanceTo(target) <= range) {
             this._holdUnreachable();
             return false;
@@ -506,11 +526,84 @@ export class MovementController {
         this._activeFollowTarget = null;
         this._endpointVisibilityTarget = null;
         this.status = 'unreachable';
+        this._clearSprintSpec();
         try {
             this.bot.pathfinder.setGoal(null);
         } catch {
             // Pathfinder may not be ready yet.
         }
+    }
+
+    /**
+     * @param {import('prismarine-entity').Entity} entity
+     * @param {{ followDistance?: number }} options
+     */
+    _followSprintSpec(entity, options) {
+        return {
+            role: 'follow',
+            distance: this._horizontalDistanceTo(entity?.position),
+            ownerSpeed: this._sampleOwnerSpeed(entity),
+            followDistance: options.followDistance ?? DEFAULT_FOLLOW_DISTANCE
+        };
+    }
+
+    /**
+     * @param {{ x: number, z: number }|null|undefined} position
+     */
+    _horizontalDistanceTo(position) {
+        const botPosition = this.bot.entity?.position;
+        if (!botPosition || !position) return 0;
+        return horizontalDistanceBetween(botPosition, position);
+    }
+
+    /**
+     * オーナーの水平速度（ブロック/秒）。位置の差を優先し、velocity は補助に使う。
+     * @param {import('prismarine-entity').Entity} entity
+     */
+    _sampleOwnerSpeed(entity) {
+        const position = entity?.position;
+        if (!position) return 0;
+        const now = this.now();
+        const previous = this._ownerPace;
+        this._ownerPace = {
+            id: entity.id,
+            x: position.x,
+            z: position.z,
+            at: now
+        };
+        const velocity = entity.velocity;
+        const fromVelocity = velocity
+            ? Math.hypot(velocity.x || 0, velocity.z || 0) * 20
+            : 0;
+        if (!previous || previous.id !== entity.id) return fromVelocity;
+        const dt = (now - previous.at) / 1000;
+        if (dt < 0.05 || dt > 2) return fromVelocity;
+        const sampled = Math.hypot(position.x - previous.x, position.z - previous.z) / dt;
+        return Math.max(sampled, fromVelocity);
+    }
+
+    /**
+     * @param {{ role?: string, distance?: number, ownerSpeed?: number, followDistance?: number }} spec
+     */
+    _rememberSprint(spec) {
+        this._sprintSpec = spec;
+        this._publishSprint();
+    }
+
+    _clearSprintSpec() {
+        this._sprintSpec = { role: 'other', distance: 0, ownerSpeed: 0 };
+        this._publishSprint();
+    }
+
+    _publishSprint() {
+        const spec = this._sprintSpec || { role: 'other', distance: 0 };
+        const next = shouldSprintForMove({
+            ...spec,
+            sprintLocked: this._sprintLocked,
+            food: this.bot.food
+        });
+        this.movements._trailmateSprintIntent = next;
+        this.movements.allowSprinting = next;
     }
 
     _setGoal(goal, options = {}) {

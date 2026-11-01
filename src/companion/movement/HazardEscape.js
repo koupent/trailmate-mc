@@ -252,6 +252,7 @@ export class HazardEscapeController {
         if (!this.active) return;
         this._stopWaterPathfinder();
         clearEscapeControls(this.bot);
+        this.movement?.setSprintAllowed?.(false);
         console.log(
             '[companion] hazard escape complete',
             JSON.stringify({ hazards: this._hazardNames })

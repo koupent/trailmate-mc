@@ -127,7 +127,8 @@ export class FollowMode extends Mode {
                     action('オーナーについて行く', (ctx) => {
                         const owner = ctx.ownerEntity;
                         ctx.movement.followEntity(owner, FOLLOW_GOAL_RANGE, {
-                            endpointVisibilityTarget: owner
+                            endpointVisibilityTarget: owner,
+                            followDistance: ctx.config?.follow_distance
                         });
                         return true;
                     })
