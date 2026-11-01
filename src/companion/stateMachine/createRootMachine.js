@@ -18,6 +18,7 @@ import { PassageTransitBehavior } from './behaviors/PassageTransitBehavior.js';
 import { DutyBehavior } from './behaviors/DutyBehavior.js';
 import { PlantingBehavior } from './behaviors/PlantingBehavior.js';
 import { SafetyBehavior } from './behaviors/SafetyBehavior.js';
+import { deathRecoveryInProgress } from '../deathRecovery.js';
 import {
     DUTY_STATES,
     dutyPending,
@@ -47,6 +48,13 @@ export function createRootMachine(targets) {
 
     const dutyTarget = (duty) => () => pendingDutyState(targets) === duty.stateName;
     const plantingWanted = () => targets.preferredMode === 'follow' && Boolean(targets.planter?.work);
+    const deathRecovery = duties.find((duty) => duty.stateName === 'death_recovery');
+    // 緊急回避で割り込みの shouldRun が外れても、回収が終わるまで追従へ落とさない。
+    const recoveryStillOwnsBot = () => deathRecoveryInProgress(targets.ctx);
+    const holdDeathRecovery = () => recoveryStillOwnsBot()
+        && !shouldEnterCombat(targets)
+        && !dutyPending(targets)
+        && !shouldEnterPassageTransit(targets);
 
     const transitions = [
         // Combat entry
@@ -91,11 +99,19 @@ export function createRootMachine(targets) {
         })),
         new StateTransition({
             parent: combat,
+            child: deathRecovery,
+            name: 'combat_to_death_recovery_hold',
+            shouldTransition: () => !shouldStayInCombat(targets)
+                && holdDeathRecovery()
+        }),
+        new StateTransition({
+            parent: combat,
             child: normal,
             name: 'combat_to_normal',
             shouldTransition: () => !shouldStayInCombat(targets)
                 && !dutyPending(targets)
                 && !passagePending(targets)
+                && !recoveryStillOwnsBot()
         }),
 
         // Safety work may interrupt a transaction; otherwise leave only after
@@ -111,10 +127,17 @@ export function createRootMachine(targets) {
         })),
         new StateTransition({
             parent: passageTransit,
+            child: deathRecovery,
+            name: 'passage_transit_to_death_recovery_hold',
+            shouldTransition: () => holdDeathRecovery() && !passagePending(targets)
+        }),
+        new StateTransition({
+            parent: passageTransit,
             child: normal,
             name: 'passage_transit_to_normal',
             shouldTransition: () => !passagePending(targets)
                 && !dutyPending(targets)
+                && !recoveryStillOwnsBot()
         }),
 
         // Interrupt work: entry, hand-over to an earlier-listed kind, exit.
@@ -132,6 +155,12 @@ export function createRootMachine(targets) {
                 name: `${from.stateName}_to_${to.stateName}`,
                 shouldTransition: () => !shouldEnterCombat(targets) && dutyTarget(to)()
             }))),
+        ...[normal, planting].map((state) => new StateTransition({
+            parent: state,
+            child: deathRecovery,
+            name: `${state.stateName}_to_death_recovery_hold`,
+            shouldTransition: holdDeathRecovery
+        })),
         ...duties.map((duty) => new StateTransition({
             parent: duty,
             child: normal,
@@ -139,6 +168,7 @@ export function createRootMachine(targets) {
             shouldTransition: () => !dutyPending(targets)
                 && !passagePending(targets)
                 && !shouldEnterCombat(targets)
+                && !recoveryStillOwnsBot()
         })),
 
         // Planting (follow mode only) is the lowest-priority job.

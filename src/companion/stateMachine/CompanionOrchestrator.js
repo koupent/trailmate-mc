@@ -9,6 +9,7 @@ import { createCompanionTargets } from './targets.js';
 import { createRootMachine } from './createRootMachine.js';
 import { prepareCompanionWorldTick } from './prepareTick.js';
 import { startPassageUpkeep, syncPassageTransit } from './passageUpkeep.js';
+import { deathRecoveryInProgress } from '../deathRecovery.js';
 import { refreshDutyFlags, shouldEnterPassageTransit } from './transitions.js';
 import { describeTree } from '../behaviorTree/bt.js';
 import { CropPlanter } from '../planting/CropPlanter.js';
@@ -164,7 +165,13 @@ export class CompanionOrchestrator {
                 }
             }
             if (this.safetyStates.includes(this.root.activeState)) {
-                this._switchTo(this.fsmStates.normal, `${this.root.activeState.stateName}_to_normal`);
+                // 危険回避が終わっても、墓の移動と回収が残っているなら追従に落とさない。
+                const resumeRecovery = deathRecoveryInProgress(this.ctx);
+                const next = resumeRecovery ? this.fsmStates.death_recovery : this.fsmStates.normal;
+                const name = resumeRecovery
+                    ? `${this.root.activeState.stateName}_to_death_recovery`
+                    : `${this.root.activeState.stateName}_to_normal`;
+                this._switchTo(next, name);
             }
 
             await prepareCompanionWorldTick(this.ctx);
@@ -177,6 +184,12 @@ export class CompanionOrchestrator {
             // preempt or release an active transaction immediately.
             if (this.targets.activeId === 'passage_transit'
                 || shouldEnterPassageTransit(this.targets)) {
+                this._applyTransitions();
+            }
+
+            // 平常時のtickが先に走ると、その1回で追従が死亡地点の経路を消す。
+            if ((this.targets.activeId === 'normal' || this.targets.activeId === 'planting')
+                && deathRecoveryInProgress(this.ctx)) {
                 this._applyTransitions();
             }
 

@@ -21,6 +21,58 @@ const WATER_DIRECT_APPROACH_RANGE = 3;
 const WATER_SEARCH_INTERVAL_MS = 1000;
 const SAFE_CONFIRM_TICKS = 2;
 const ESCAPE_CONTROLS = ['forward', 'back', 'left', 'right', 'jump', 'sprint'];
+const AIR_SEARCH_RISE = 16;
+
+/**
+ * 息がこの値以下で頭が水中なら、溺れる前に浮上を始める。
+ * mineflayer の oxygenLevel は 0〜20 で、0 になるとダメージが入る。
+ */
+export const SURFACE_OXYGEN = 5;
+
+/** 浮上を始めたあと、息がここまで戻ったら作業へ戻る。 */
+export const RESUME_OXYGEN = 15;
+
+/**
+ * 頭のブロックが水か。足だけ浸かっている浅瀬では浮上しない。
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ x: number, y: number, z: number } | null | undefined} position
+ */
+export function isHeadInWater(bot, position = bot?.entity?.position) {
+    if (!position || typeof bot?.blockAt !== 'function') return false;
+    return isPassableLiquid(blockAt(bot, position.x, position.y + 1, position.z));
+}
+
+/**
+ * 浮上を続けるべきか。
+ * 始めていないときは「頭が水中かつ息が SURFACE_OXYGEN 以下」。
+ * 始めたあとは、息が RESUME_OXYGEN に戻るまで離さない。
+ * 息の値が無いときは動かさない。
+ * @param {{ oxygen?: number | null, headInWater?: boolean, surfacing?: boolean }} input
+ */
+export function shouldSurfaceForAir(input = {}) {
+    const oxygen = input.oxygen;
+    if (typeof oxygen !== 'number' || !Number.isFinite(oxygen)) return false;
+    if (input.surfacing) return oxygen < RESUME_OXYGEN;
+    return Boolean(input.headInWater) && oxygen <= SURFACE_OXYGEN;
+}
+
+/**
+ * 頭が空気になる足元の高さ。読み込んだ範囲で見つからなければ、見えるいちばん上を目指す。
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ x: number, y: number, z: number }} position
+ */
+export function findAirSurfaceTarget(bot, position) {
+    const x = Math.floor(position.x) + 0.5;
+    const z = Math.floor(position.z) + 0.5;
+    const start = Math.floor(position.y);
+    for (let dy = 1; dy <= AIR_SEARCH_RISE; dy++) {
+        const head = blockAt(bot, x, start + dy + 1, z);
+        if (!isPassableLiquid(head)) {
+            return { x, y: start + dy, z };
+        }
+    }
+    return { x, y: start + AIR_SEARCH_RISE, z };
+}
 
 /** Minecraft shared entity flags: bit 0 means the entity is on fire. */
 export function isEntityBurning(entity) {
@@ -84,6 +136,7 @@ export class HazardEscapeController {
         this._safeTicks = 0;
         this._hazardNames = [];
         this._extinguishing = false;
+        this._surfacing = false;
         this._usingPathfinder = false;
         this._lastWaterSearchAt = 0;
         this._rejectedWater = new Set();
@@ -122,6 +175,8 @@ export class HazardEscapeController {
             return false;
         }
 
+        if (this._tickBreath(position)) return true;
+
         if (!this.active) return false;
         if (!isSafeStandPosition(this.bot, position)) {
             this._safeTicks = 0;
@@ -139,12 +194,14 @@ export class HazardEscapeController {
         return false;
     }
 
-    _takeControl(hazards, extinguishing) {
+    _takeControl(hazards, extinguishing, names = null) {
         this.active = true;
         this._extinguishing = extinguishing;
-        this._hazardNames = extinguishing
-            ? ['burning']
-            : [...new Set(hazards.map((hazard) => hazard.block.name))];
+        this._surfacing = false;
+        this._hazardNames = names
+            ?? (extinguishing
+                ? ['burning']
+                : [...new Set(hazards.map((hazard) => hazard.block.name))]);
         this.movement?.stop?.();
         try {
             this.bot.pvp?.forceStop?.();
@@ -215,6 +272,39 @@ export class HazardEscapeController {
         return true;
     }
 
+    /**
+     * 息が足りなくなる前に水面まで上がり、息が戻るまで作業の経路を止めて待つ。
+     * 炎の消火と接触ダメージより後に見るので、そちらの移動は変えない。
+     * @returns {boolean}
+     */
+    _tickBreath(position) {
+        const surfacing = shouldSurfaceForAir({
+            oxygen: this.bot.oxygenLevel,
+            headInWater: isHeadInWater(this.bot, position),
+            surfacing: this._surfacing
+        });
+        if (!surfacing) {
+            if (this._surfacing) {
+                this._surfacing = false;
+                this._release();
+            }
+            return false;
+        }
+
+        if (!this.active) this._takeControl([], false, ['low-air']);
+        this._surfacing = true;
+        this._extinguishing = false;
+        this._hazardNames = ['low-air'];
+        this.target = findAirSurfaceTarget(this.bot, position);
+        this._stopWaterPathfinder();
+        if (isHeadInWater(this.bot, position)) {
+            this._moveTowardTarget([], true);
+        } else {
+            clearEscapeControls(this.bot);
+        }
+        return true;
+    }
+
     _moveTowardTarget(hazards, forceJump = false) {
         const position = this.bot?.entity?.position;
         if (!position || !this.target) return;
@@ -262,6 +352,7 @@ export class HazardEscapeController {
         this._safeTicks = 0;
         this._hazardNames = [];
         this._extinguishing = false;
+        this._surfacing = false;
         this._lastWaterSearchAt = 0;
         this._rejectedWater.clear();
     }

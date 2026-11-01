@@ -3,8 +3,12 @@ import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import {
     HazardEscapeController,
+    RESUME_OXYGEN,
+    SURFACE_OXYGEN,
+    findAirSurfaceTarget,
     findNearestExtinguishingWater,
-    isEntityBurning
+    isEntityBurning,
+    shouldSurfaceForAir
 } from '../src/companion/movement/HazardEscape.js';
 import {
     findContactHazards,
@@ -564,5 +568,103 @@ describe('hazard movement ownership', () => {
         assert.deepEqual(calls, ['hazard']);
         assert.equal(manager.getActiveFsmId(), 'hazard_escape');
         assert.equal(manager._busy, false);
+    });
+});
+
+describe('水中で息が尽きる前に浮上する', () => {
+    function waterColumn(extra = {}) {
+        return {
+            '0,63,0': makeBlock('stone', 'block'),
+            '0,64,0': makeBlock('water'),
+            '0,65,0': makeBlock('water'),
+            ...extra
+        };
+    }
+
+    it('浮上の条件は息の残量と頭が水中かどうか', () => {
+        assert.equal(SURFACE_OXYGEN, 5);
+        assert.equal(RESUME_OXYGEN, 15);
+        assert.equal(shouldSurfaceForAir({ oxygen: 6, headInWater: true }), false);
+        assert.equal(shouldSurfaceForAir({ oxygen: SURFACE_OXYGEN, headInWater: true }), true);
+        assert.equal(shouldSurfaceForAir({ oxygen: 0, headInWater: true }), true);
+        assert.equal(shouldSurfaceForAir({ oxygen: 0, headInWater: false }), false);
+        assert.equal(shouldSurfaceForAir({ oxygen: null, headInWater: true }), false);
+        assert.equal(shouldSurfaceForAir({
+            oxygen: 10,
+            headInWater: false,
+            surfacing: true
+        }), true, '水面に出ても息が戻るまでは作業へ戻らない');
+        assert.equal(shouldSurfaceForAir({
+            oxygen: RESUME_OXYGEN,
+            headInWater: false,
+            surfacing: true
+        }), false);
+        assert.equal(shouldSurfaceForAir({
+            oxygen: RESUME_OXYGEN,
+            headInWater: true,
+            surfacing: true
+        }), false, '息が戻っていれば水中でも作業を再開してよい');
+    });
+
+    it('頭が水中で息が少ないと上へ泳ぎ、息が戻ると作業の目的地へ戻る', async () => {
+        const world = makeWorld({
+            position: new Vec3(0.5, 64, 0.5),
+            blocks: waterColumn()
+        });
+        world.bot.oxygenLevel = SURFACE_OXYGEN;
+        world.bot.entity.metadata = { 0: 0 };
+        const escape = new HazardEscapeController(world.bot, world.movement);
+        const surface = findAirSurfaceTarget(world.bot, world.bot.entity.position);
+        assert.ok(surface.y > world.bot.entity.position.y);
+
+        assert.equal(escape.tick(), true);
+        assert.equal(escape.active, true);
+        assert.equal(world.controls.get('jump'), true);
+        assert.deepEqual(escape.target, surface);
+
+        const goals = [];
+        world.bot.oxygenLevel = RESUME_OXYGEN;
+        world.cells.set('0,65,0', makeBlock('air'));
+        const ctx = {
+            bot: world.bot,
+            movement: {
+                ...world.movement,
+                isHeld: false,
+                hasGoal: false,
+                tickHoldWatchdog() {},
+                goToward(pos) { goals.push(pos); }
+            },
+            hazardEscape: escape,
+            worldState: { update() {} },
+            stuck: { seconds: 0, update() {} },
+            config: { owner_work: { enabled: false }, stuck_detect_seconds: 1.5 },
+            playerWorkById: new Map(),
+            invalidateCompanionAwareness() {}
+        };
+        ctx.movement.stop = () => world.events.push('movement-stop');
+        const manager = new CompanionOrchestrator(ctx, {}, [], 'follow');
+        manager.fsmStates.normal.runTick = async () => {
+            goals.push('work');
+            ctx.movement.goToward({ x: 8, y: 40, z: 1 });
+        };
+
+        await manager.tick();
+        assert.equal(manager.getActiveFsmId(), 'normal');
+        assert.deepEqual(goals, ['work', { x: 8, y: 40, z: 1 }]);
+    });
+
+    it('燃えているあいだは息が少なくても水中から出ない', () => {
+        const world = makeWorld({
+            position: new Vec3(0.5, 64, 0.5),
+            blocks: waterColumn()
+        });
+        world.bot.oxygenLevel = 0;
+        world.bot.entity.metadata = { 0: 0x01 };
+        const escape = new HazardEscapeController(world.bot, world.movement);
+
+        assert.equal(escape.tick(), true);
+        assert.equal(escape.active, true);
+        assert.notEqual(world.controls.get('jump'), true);
+        assert.equal(escape._surfacing, false);
     });
 });
