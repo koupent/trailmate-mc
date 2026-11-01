@@ -15,6 +15,10 @@ function horizontalDistance(a, b) {
     return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
+function distanceBetween(a, b) {
+    return Math.hypot(a.x - b.x, (a.y ?? 0) - (b.y ?? 0), a.z - b.z);
+}
+
 /**
  * Walk toward a fixed position until within range or timeout.
  * @param {import('../CompanionContext.js').CompanionContext} ctx
@@ -44,7 +48,7 @@ export async function approachPosition(ctx, pos, options = {}) {
     const distanceTo = (from) => (
         horizontalArrival
             ? horizontalDistance(from, pos)
-            : from.distanceTo(pos)
+            : distanceBetween(from, pos)
     );
     const arrived = () => distanceTo(bot.entity.position) <= range + arrivalSlack;
 

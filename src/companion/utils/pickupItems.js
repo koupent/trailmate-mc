@@ -49,12 +49,8 @@ const APPROACH_FAR_MS = 4000;
 const APPROACH_STEP_DOWN_MS = 3500;
 const APPROACH_NEAR_DIST = 4;
 const STEP_DOWN_LEDGE_RANGE = 0.6;
-const STEP_DOWN_LEDGE_PATH = 1;
 const STEP_DOWN_LEDGE_SLACK = 0.2;
 const STEP_DOWN_LEDGE_TIMEOUT_MS = 2000;
-const STEP_DOWN_ITEM_RANGE_FACTOR = 0.5;
-const STEP_DOWN_ITEM_PATH_MIN = 1.5;
-const STEP_DOWN_ITEM_SLACK = 0.15;
 
 /**
  * Walk toward nearby ground item entities so vanilla pickup can collect them.
@@ -227,7 +223,9 @@ export async function pickupNearbyItems(ctx, options = {}) {
         );
         if (needsStepDown) {
             await approachDropBelowFeet(ctx, approachTarget, {
-                magnetRange: pickupRange,
+                pathRange: arrivalRange,
+                arrivalRange,
+                arrivalSlack,
                 timeoutMs: approachTimeoutMs,
                 pollMs,
                 abort: approachAbort
@@ -236,7 +234,9 @@ export async function pickupNearbyItems(ctx, options = {}) {
             await approachPosition(ctx, approachTarget, {
                 range: arrivalRange,
                 pathRange: arrivalRange,
-                horizontalArrival: true,
+                // Height is part of the gap. Horizontal arrival stops on the
+                // block above or below a drop that is still out of reach.
+                horizontalArrival: false,
                 arrivalSlack,
                 timeoutMs: approachTimeoutMs,
                 pollMs,
@@ -443,19 +443,38 @@ function createPickupApproachAbort(params) {
  * Walk toward a drop that sits below the bot's feet (ledge pickup).
  * @param {import('../CompanionContext.js').CompanionContext} ctx
  * @param {{ x: number, y: number, z: number }} itemPos
- * @param {{ magnetRange: number, timeoutMs: number, pollMs: number, abort: () => boolean }} options
+ * @param {{
+ *   pathRange: number,
+ *   arrivalRange: number,
+ *   arrivalSlack: number,
+ *   timeoutMs: number,
+ *   pollMs: number,
+ *   abort: () => boolean
+ * }} options
  */
 async function approachDropBelowFeet(ctx, itemPos, options) {
     const bot = ctx?.bot;
     if (!bot?.entity) return false;
 
-    const { magnetRange, timeoutMs, pollMs, abort } = options;
+    const { timeoutMs, pollMs, abort } = options;
+    // Same sub-block GoalNear range as flat pickup. A radius of 1 or more
+    // treats the block one above the drop (and the adjacent lip) as arrived,
+    // so the bot stands there and never steps down.
+    const pathRange = Math.min(
+        options.pathRange ?? DEFAULT_APPROACH_RANGE,
+        DEFAULT_APPROACH_RANGE
+    );
+    const arrivalRange = Math.min(
+        options.arrivalRange ?? pathRange,
+        DEFAULT_APPROACH_RANGE
+    );
+    const arrivalSlack = options.arrivalSlack ?? DEFAULT_ARRIVAL_SLACK;
     const scan = scanSurroundings(bot, itemPos);
     const stepDown = scan.stepDowns?.[0];
     if (stepDown?.center) {
         await approachPosition(ctx, stepDown.center, {
             range: STEP_DOWN_LEDGE_RANGE,
-            pathRange: STEP_DOWN_LEDGE_PATH,
+            pathRange,
             horizontalArrival: false,
             arrivalSlack: STEP_DOWN_LEDGE_SLACK,
             timeoutMs: Math.min(timeoutMs, STEP_DOWN_LEDGE_TIMEOUT_MS),
@@ -466,10 +485,10 @@ async function approachDropBelowFeet(ctx, itemPos, options) {
     }
 
     return approachPosition(ctx, itemPos, {
-        range: magnetRange * STEP_DOWN_ITEM_RANGE_FACTOR,
-        pathRange: Math.max(magnetRange, STEP_DOWN_ITEM_PATH_MIN),
+        range: arrivalRange,
+        pathRange,
         horizontalArrival: false,
-        arrivalSlack: STEP_DOWN_ITEM_SLACK,
+        arrivalSlack,
         timeoutMs,
         pollMs,
         abort
@@ -477,7 +496,9 @@ async function approachDropBelowFeet(ctx, itemPos, options) {
 }
 
 /**
- * Horizontal closeness alone is not enough when the item sits below the bot's feet.
+ * Close enough for vanilla pickup to collect without another step.
+ * Height counts: a drop above the head can be horizontally near and still
+ * out of reach. A drop below the feet always needs a step down.
  * @param {{ x: number, y: number, z: number }} botPos
  * @param {{ x: number, y: number, z: number }} itemPos
  * @param {number} magnetRange
@@ -487,7 +508,7 @@ export function isWithinMagnetPickup(botPos, itemPos, magnetRange) {
     if (horizontal > magnetRange) return false;
     const verticalGap = itemPos.y - botPos.y;
     if (verticalGap < -ITEM_BELOW_FEET_DY) return false;
-    return true;
+    return Math.hypot(horizontal, verticalGap) <= magnetRange;
 }
 
 /**
