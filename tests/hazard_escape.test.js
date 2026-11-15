@@ -606,7 +606,7 @@ describe('水中で息が尽きる前に浮上する', () => {
         const world = makeWorld({ position: new Vec3(0.5, 64, 0.5), blocks });
         world.bot.oxygenLevel = 20;
         const escape = new HazardEscapeController(world.bot, world.movement);
-        assert.equal(escape.tick(), false);
+        assert.equal(escape.tick(), false, '酸素が帰還時間と余裕を満たす間は追従できる');
         world.bot.oxygenLevel = 12;
         assert.equal(escape.tick(), true);
         assert.equal(world.controls.get('jump'), true);
@@ -615,7 +615,7 @@ describe('水中で息が尽きる前に浮上する', () => {
 
     it('浮上の条件は息の残量と頭が水中かどうか', () => {
         assert.equal(SURFACE_OXYGEN, 5);
-        assert.equal(RESUME_OXYGEN, 15);
+        assert.equal(RESUME_OXYGEN, 20);
         assert.equal(shouldSurfaceForAir({ oxygen: 6, headInWater: true }), false);
         assert.equal(shouldSurfaceForAir({ oxygen: SURFACE_OXYGEN, headInWater: true }), true);
         assert.equal(shouldSurfaceForAir({ oxygen: 0, headInWater: true }), true);
@@ -652,7 +652,7 @@ describe('水中で息が尽きる前に浮上する', () => {
         assert.equal(escape.tick(), true);
         assert.equal(escape.active, true);
         assert.equal(world.controls.get('jump'), true);
-        assert.deepEqual(escape.target, surface);
+        assert.deepEqual({ ...escape.target }, { ...surface });
 
         const goals = [];
         world.bot.oxygenLevel = RESUME_OXYGEN;

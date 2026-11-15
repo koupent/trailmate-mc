@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>TrailMate 水中追従・生存シミュレーター</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body><main>
+  <header class="top-bar"><div><h1>水中追従・生存シミュレーター</h1>
+    <p>浅瀬・深場・水中の天井で、追従から浮上・回復・再追従まで確認できます。</p>
+    <a href="/">戦闘箱庭へ</a></div></header>
+  <section class="pane controls">
+    <label>ステージ <select id="water-scenario"></select></label>
+    <button id="water-reset">読込・リセット</button>
+    <button id="water-step">1ステップ（0.25秒）</button>
+    <button id="water-play" class="primary">再生</button>
+    <label>速度 <select id="water-speed"><option value="5">1倍</option><option value="25">5倍</option><option value="100">20倍</option></select></label>
+  </section>
+  <section class="stats-strip" id="water-vitals" aria-live="polite"></section>
+  <section class="layout"><div class="stage"><div id="viewport" style="height:620px" aria-label="水中ステージ"></div></div>
+    <aside class="pane"><h2>自律判断</h2><dl id="water-status"></dl>
+      <p>緑＝相棒、青＝プレイヤー、薄青＝水、灰＝地形、黄＝呼吸できる帰還先と経路。</p>
+      <p>酸素は水中で15秒かけて減少します。回復は空気に出た場合のみ。プレイヤーが深すぎる場合は、生存できる範囲まで追従します。</p>
+      <p id="water-error" role="alert"></p>
+    </aside></section>
+</main><script type="module" src="/water.js"></script></body></html>

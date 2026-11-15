@@ -11,24 +11,48 @@ import {
 import { generateArena, type ArenaKind } from './ArenaGenerator.js';
 import { GymRunner } from './GymRunner.js';
 import { entityLabelsJa } from '../i18n/entityNames.js';
+import { randomUUID } from 'node:crypto';
+import { WaterSimulation, WATER_SCENARIOS } from './WaterSimulation.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
 const reviewDir = path.join(process.cwd(), 'data', 'sim-reviews');
 const port = Number(process.env.SIM_PORT || 4173);
 const gym = new GymRunner();
+const waterSessions = new Map<string, WaterSimulation>();
 
 const STATIC_FILES = new Set([
   'index.html',
   'app.js',
   'names.js',
   'scene.js',
-  'styles.css'
+  'styles.css', 'water.html', 'water.js'
 ]);
 
 const server = http.createServer(async (request, response) => {
   try {
     const url = new URL(request.url || '/', `http://${request.headers.host || 'localhost'}`);
+
+    if (request.method === 'GET' && url.pathname === '/api/water/scenarios') {
+      return json(response, 200, WATER_SCENARIOS);
+    }
+    if (request.method === 'POST' && url.pathname === '/api/water/start') {
+      const body = await readJson<{ scenario: string }>(request);
+      if (!WATER_SCENARIOS.some(item => item.id === body.scenario)) return json(response, 400, { error: '不明な水中ステージです' });
+      // Bound sessions so repeated resets cannot retain unlimited voxel worlds.
+      if (waterSessions.size >= 4) waterSessions.delete(waterSessions.keys().next().value!);
+      const id = randomUUID();
+      const simulation = new WaterSimulation(body.scenario);
+      waterSessions.set(id, simulation);
+      return json(response, 200, { id, state: simulation.snapshot() });
+    }
+    if (request.method === 'POST' && url.pathname === '/api/water/tick') {
+      const body = await readJson<{ id: string; ticks?: number }>(request);
+      const simulation = waterSessions.get(body.id);
+      if (!simulation) return json(response, 404, { error: 'ステージを読み込み直してください' });
+      const ticks = Math.max(1, Math.min(200, Math.floor(Number(body.ticks) || 5)));
+      return json(response, 200, { state: await simulation.step(ticks) });
+    }
 
     if (request.method === 'GET' && url.pathname === '/api/entity-labels') {
       return json(response, 200, entityLabelsJa());
@@ -108,7 +132,8 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, '127.0.0.1', () => {
-  console.log(`[combat-simulator] http://127.0.0.1:${port}`);
+  const address = server.address();
+  console.log(`[combat-simulator] http://127.0.0.1:${typeof address === 'object' ? address?.port : port}`);
 });
 
 function summarizeEpisode(result: ReturnType<GymRunner['runEpisode']>) {
