@@ -581,6 +581,38 @@ describe('水中で息が尽きる前に浮上する', () => {
         };
     }
 
+    for (const vital of ['health', 'food']) {
+        it(`${vital} が危険な時も浮上し、回復するまで追従を再開しない`, () => {
+            const world = makeWorld({ position: new Vec3(0.5, 64, 0.5), blocks: waterColumn() });
+            world.bot.oxygenLevel = 20;
+            world.bot.health = 20;
+            world.bot.food = 20;
+            world.bot[vital] = 6;
+            const escape = new HazardEscapeController(world.bot, world.movement);
+            assert.equal(escape.tick(), true);
+            assert.equal(world.controls.get('jump'), true);
+            world.cells.set('0,65,0', makeBlock('air'));
+            assert.equal(escape.tick(), true);
+            assert.equal(world.controls.get('jump'), true, 'stay afloat during recovery');
+            world.bot[vital] = 14;
+            assert.equal(escape.tick(), false);
+            assert.equal(escape.active, false);
+        });
+    }
+
+    it('深い水中では浮上時間を見込んで酸素を使い切る前に追従を中断する', () => {
+        const blocks = waterColumn();
+        for (let y = 66; y <= 78; y++) blocks[`0,${y},0`] = makeBlock('water');
+        const world = makeWorld({ position: new Vec3(0.5, 64, 0.5), blocks });
+        world.bot.oxygenLevel = 20;
+        const escape = new HazardEscapeController(world.bot, world.movement);
+        assert.equal(escape.tick(), false);
+        world.bot.oxygenLevel = 12;
+        assert.equal(escape.tick(), true);
+        assert.equal(world.controls.get('jump'), true);
+        assert.equal(world.controls.get('forward'), false, 'ascend without drifting sideways');
+    });
+
     it('浮上の条件は息の残量と頭が水中かどうか', () => {
         assert.equal(SURFACE_OXYGEN, 5);
         assert.equal(RESUME_OXYGEN, 15);

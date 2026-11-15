@@ -10,6 +10,7 @@ import { hasLineOfSightFrom } from '../../world/lineOfSight.js';
 import { DEFAULT_FOLLOW_DISTANCE } from './followConstants.js';
 import { horizontalDistanceBetween } from './followGeometry.js';
 import { shouldSprintForMove } from './sprintPolicy.js';
+import { isInWater } from './SwimFollow.js';
 
 /** Climb goals may block Follow only briefly. */
 const DEFAULT_CLIMB_HOLD_MS = 2000;
@@ -23,15 +24,17 @@ function isFailedPathStatus(status) {
 }
 
 /**
- * Find the closest standable surface below the owner's X/Z position. This is
- * the sole owner-follow target on both the ground and in flight, so the
- * entity's unreachable airborne Y never becomes part of A*.
+ * Keep a swimmer's depth; otherwise find the closest standable surface below
+ * the owner's X/Z position so an airborne Y never becomes part of A*.
  * @param {import('mineflayer').Bot} bot
  * @param {{x:number,y:number,z:number}} position
  * @returns {Vec3|null}
  */
 export function findSurfaceFollowTarget(bot, position) {
     if (!position || typeof bot?.blockAt !== 'function') return null;
+    // Water has no standable floor at the player's depth. Keep their actual
+    // depth as the route target; nearby open-water steering handles vertical travel.
+    if (isInWater(bot, position)) return new Vec3(position.x, position.y, position.z);
 
     const x = Math.floor(position.x);
     const z = Math.floor(position.z);
@@ -275,8 +278,8 @@ export class MovementController {
     }
 
     /**
-     * Follow the standable surface directly below an entity. The entity's Y is
-     * never used as a path goal, which keeps ground and airborne follow identical.
+     * Follow a swimmer at their depth, or the standable surface below an entity
+     * on land / in flight.
      * @param {import('prismarine-entity').Entity} entity
      * @param {number} range
      * @param {{
