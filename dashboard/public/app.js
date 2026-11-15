@@ -3,9 +3,11 @@ import { syncHtml, syncProp, syncText, syncTextKeepingScroll } from './domSync.j
 import { renderFsmSvg } from './fsmGraph.js';
 import { bundledFsmStates, stateLabel as labelForState, stateNote as noteForState } from './fsmLabels.js';
 import { renderBtTree } from './btTree.js';
+import { createCompanionStatusCache } from './companionStatus.js';
 
 /* ===== helpers ===== */
 const POLL_INTERVAL_MS = 2000;
+const companionStatusCache = createCompanionStatusCache();
 const updateLogFollow = createLogFollowState();
 
 async function api(path, options = {}) {
@@ -403,7 +405,11 @@ despawnBtn.addEventListener('click', async () => {
 function renderStatus(status) {
   renderSpawnDiagnostics(status?.diagnostics);
   const spawned = Boolean(status?.backendReady !== false && status?.spawned);
-  renderCompanionPanels(spawned ? status : null);
+  const companionView = companionStatusCache.update(status);
+  renderCompanionPanels(companionView.snapshot);
+  if (companionView.stale) {
+    syncHtml(fsmCurrentEl, '<div class="fsm-current-label">状態の更新待ち</div><div class="fsm-current-note">最後に取得した状態遷移を表示しています</div>');
+  }
 
   if (!status || status.backendReady === false) {
     const message =
@@ -445,6 +451,7 @@ function renderStatus(status) {
       `
       <div class="status-line"><span class="pill off">未スポーン</span> ${escapeHtml(status.botName || '')}</div>
       <div class="muted">${status.spawning ? '接続処理中…' : 'ワールドには出ていません。時間は進みません。'}</div>
+      <div class="muted">実行中のBot版: ${escapeHtml(status.version || '取得できません（旧版の可能性があります）')}</div>
       ${preparingNote}
       ${err}
     `
@@ -464,7 +471,14 @@ function renderStatus(status) {
     <div class="status-line"><span class="pill on">スポーン中</span> <strong>${escapeHtml(status.username || status.botName || '')}</strong></div>
     <dl class="props">
       <dt>体力</dt><dd>${fmt(status.health)} / 20</dd>
+      <dt>実行中のBot版</dt><dd>${escapeHtml(status.version || '取得できません（旧版の可能性があります）')}</dd>
       <dt>満腹度</dt><dd>${fmt(status.food)} / 20</dd>
+      <dt>酸素</dt><dd>${fmt(status.oxygen)} / 20</dd>
+      ${status.movement ? `<dt>移動の更新</dt><dd>${status.movement.physicsEnabled ? '有効' : '無効'} · 最終更新 ${fmt(status.movement.physicsAgeMs)}ms前 · 座標送信 ${fmt(status.movement.positionPacketAgeMs)}ms前 · サーバー補正 ${fmt(status.movement.serverCorrections5s)}回/5秒</dd>` : ''}
+      ${status.waterNavigation ? `<dt>水中の行動</dt><dd>${escapeHtml(({
+        near: '追従距離内で待機', following: '泳いで追従中', returning: '呼吸できる場所へ帰還中',
+        recovering: '水面で回復待ち', holding: '酸素を確保するため潜水を保留', blocked: '通れる水路を探索中'
+      })[status.waterNavigation.phase] || status.waterNavigation.phase || '')}</dd>` : ''}
       <dt>座標</dt><dd>${escapeHtml(pos)}</dd>
       <dt>ディメンション</dt><dd>${escapeHtml(dimensionLabel(status.dimension))}</dd>
       <dt>オーナー</dt><dd>${escapeHtml(status.ownerName || '未ロック')}</dd>

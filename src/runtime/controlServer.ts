@@ -220,6 +220,7 @@ export function buildStatus(state: ControlState) {
   if (!host?.bot) {
     return {
       spawned: false,
+      version: process.env.TRAILMATE_VERSION || 'dev',
       spawning: state.spawning,
       lastError: state.lastError,
       botName: process.env.BOT_NAME || 'Trailmate'
@@ -234,12 +235,17 @@ export function buildStatus(state: ControlState) {
 
   return {
     spawned: true,
+    version: process.env.TRAILMATE_VERSION || 'dev',
     spawning: state.spawning,
     lastError: state.lastError,
     botName: host.name || bot.username,
     username: bot.username,
     health: bot.health ?? null,
     food: bot.food ?? null,
+    oxygen: bot.oxygenLevel ?? null,
+    movement: (bot as any)._trailmateMovementDiagnostics?.snapshot?.() ?? null,
+    waterNavigation: companion?.ctx?.hazardEscape?.airStatus
+      ?? manager?.followMode?._swim?.status ?? null,
     position: entity?.position
       ? {
           x: roundCoord(entity.position.x),

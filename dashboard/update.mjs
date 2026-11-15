@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { recreateServiceContainer, findServiceContainerId } from './dockerApi.mjs';
 import { spawn } from 'node:child_process';
+import { pinComposeRelease, releaseImageRef } from './releaseVersion.mjs';
 
 const githubRepo = process.env.GITHUB_REPO || 'koupent/trailmate-mc';
 const DEFAULT_DESPAWN_GRACE_MS = 4000;
@@ -104,6 +105,8 @@ export function createUpdateManager(projectRoot, deps = {}) {
         error: status.latestError || '最新リリースを取得できませんでした'
       };
     }
+    try { releaseImageRef('release', targetVersion); }
+    catch (error) { return { ok: false, error: error.message }; }
 
     job = emptyJob();
     job.active = true;
@@ -225,12 +228,20 @@ export function createUpdateManager(projectRoot, deps = {}) {
       }
       appendLog('[updater] recreate ' + service);
       await persistJob();
-      await recreate(service, onProgress);
+      await recreate(service, onProgress, { targetVersion });
       if (service === 'trailmate') {
         await syncItemsJaLocale(onProgress);
       }
     }
 
+    const composeFile = path.join(projectRoot, 'docker-compose.yml');
+    try {
+      const compose = await fs.readFile(composeFile, 'utf8');
+      await fs.writeFile(composeFile + '.update', pinComposeRelease(compose, targetVersion, githubRepo), 'utf8');
+      await fs.rename(composeFile + '.update', composeFile);
+    } catch (error) {
+      if (error.code !== 'ENOENT') throw error;
+    }
     await fs.writeFile(versionFile, targetVersion + '\n', 'utf8');
     appendLog('[updater] VERSION=' + targetVersion);
 
@@ -243,7 +254,7 @@ export function createUpdateManager(projectRoot, deps = {}) {
     await clearLock();
 
     try {
-      await recreate('dashboard', onProgress, { selfReplace: true });
+      await recreate('dashboard', onProgress, { selfReplace: true, targetVersion });
       appendLog('[updater] DONE（dashboard 差し替えを起動済み）');
       await persistJob();
     } catch (error) {

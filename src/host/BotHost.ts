@@ -9,6 +9,7 @@ import { Reflexes } from '../reflexes/Reflexes.js';
 import { setupAutoEat } from './autoEat.js';
 import { tCommand } from '../i18n/index.js';
 import { extractKickReason } from '../runtime/spawnErrors.js';
+import { installMovementPacketLimiter } from './movementPackets.js';
 
 export type TrailmateHost = {
   bot: Bot;
@@ -36,30 +37,7 @@ export function createBot(config: AppConfig): Bot {
 
   const bot = mineflayer.createBot(options);
 
-  // Throttle position packets (Paper kick mitigation)
-  let lastPositionUpdate = 0;
-  let pending: { name: string; data: any } | null = null;
-  const POSITION_THROTTLE_MS = 50;
-  const originalWrite = bot._client.write.bind(bot._client);
-  bot._client.write = function (name: string, data: any) {
-    if (name === 'position' || name === 'position_look' || name === 'look') {
-      const now = Date.now();
-      if (now - lastPositionUpdate >= POSITION_THROTTLE_MS) {
-        lastPositionUpdate = now;
-        return originalWrite(name, data);
-      }
-      pending = { name, data };
-      return;
-    }
-    return originalWrite(name, data);
-  };
-  setInterval(() => {
-    if (!pending) return;
-    const packet = pending;
-    pending = null;
-    lastPositionUpdate = Date.now();
-    originalWrite(packet.name, packet.data);
-  }, POSITION_THROTTLE_MS);
+  installMovementPacketLimiter(bot);
 
   bot.loadPlugin(pathfinder);
   bot.loadPlugin(pvp);

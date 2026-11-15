@@ -19,7 +19,9 @@ function render(state) {
   const format = point => point ? `${point.x.toFixed(1)}, ${point.y.toFixed(1)}, ${point.z.toFixed(1)}` : '—';
   const rows = [
     ['状態', ({ returning: '呼吸できる場所へ帰還中', recovering: '水面で回復待ち',
-      holding: '酸素を帰還に残すため潜水を保留', blocked: '通れる水路を確認できないため停止' })[n.phase] || '追従中'],
+      holding: '酸素を帰還に残すため潜水を保留', blocked: '通れる水路を確認できないため停止', near: '追従距離内で待機' })[n.phase] || '追従中'],
+    ['プレイヤーとの水平距離', `${state.metrics.horizontalDistance.toFixed(2)}ブロック`],
+    ['プレイヤーとの高低差', `${state.metrics.depthDifference.toFixed(2)}ブロック`],
     ['相棒の位置', format(state.bot)], ['プレイヤーの位置', format(state.owner)],
     ['帰還先', format(p)], ['酸素の残り時間', `${(n.availableSeconds ?? state.vitals.airTicks / 20).toFixed(1)}秒`],
     ['帰還の見積もり', n.returnSeconds == null ? '—' : `${n.returnSeconds.toFixed(1)}秒`],

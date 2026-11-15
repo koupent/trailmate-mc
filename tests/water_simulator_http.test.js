@@ -32,13 +32,15 @@ async function post(path, body) {
     return response.json();
 }
 
-it('serves the water stage UI, script and six selectable scenarios', async () => {
+it('serves survival and follow-behavior stages in the water UI', async () => {
     const html = await fetch(`${base}/water.html`).then(r => r.text());
     assert.match(html, /water-play/);
     const js = await fetch(`${base}/water.js`).then(r => r.text());
     assert.match(js, /\/api\/water\/tick/);
     const scenarios = await fetch(`${base}/api/water/scenarios`).then(r => r.json());
-    assert.equal(scenarios.length, 6);
+    assert.equal(scenarios.length, 9);
+    assert.ok(scenarios.some(scenario => scenario.id === 'underwater-turns'));
+    assert.ok(scenarios.some(scenario => scenario.id === 'shore-stop'));
 });
 
 for (const scenario of ['shallow-one', 'shallow-two', 'deep-dive', 'roof-return']) {

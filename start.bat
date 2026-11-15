@@ -54,7 +54,13 @@ if errorlevel 1 (
 )
 
 echo [2/3] Starting Trailmate (parked, not in-world)...
-docker compose up -d --build trailmate
+if exist "VERSION" (
+  docker compose pull trailmate
+  if errorlevel 1 exit /b 1
+  docker compose up -d --no-build trailmate
+) else (
+  docker compose up -d --build trailmate
+)
 if errorlevel 1 (
   echo [ERROR] Failed to start trailmate.
   pause
@@ -62,7 +68,13 @@ if errorlevel 1 (
 )
 
 echo [3/3] Starting dashboard...
-docker compose up -d --build dashboard
+if exist "VERSION" (
+  docker compose pull dashboard
+  if errorlevel 1 exit /b 1
+  docker compose up -d --no-build dashboard
+) else (
+  docker compose up -d --build dashboard
+)
 if errorlevel 1 (
   echo [ERROR] Failed to start dashboard.
   pause

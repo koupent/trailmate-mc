@@ -4,7 +4,7 @@ import { spawnSync } from 'node:child_process';
 // Explicit files work on Node 22/24 and Windows without shell glob expansion.
 const files = readdirSync(new URL('../tests/', import.meta.url))
   .filter(name => /\.test\.(js|ts)$/.test(name))
-  .filter(name => process.argv[2] !== 'water' || ['swim_follow_physics.test.js', 'water_simulator_http.test.js'].includes(name))
+  .filter(name => process.argv[2] !== 'water' || ['swim_follow_physics.test.js', 'water_simulator_http.test.js', 'water_follow_behavior.test.js', 'water_mineflayer_runtime.test.js', 'movement_packets.test.js', 'dashboard_companion_status.test.js'].includes(name))
   .sort().map(name => `tests/${name}`);
 // mineflayer-statemachine brings node@19 and its .bin/node into npm's PATH.
 // npm_node_execpath is the runtime selected by setup-node / the invoking user.
