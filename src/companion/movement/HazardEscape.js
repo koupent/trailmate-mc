@@ -31,6 +31,10 @@ export const SURFACE_OXYGEN = 5;
 
 /** 浮上を始めたあと、息がここまで戻ったら作業へ戻る。 */
 export const RESUME_OXYGEN = 15;
+export const SURFACE_HEALTH = 8;
+export const RESUME_HEALTH = 14;
+export const SURFACE_FOOD = 6;
+export const RESUME_FOOD = 14;
 
 /**
  * 頭のブロックが水か。足だけ浸かっている浅瀬では浮上しない。
@@ -137,6 +141,7 @@ export class HazardEscapeController {
         this._hazardNames = [];
         this._extinguishing = false;
         this._surfacing = false;
+        this._recoveringVitals = false;
         this._usingPathfinder = false;
         this._lastWaterSearchAt = 0;
         this._rejectedWater = new Set();
@@ -278,11 +283,20 @@ export class HazardEscapeController {
      * @returns {boolean}
      */
     _tickBreath(position) {
-        const surfacing = shouldSurfaceForAir({
+        const inWater = isInsideWater(this.bot, position);
+        if (!inWater) this._recoveringVitals = false;
+        else if (!this._recoveringVitals) {
+            this._recoveringVitals = this.bot.health <= SURFACE_HEALTH
+                || this.bot.food <= SURFACE_FOOD;
+        } else if ((this.bot.health == null || this.bot.health >= RESUME_HEALTH)
+            && (this.bot.food == null || this.bot.food >= RESUME_FOOD)) {
+            this._recoveringVitals = false;
+        }
+        const surfacing = this._recoveringVitals || shouldSurfaceForAir({
             oxygen: this.bot.oxygenLevel,
             headInWater: isHeadInWater(this.bot, position),
             surfacing: this._surfacing
-        });
+        }) || this._needsEarlyAscent(position);
         if (!surfacing) {
             if (this._surfacing) {
                 this._surfacing = false;
@@ -291,18 +305,33 @@ export class HazardEscapeController {
             return false;
         }
 
-        if (!this.active) this._takeControl([], false, ['low-air']);
+        const reason = this._recoveringVitals ? 'low-vitals' : 'low-air';
+        if (!this.active) this._takeControl([], false, [reason]);
         this._surfacing = true;
         this._extinguishing = false;
-        this._hazardNames = ['low-air'];
+        this._hazardNames = [reason];
         this.target = findAirSurfaceTarget(this.bot, position);
         this._stopWaterPathfinder();
         if (isHeadInWater(this.bot, position)) {
             this._moveTowardTarget([], true);
         } else {
             clearEscapeControls(this.bot);
+            // Hold the surface while auto-eat / natural regeneration and air
+            // recovery run. Clearing jump unconditionally makes the bot sink.
+            this.bot.setControlState?.('jump', inWater
+                && (this.bot.entity.velocity?.y ?? 0) <= 0);
         }
         return true;
+    }
+
+    _needsEarlyAscent(position) {
+        if (this._surfacing || !isHeadInWater(this.bot, position)) return false;
+        const oxygen = this.bot.oxygenLevel;
+        if (!Number.isFinite(oxygen)) return false;
+        const rise = findAirSurfaceTarget(this.bot, position).y - position.y;
+        // About 2 blocks/s upward, with 0.75 s of air per oxygen point.
+        // Keep the usual reserve in addition to the estimated ascent budget.
+        return oxygen <= Math.min(19, SURFACE_OXYGEN + Math.ceil(rise / 1.5));
     }
 
     _moveTowardTarget(hazards, forceJump = false) {
@@ -314,6 +343,9 @@ export class HazardEscapeController {
             this.bot.entity.yaw ?? 0,
             0.15
         );
+        if (Math.hypot(this.target.x - position.x, this.target.z - position.z) < 0.2) {
+            for (const key of ['forward', 'back', 'left', 'right']) controls[key] = false;
+        }
         this.bot.setControlState?.('forward', controls.forward);
         this.bot.setControlState?.('back', controls.back);
         this.bot.setControlState?.('left', controls.left);
@@ -353,6 +385,7 @@ export class HazardEscapeController {
         this._hazardNames = [];
         this._extinguishing = false;
         this._surfacing = false;
+        this._recoveringVitals = false;
         this._lastWaterSearchAt = 0;
         this._rejectedWater.clear();
     }

@@ -8,6 +8,7 @@ import {
 } from '../movement/followConstants.js';
 import { resolveFollowPhase } from '../movement/followPhase.js';
 import { ColumnClimber } from '../movement/climbColumn.js';
+import { SwimFollow } from '../movement/SwimFollow.js';
 import { wouldPathPassNearPlayer } from '../movement/playerPathClearance.js';
 import { tryOpportunisticCollect } from '../utils/opportunisticCollector.js';
 import { action, condition, FAILURE, runTree, selector, sequence } from '../behaviorTree/bt.js';
@@ -37,6 +38,8 @@ export class FollowMode extends Mode {
         /** Manual ladder / vine climb; pathfinder never moves vertically here. */
         this._climb = new ColumnClimber();
         this._climbConsulted = false;
+        this._swim = new SwimFollow();
+        this._swimConsulted = false;
         this.tree = this._buildTree();
     }
 
@@ -45,6 +48,7 @@ export class FollowMode extends Mode {
     }
 
     async onExit(ctx) {
+        this._swim.release(ctx);
         this._climb.release(ctx);
         // FSM では combat/duty へ一瞬でも遷移するたびに呼ばれる。
         // ここで stop すると追従ゴールが毎回消え、棒立ち・duty 往復の原因になる。
@@ -60,6 +64,7 @@ export class FollowMode extends Mode {
      */
     async tick(ctx) {
         this._climbConsulted = false;
+        this._swimConsulted = false;
         try {
             ctx.movement.tickHoldWatchdog();
             if (yieldsOutsideMachine(ctx, 'follow')) {
@@ -72,6 +77,7 @@ export class FollowMode extends Mode {
             // Every branch that ends before the climb node — the owner
             // disappearing, a pickup, a boat — must let go of forward.
             if (!this._climbConsulted) this._climb.release(ctx);
+            if (!this._swimConsulted) this._swim.release(ctx);
         }
     }
 
@@ -106,6 +112,12 @@ export class FollowMode extends Mode {
                     action('ボートに一緒に乗る', (ctx) => Boolean(
                         ctx.boatPassenger?.tryBoard?.(ctx.ownerEntity)
                     )),
+                    action('水中のオーナーに深度を合わせて泳ぐ', (ctx) => {
+                        const swimming = this._swim.tick(ctx);
+                        this._swimConsulted = swimming;
+                        if (!swimming) this._swim.release(ctx);
+                        return swimming;
+                    }),
                     // Skip follow only while a climb hold is still making progress.
                     condition('登り動作を続けている', (ctx) => Boolean(ctx.movement.isHeld)),
                     action('作業中のプレイヤーから離れる', (ctx) => Boolean(applyOwnerWorkRetreat(ctx))),
