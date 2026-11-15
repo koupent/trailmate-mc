@@ -1,16 +1,8 @@
-import { blockAt, isPassableBlock, isPassableLiquid } from './hazardBlocks.js';
-import { movementControlsTowardBearing, threatBearingRad } from '../../combat/threatArc.js';
+import { bodyInWater, planWaterRoute, steerWaterRoute, clearWaterControls, headInWater, waterTravelSeconds, AIR_SECONDS_PER_POINT, AIR_RESERVE_SECONDS } from './waterNavigation.js';
 
-const CONTROLS = ['forward', 'back', 'left', 'right', 'jump', 'sprint'];
+export const isInWater = bodyInWater;
 
-export function isInWater(bot, position) {
-    return Boolean(position && typeof bot?.blockAt === 'function' && (
-        isPassableLiquid(blockAt(bot, position.x, position.y, position.z))
-        || isPassableLiquid(blockAt(bot, position.x, position.y + 1, position.z))
-    ));
-}
-
-/** Local water steering; land entry and routes around obstructions stay with A*. */
+/** Body-sized water/shore routes, with a return-to-air budget for each dive. */
 export class SwimFollow {
     constructor() {
         this.active = false;
@@ -19,54 +11,56 @@ export class SwimFollow {
     tick(ctx) {
         const { bot, ownerEntity: owner, movement } = ctx;
         const position = bot.entity?.position;
-        if (!owner || bot.vehicle || !isInWater(bot, position)
-            || !isInWater(bot, owner.position)
-            || !waterCorridorOpen(bot, position, owner.position)) return false;
-
+        if (!owner || bot.vehicle || !position
+            || (!isInWater(bot, position) && !isInWater(bot, owner.position))) return false;
         if (!this.active) movement.stop();
         this.active = true;
-        const horizontal = Math.hypot(owner.position.x - position.x, owner.position.z - position.z);
         const range = ctx.config?.follow_distance ?? 3;
-        const controls = movementControlsTowardBearing(
-            threatBearingRad(position, owner.position), bot.entity.yaw ?? 0, 0.15
-        );
-        for (const control of ['forward', 'back', 'left', 'right']) {
-            bot.setControlState?.(control, horizontal > range && controls[control]);
+        const cell = `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
+        const ownerKey = `${Math.floor(owner.position.x)},${Math.round(owner.position.y)},${Math.floor(owner.position.z)}`;
+        if (!this.plan || this.ownerKey !== ownerKey || this.cell !== cell) {
+            // Approach in stages, so an unreachable deep owner cannot make
+            // the bot spend the whole breath diving vertically in place.
+            const target = { ...owner.position, y: Math.max(owner.position.y, position.y - 2) };
+            this.plan = planWaterRoute(bot, { target, range });
+            this.ownerKey = ownerKey; this.cell = cell;
         }
-        // prismarine-physics swims upward with jump and descends by buoyancy/gravity.
-        // Pulse jump near the owner's depth to prevent sinking while stationary.
-        const dy = owner.position.y - position.y;
-        bot.setControlState?.('jump', dy > 0.2
-            || (dy >= -0.2 && (bot.entity.velocity?.y ?? 0) <= 0));
-        // Ordinary swimming conserves hunger; it does not require sprinting.
-        bot.setControlState?.('sprint', false);
+        if (!this.plan) {
+            this.status = { phase: 'blocked' };
+            // Let land A* handle distant approaches, but never continue a stale
+            // pathfinder goal underwater when no safe body-sized path exists.
+            clearWaterControls(bot);
+            if (!isInWater(bot, position)) { this.active = false; return false; }
+            bot.setControlState?.('jump', headInWater(bot));
+            return true;
+        }
+        // Before committing the next submerged step, verify an affordable way
+        // back to air from that waypoint. Oxygen is reserved for the return trip.
+        const next = this.plan.points.find(p => position.distanceTo(p) > 0.4) ?? this.plan.target;
+        if (headInWater(bot, next)) {
+            const escape = planWaterRoute(bot, { from: next, air: true });
+            const available = Math.max(0, (bot.oxygenLevel ?? (headInWater(bot) ? 0 : 20)) - 0.5) * AIR_SECONDS_PER_POINT;
+            if (!escape || available < waterTravelSeconds(position, next) + escape.seconds + AIR_RESERVE_SECONDS + 1) {
+                this.status = { phase: 'holding', availableSeconds: available,
+                    returnSeconds: escape?.seconds ?? null };
+                if (headInWater(bot)) ctx.hazardEscape?.requestAirReturn?.();
+                clearWaterControls(bot);
+                bot.setControlState?.('jump', headInWater(bot));
+                return true;
+            }
+        }
+        this.status = { phase: 'following' };
+        steerWaterRoute(bot, this.plan);
         return true;
     }
 
     release(ctx) {
         if (!this.active) return;
         this.active = false;
+        this.status = null;
         // Safety claim already issued the replacement controls before FSM exit.
         if (ctx.hazardEscape?.active) return;
-        for (const control of CONTROLS) ctx.bot.setControlState?.(control, false);
+        clearWaterControls(ctx.bot);
+        this.plan = null;
     }
-}
-
-function waterCorridorOpen(bot, from, to) {
-    const distance = Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z);
-    if (distance > 16) return false;
-    const steps = Math.max(1, Math.ceil(distance * 4));
-    for (let i = 0; i <= steps; i++) {
-        const t = i / steps;
-        const x = from.x + (to.x - from.x) * t;
-        const y = from.y + (to.y - from.y) * t;
-        const z = from.z + (to.z - from.z) * t;
-        for (const dx of [-0.3, 0.3]) {
-            for (const dz of [-0.3, 0.3]) {
-                if (!isPassableBlock(blockAt(bot, x + dx, y, z + dz))
-                    || !isPassableBlock(blockAt(bot, x + dx, y + 1, z + dz))) return false;
-            }
-        }
-    }
-    return true;
 }

@@ -18,7 +18,7 @@ const DAMAGE_BLOCKS = new Set([
     'pointed_dripstone'
 ]);
 
-const PASSABLE_LIQUIDS = new Set(['water', 'bubble_column']);
+const PASSABLE_LIQUIDS = new Set(['water', 'bubble_column', 'seagrass', 'tall_seagrass', 'kelp', 'kelp_plant']);
 
 /** Whether a block can cause contact or standing damage. */
 export function isDamageBlock(block) {

@@ -1,4 +1,5 @@
 import { Vec3 } from 'vec3';
+import { AIR_SECONDS_PER_POINT, AIR_RESERVE_SECONDS, bodyInWater, headInWater, planWaterRoute, steerWaterRoute, waterNodeOpen } from './waterNavigation.js';
 import {
     movementControlsTowardBearing,
     threatBearingRad
@@ -21,7 +22,6 @@ const WATER_DIRECT_APPROACH_RANGE = 3;
 const WATER_SEARCH_INTERVAL_MS = 1000;
 const SAFE_CONFIRM_TICKS = 2;
 const ESCAPE_CONTROLS = ['forward', 'back', 'left', 'right', 'jump', 'sprint'];
-const AIR_SEARCH_RISE = 16;
 
 /**
  * 息がこの値以下で頭が水中なら、溺れる前に浮上を始める。
@@ -30,7 +30,7 @@ const AIR_SEARCH_RISE = 16;
 export const SURFACE_OXYGEN = 5;
 
 /** 浮上を始めたあと、息がここまで戻ったら作業へ戻る。 */
-export const RESUME_OXYGEN = 15;
+export const RESUME_OXYGEN = 20;
 export const SURFACE_HEALTH = 8;
 export const RESUME_HEALTH = 14;
 export const SURFACE_FOOD = 6;
@@ -42,8 +42,7 @@ export const RESUME_FOOD = 14;
  * @param {{ x: number, y: number, z: number } | null | undefined} position
  */
 export function isHeadInWater(bot, position = bot?.entity?.position) {
-    if (!position || typeof bot?.blockAt !== 'function') return false;
-    return isPassableLiquid(blockAt(bot, position.x, position.y + 1, position.z));
+    return headInWater(bot, position);
 }
 
 /**
@@ -61,21 +60,12 @@ export function shouldSurfaceForAir(input = {}) {
 }
 
 /**
- * 頭が空気になる足元の高さ。読み込んだ範囲で見つからなければ、見えるいちばん上を目指す。
+ * 通れる経路の先にある、実際に呼吸できる足元座標。未読込・天井は空気扱いしない。
  * @param {import('mineflayer').Bot} bot
  * @param {{ x: number, y: number, z: number }} position
  */
 export function findAirSurfaceTarget(bot, position) {
-    const x = Math.floor(position.x) + 0.5;
-    const z = Math.floor(position.z) + 0.5;
-    const start = Math.floor(position.y);
-    for (let dy = 1; dy <= AIR_SEARCH_RISE; dy++) {
-        const head = blockAt(bot, x, start + dy + 1, z);
-        if (!isPassableLiquid(head)) {
-            return { x, y: start + dy, z };
-        }
-    }
-    return { x, y: start + AIR_SEARCH_RISE, z };
+    return planWaterRoute(bot, { from: position, air: true })?.target ?? null;
 }
 
 /** Minecraft shared entity flags: bit 0 means the entity is on fire. */
@@ -145,6 +135,18 @@ export class HazardEscapeController {
         this._usingPathfinder = false;
         this._lastWaterSearchAt = 0;
         this._rejectedWater = new Set();
+        this._airPlan = null;
+        this._airCell = null;
+        this._airProgressPos = null;
+        this._airProgressAt = 0;
+        this.lastBreathable = null;
+        this.airStatus = null;
+        this._airReturnRequested = false;
+    }
+
+    /** A proposed dive is unaffordable: return along the known air route. */
+    requestAirReturn() {
+        this._airReturnRequested = true;
     }
 
     /** @returns {boolean} true while ordinary companion behavior must yield */
@@ -283,55 +285,71 @@ export class HazardEscapeController {
      * @returns {boolean}
      */
     _tickBreath(position) {
-        const inWater = isInsideWater(this.bot, position);
-        if (!inWater) this._recoveringVitals = false;
+        const wet = bodyInWater(this.bot, position);
+        const submerged = isHeadInWater(this.bot, position);
+        const oxygen = this.bot.oxygenLevel;
+        if (!wet) this._recoveringVitals = false;
         else if (!this._recoveringVitals) {
-            this._recoveringVitals = this.bot.health <= SURFACE_HEALTH
-                || this.bot.food <= SURFACE_FOOD;
+            this._recoveringVitals = this.bot.health <= SURFACE_HEALTH || this.bot.food <= SURFACE_FOOD;
         } else if ((this.bot.health == null || this.bot.health >= RESUME_HEALTH)
             && (this.bot.food == null || this.bot.food >= RESUME_FOOD)) {
             this._recoveringVitals = false;
         }
-        const surfacing = this._recoveringVitals || shouldSurfaceForAir({
-            oxygen: this.bot.oxygenLevel,
-            headInWater: isHeadInWater(this.bot, position),
-            surfacing: this._surfacing
-        }) || this._needsEarlyAscent(position);
-        if (!surfacing) {
-            if (this._surfacing) {
-                this._surfacing = false;
-                this._release();
-            }
+
+        // Record real breathable positions. A roof, unloaded chunk or solid
+        // ceiling must never be mistaken for the surface.
+        if (!submerged && waterNodeOpen(this.bot, position)) this.lastBreathable = { ...position };
+        if (this._surfacing && !submerged && !this._recoveringVitals
+            && (!Number.isFinite(oxygen) || oxygen >= RESUME_OXYGEN)) {
+            this._release();
+            this._airPlan = null;
             return false;
         }
+        if (!wet && !this._surfacing) return false;
 
+        const cell = `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
+        // Lock the return endpoint and follow its waypoints. Replan when a
+        // block changes or progress stalls, never chase a new surface each tick.
+        const now = this.now();
+        const stalled = this._airProgressPos && Math.hypot(
+            position.x - this._airProgressPos.x, position.y - this._airProgressPos.y,
+            position.z - this._airProgressPos.z) < 0.2 && now - this._airProgressAt > 1500;
+        if (!this._airProgressPos || positionDistance(position, this._airProgressPos) >= 0.2) {
+            this._airProgressPos = { ...position }; this._airProgressAt = now;
+        }
+        if (!this._airPlan || (!this._surfacing && cell !== this._airCell)
+            || stalled || this._airPlan.points.some(point => !waterNodeOpen(this.bot, point))) {
+            this._airPlan = planWaterRoute(this.bot, { air: true });
+            this._airCell = cell;
+            if (!this._airPlan && this.lastBreathable) {
+                this._airPlan = planWaterRoute(this.bot, { target: this.lastBreathable, range: 0 });
+            }
+        }
+        const airSeconds = Number.isFinite(oxygen) ? Math.max(0, oxygen - 0.5) * AIR_SECONDS_PER_POINT : 0;
+        const mustReturn = this._airReturnRequested || this._surfacing || this._recoveringVitals || (submerged && (
+            !this._airPlan || oxygen <= SURFACE_OXYGEN
+            || airSeconds <= this._airPlan.seconds + AIR_RESERVE_SECONDS
+        ));
+        if (!mustReturn) return false;
         const reason = this._recoveringVitals ? 'low-vitals' : 'low-air';
         if (!this.active) this._takeControl([], false, [reason]);
         this._surfacing = true;
         this._extinguishing = false;
         this._hazardNames = [reason];
-        this.target = findAirSurfaceTarget(this.bot, position);
         this._stopWaterPathfinder();
-        if (isHeadInWater(this.bot, position)) {
-            this._moveTowardTarget([], true);
+        this.target = this._airPlan?.target ?? this.lastBreathable ?? null;
+        if (this._airPlan) {
+            steerWaterRoute(this.bot, this._airPlan);
         } else {
+            // Refuse further diving if no loaded route is known. No path to a
+            // verified air cell is different from a successful surface plan.
             clearEscapeControls(this.bot);
-            // Hold the surface while auto-eat / natural regeneration and air
-            // recovery run. Clearing jump unconditionally makes the bot sink.
-            this.bot.setControlState?.('jump', inWater
-                && (this.bot.entity.velocity?.y ?? 0) <= 0);
+            this.bot.setControlState?.('jump', submerged);
         }
+        this.airStatus = { phase: submerged ? 'returning' : 'recovering',
+            target: this.target, availableSeconds: airSeconds,
+            returnSeconds: this._airPlan?.seconds ?? null, reserveSeconds: AIR_RESERVE_SECONDS };
         return true;
-    }
-
-    _needsEarlyAscent(position) {
-        if (this._surfacing || !isHeadInWater(this.bot, position)) return false;
-        const oxygen = this.bot.oxygenLevel;
-        if (!Number.isFinite(oxygen)) return false;
-        const rise = findAirSurfaceTarget(this.bot, position).y - position.y;
-        // About 2 blocks/s upward, with 0.75 s of air per oxygen point.
-        // Keep the usual reserve in addition to the estimated ascent budget.
-        return oxygen <= Math.min(19, SURFACE_OXYGEN + Math.ceil(rise / 1.5));
     }
 
     _moveTowardTarget(hazards, forceJump = false) {
@@ -388,6 +406,11 @@ export class HazardEscapeController {
         this._recoveringVitals = false;
         this._lastWaterSearchAt = 0;
         this._rejectedWater.clear();
+        this._airPlan = null;
+        this._airCell = null;
+        this._airProgressPos = null;
+        this.airStatus = null;
+        this._airReturnRequested = false;
     }
 }
 
@@ -465,4 +488,8 @@ function scanWaterPositions(bot, position, maxDistance) {
 
 function blockPositionKey(position) {
     return `${Math.floor(position.x)},${Math.floor(position.y)},${Math.floor(position.z)}`;
+}
+
+function positionDistance(a, b) {
+    return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
 }

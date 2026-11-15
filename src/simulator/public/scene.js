@@ -217,12 +217,32 @@ export function createScene(container) {
     if (!state) return;
 
     const blockKey = new Set();
+    const columns = new Map();
+    for (const p of state.water || []) {
+      const key = `${p.x},${p.z}`;
+      const column = columns.get(key) || { x: p.x, z: p.z, min: p.y, max: p.y };
+      column.min = Math.min(column.min, p.y); column.max = Math.max(column.max, p.y);
+      columns.set(key, column);
+    }
+    for (const column of columns.values()) {
+      addBox(root, column.x + 0.5, (column.min + column.max + 1) / 2,
+        column.z + 0.5, 1, column.max - column.min + 1, 1, 0x38bdf8, 0.07);
+    }
+    const waterTop = columns.size ? Math.max(...[...columns.values()].map(column => column.max)) : Infinity;
+    if (state.navigation?.target) {
+      const target = state.navigation.target;
+      addBox(root, target.x, target.y + 0.5, target.z, 0.5, 1, 0.5, 0xfbbf24, 0.5);
+      const points = [state.bot, ...(state.navigation.route || []), target];
+      const geometry = new THREE.BufferGeometry().setFromPoints(points.map(p => new THREE.Vector3(p.x, p.y + 0.5, p.z)));
+      root.add(new THREE.Line(geometry, new THREE.LineBasicMaterial({ color: 0xfbbf24 })));
+    }
     for (const block of state.blocks || []) {
       const key = `${block.x},${block.y},${block.z}`;
       if (blockKey.has(key)) continue;
       blockKey.add(key);
       const color = block.y === 0 ? 0x3f4f3a : 0x64748b;
-      addBox(root, block.x + 0.5, block.y + 0.5, block.z + 0.5, 0.98, 0.98, 0.98, color);
+      addBox(root, block.x + 0.5, block.y + 0.5, block.z + 0.5, 0.98, 0.98, 0.98, color,
+        state.water && block.y >= waterTop ? 0.35 : 1);
     }
 
     const botColor = events.botDead || state.botDead || state.bot.hp <= 0

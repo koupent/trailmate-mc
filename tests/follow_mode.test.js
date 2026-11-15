@@ -97,8 +97,9 @@ function makeFollowCtx(botPos, ownerPos, overrides = {}) {
 describe('FollowMode merge follow', () => {
     it('swims at the owner depth, including when horizontally near, and releases on wait', async () => {
         const ctx = makeFollowCtx(new Vec3(0.5, 60, 0.5), new Vec3(0.5, 64, 0.5), {
-            blockAt: () => ({ name: 'water', boundingBox: 'empty' })
+            blockAt: pos => pos.y >= 66 ? airBlock() : pos.y < 56 ? solidBlock() : ({ name: 'water', boundingBox: 'empty' })
         });
+        ctx.bot.oxygenLevel = 20;
         const controls = new Map();
         ctx.bot.setControlState = (key, value) => controls.set(key, value);
         ctx.bot.entity.velocity = new Vec3(0, -0.01, 0);
@@ -119,12 +120,12 @@ describe('FollowMode merge follow', () => {
         assert.ok([...controls.values()].every(value => value === false));
     });
 
-    it('hands obstructed water routes back to pathfinder', async () => {
+    it('holds safely instead of restarting a land path through an obstructed water route', async () => {
         const ctx = makeFollowCtx(new Vec3(0.5, 60, 0.5), new Vec3(8.5, 60, 0.5), {
-            blockAt: pos => pos.x === 4 ? solidBlock() : { name: 'water', boundingBox: 'empty' }
+            blockAt: pos => pos.x === 4 || pos.y < 60 ? solidBlock() : pos.y > 63 ? airBlock() : { name: 'water', boundingBox: 'empty' }
         });
         await new FollowMode().tick(ctx);
-        assert.ok(ctx.movement.calls.some(call => call.type === 'followEntity'));
+        assert.equal(ctx.movement.calls.some(call => call.type === 'followEntity'), false);
     });
 
     it('lets boat boarding own the tick before normal follow movement', async () => {
