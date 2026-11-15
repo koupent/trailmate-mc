@@ -1169,7 +1169,7 @@ async function sendUiCopy(response) {
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
   if (
-    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'fsmLabels.js', 'btTree.js', 'logFollow.js', 'retention.js', 'mobs.js', 'companionSettings.js', 'styles.css'].includes(
+    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'fsmLabels.js', 'btTree.js', 'logFollow.js', 'retention.js', 'mobs.js', 'companionSettings.js', 'companionStatus.js', 'styles.css'].includes(
       file
     )
   ) {

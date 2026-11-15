@@ -9,6 +9,9 @@ import { WorldState } from '../companion/WorldState.js';
 import { CompanionOrchestrator } from '../companion/stateMachine/CompanionOrchestrator.js';
 import { shouldCompanionEat, chooseBestFood, UNSAFE_OR_SPECIAL_FOODS } from '../host/autoEat.js';
 import { isPassableLiquid } from '../companion/movement/hazardBlocks.js';
+import { EyeContactReaction } from '../companion/eyeContact.js';
+import { createMovementPacketLimiter } from '../host/movementPackets.js';
+import assert from 'node:assert/strict';
 
 const registry = registryLoader('1.21.6');
 const Block = blockLoader(registry);
@@ -18,7 +21,10 @@ export const WATER_SCENARIOS = [
     { id: 'deep-dive', name: '深さ30ブロック・移動するオーナー', depth: 30 },
     { id: 'roof-return', name: '水中の天井・離れた空気への帰還', depth: 8 },
     { id: 'low-health', name: '水中で負傷・浮上して食事と回復', depth: 8 },
-    { id: 'low-food', name: '水中で空腹・浮上して食事と回復', depth: 8 }
+    { id: 'low-food', name: '水中で空腹・浮上して食事と回復', depth: 8 },
+    { id: 'underwater-turns', name: '水中の往復追従・方向転換', depth: 8, behavior: true },
+    { id: 'shore-stop', name: 'プレイヤーが岸に上がって停止', depth: 8, behavior: true },
+    { id: 'water-idle', name: '追従距離内の水面で浮かんで待機', depth: 8, behavior: true }
 ];
 
 /** Closed loop: production FSM + pathfinder + prismarine physics at 20 Hz.
@@ -63,9 +69,13 @@ export class WaterSimulation {
                 onGround: true, isInWater: false, effects: {}, attributes: {}
             },
             blockAt: position => this.blockAt(position),
-            setControlState(key, value) { this.controlState[key] = Boolean(value); },
+            setControlState(key, value) {
+                assert.equal(typeof value, 'boolean');
+                if (key === 'jump' && value && !this.controlState[key]) this.jumpQueued = true;
+                this.controlState[key] = value;
+            },
             getControlState(key) { return Boolean(this.controlState[key]); },
-            clearControlStates() { for (const key of Object.keys(this.controlState)) this.controlState[key] = false; },
+            clearControlStates() { for (const key of Object.keys(this.controlState)) this.setControlState(key, false); },
             async look(yaw, pitch) { this.entity.yaw = yaw; this.entity.pitch = pitch; },
             async lookAt(position) {
                 const delta = position.minus(this.entity.position.offset(0, 1.62, 0));
@@ -79,7 +89,16 @@ export class WaterSimulation {
         this.bot = bot;
         if (this.scenario.id === 'deep-dive') bot.entity.position.set(2.5, 6, 0.5);
         if (this.scenario.id === 'roof-return') bot.entity.position.set(10.5, 4, 0.5);
+        if (id === 'underwater-turns') bot.entity.position.set(8.5, 7, 0.5);
+        if (id === 'shore-stop') bot.entity.position.set(17.5, 8.5, 0.3);
+        if (id === 'water-idle') bot.entity.position.set(8.05, 8.7, 0.15);
+        if (options.initialBotPosition) bot.entity.position.set(...options.initialBotPosition);
+        if (options.initialYaw != null) bot.entity.yaw = options.initialYaw;
         this.physics = physicsLoader.Physics(registry, this.world);
+        this.serverPosition = bot.entity.position.clone();
+        this.movementPackets = createMovementPacketLimiter((name, data) => {
+            if (name !== 'look') this.serverPosition.set(data.x, data.y, data.z);
+        }, { now: () => this.tick * 50 });
         bot.physics = this.physics;
         this.owner = { id: 2, name: 'player', username: 'Owner', position: new Vec3(2.5, 10 - this.scenario.depth, 0.5), height: 0.6, yaw: 0 };
         bot.players.Owner = { entity: this.owner };
@@ -97,6 +116,7 @@ export class WaterSimulation {
         this.manager = new CompanionOrchestrator(this.ctx, agent, [], 'follow');
         agent.companion = { manager: this.manager };
         this.ctx.hazardEscape.now = () => this.tick * 50;
+        this.eyeContact = new EyeContactReaction({}, { now: () => this.tick * 50, random: () => 0 });
     }
 
     buildStage() {
@@ -128,6 +148,24 @@ export class WaterSimulation {
 
     moveOwner() {
         const seconds = this.tick / 20;
+        if (this.scenario.id === 'underwater-turns') {
+            this.owner.position.set(seconds < 10 ? 12 + seconds * 0.5 : Math.max(10, 17 - (seconds - 10) * 0.5), 7, 0.5);
+            return;
+        }
+        if (this.scenario.id === 'shore-stop') {
+            const x = Math.min(22.2, 20 + seconds * 0.5);
+            this.owner.position.set(x, Math.min(10, Math.max(9, x - 12)), 0.3);
+            return;
+        }
+        if (this.scenario.id === 'water-idle') {
+            this.owner.position.set(10.3, 8.7, 0.7);
+            return;
+        }
+        if (this.options.ownerMotion) {
+            const p = this.options.ownerMotion(seconds);
+            this.owner.position.set(p.x, p.y, p.z);
+            return;
+        }
         const id = this.scenario.id;
         const x = Math.min(19.5, 2.5 + seconds * 0.65);
         const depth = this.scenario.depth <= 2
@@ -148,14 +186,25 @@ export class WaterSimulation {
             this.moveOwner();
             if (this.tick % 5 === 0) {
                 await this.manager.tick();
+                if (this.options.ownerLooksAtBot) {
+                    const delta = this.bot.entity.position.minus(this.owner.position);
+                    this.owner.yaw = Math.atan2(-delta.x, -delta.z);
+                    this.owner.pitch = Math.atan2(delta.y, Math.hypot(delta.x, delta.z));
+                }
+                await this.eyeContact.tick(this.ctx);
                 const active = this.ctx.hazardEscape.active;
                 if (active && !this.wasReturning) this.returnCount++;
                 if (!active && this.wasReturning) this.resumedCount++;
                 this.wasReturning = active;
             }
             const before = this.bot.entity.position.clone();
-            this.bot.emit('physicsTick');
             this.physics.simulatePlayer(new physicsLoader.PlayerState(this.bot, this.bot.controlState), this.world).apply(this.bot);
+            // Mineflayer emits physicsTick after the integration, then sends
+            // movement packets. Include the production packet coalescer too.
+            this.bot.emit('physicsTick');
+            this.movementPackets.write('position', { ...this.bot.entity.position, onGround: this.bot.entity.onGround });
+            this.movementPackets.write('look', { yaw: this.bot.entity.yaw, pitch: this.bot.entity.pitch, onGround: this.bot.entity.onGround });
+            this.movementPackets.flush();
             this.tick++;
             const distance = before.distanceTo(this.bot.entity.position);
             if (this.bot.entity.isInWater) this.exhaustion += distance * 0.01;
@@ -216,7 +265,8 @@ export class WaterSimulation {
     snapshot() {
         return {
             name: this.scenario.id, tick: this.tick, tickMs: 250,
-            bot: { ...this.bot.entity.position, yaw: this.bot.entity.yaw, hp: this.bot.health },
+            bot: { ...this.bot.entity.position, yaw: this.bot.entity.yaw, hp: this.bot.health,
+                onGround: this.bot.entity.onGround, isInWater: this.bot.entity.isInWater },
             owner: { ...this.owner.position }, enemies: [], drops: [], obstacles: [], inventory: [],
             grave: null, recovery: {}, attacks: 0, shots: 0,
             blocks: [...this.blocks].filter(([, name]) => !['water', 'seagrass', 'kelp_plant'].includes(name)).map(([key]) => {
@@ -226,7 +276,9 @@ export class WaterSimulation {
                 const [x, y, z] = key.split(',').map(Number); return { x, y, z };
             }),
             vitals: { oxygen: this.bot.oxygenLevel, airTicks: this.air, food: this.bot.food, minAir: this.minAir, drowningDamage: this.drowningDamage },
-            metrics: { returnCount: this.returnCount, resumedCount: this.resumedCount, maxProgress: this.maxProgress },
+            metrics: { returnCount: this.returnCount, resumedCount: this.resumedCount, maxProgress: this.maxProgress,
+                horizontalDistance: Math.hypot(this.bot.entity.position.x - this.owner.position.x, this.bot.entity.position.z - this.owner.position.z),
+                depthDifference: this.owner.position.y - this.bot.entity.position.y },
             navigation: { state: this.manager.getActiveFsmId(), target: this.ctx.hazardEscape.target,
                 ...this.manager.followMode._swim.status,
                 ...this.ctx.hazardEscape.airStatus, route: this.ctx.hazardEscape._airPlan?.points ?? [] },

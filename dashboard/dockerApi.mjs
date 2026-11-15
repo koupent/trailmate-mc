@@ -1,4 +1,5 @@
 import http from 'node:http';
+import { releaseContainerConfig } from './releaseVersion.mjs';
 import { spawn } from 'node:child_process';
 
 const dockerSock = process.env.DOCKER_SOCK || '/var/run/docker.sock';
@@ -190,7 +191,7 @@ export async function pullImage(imageRef, onProgress) {
  * Pull the container's current image tag, then recreate with the same mounts/env.
  * @param {string} service
  * @param {(line: string) => void} [onProgress]
- * @param {{ selfReplace?: boolean }} [options]
+ * @param {{ selfReplace?: boolean, targetVersion?: string }} [options]
  *   selfReplace: 自分自身（dashboard）を更新するとき。停止でプロセスが死ぬ前に
  *   差し替え用コンテナを別プロセスで起動する。
  */
@@ -203,6 +204,7 @@ export async function recreateServiceContainer(service, onProgress, options = {}
     throw new Error(service + ' の inspect に失敗しました');
   }
   const info = JSON.parse(inspected.body.toString('utf8'));
+  info.Config = releaseContainerConfig(info.Config, options.targetVersion);
   const name = String(info.Name || '').replace(/^\//, '');
   const image = info.Config?.Image;
   if (!image) throw new Error(service + ' のイメージ名が空です');
