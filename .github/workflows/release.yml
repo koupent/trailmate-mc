@@ -104,7 +104,9 @@ jobs:
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/trailmate-mc-${{ steps.version.outputs.tag }}-windows.zip
+          files: |
+            dist/trailmate-mc-${{ steps.version.outputs.tag }}-windows.zip
+            scripts/repair-windows-update.ps1
           generate_release_notes: true
           body: |
             ## 配布物
@@ -114,6 +116,5 @@ jobs:
               - `${{ env.DASHBOARD_IMAGE }}:${{ steps.version.outputs.tag }}`
 
             コンテナ起動だけではワールドに入りません。ダッシュボードの「スポーン」を押してください。
-            **既存環境をこのリリースへ更新する場合:** 管理画面の公開ポートを localhost に限定するため、新しいZIPを既存プロジェクトへ上書き展開して `start.bat` を実行してください。
-            v0.1.42以前の更新処理では固定タグが再取得される場合があります。プレイ画面の「実行中のBot版」で反映を確認できます。
-            `.env`・`config.json`・認証データは削除しないでください。以降の更新は「ユーザー設定」の「アップデート」から行えます。
+            **既存環境の更新:** 管理画面の「ユーザー設定」にある「アップデート」から更新できます。
+            v0.1.42以前からの更新で旧画面が残る場合は、添付の `repair-windows-update.ps1` をインストール先で一度実行し、v0.1.44 に復旧してから管理画面で更新してください。

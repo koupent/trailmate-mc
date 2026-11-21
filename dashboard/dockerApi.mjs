@@ -188,10 +188,10 @@ export async function pullImage(imageRef, onProgress) {
 }
 
 /**
- * Pull the container's current image tag, then recreate with the same mounts/env.
+ * Pull the requested release and recreate with the existing mounts and settings.
  * @param {string} service
  * @param {(line: string) => void} [onProgress]
- * @param {{ selfReplace?: boolean, targetVersion?: string }} [options]
+ * @param {{ selfReplace?: boolean, targetVersion?: string, beforeSelfReplace?: () => Promise<void> }} [options]
  *   selfReplace: 自分自身（dashboard）を更新するとき。停止でプロセスが死ぬ前に
  *   差し替え用コンテナを別プロセスで起動する。
  */
@@ -204,7 +204,16 @@ export async function recreateServiceContainer(service, onProgress, options = {}
     throw new Error(service + ' の inspect に失敗しました');
   }
   const info = JSON.parse(inspected.body.toString('utf8'));
-  info.Config = releaseContainerConfig(info.Config, options.targetVersion);
+  info.Config = releaseContainerConfig(info.Config, options.targetVersion, service);
+  if (service === 'dashboard' && options.targetVersion) {
+    const bindings = info.HostConfig?.PortBindings?.['8787/tcp'];
+    if (Array.isArray(bindings)) {
+      for (const binding of bindings) {
+        if (!binding.HostIp || binding.HostIp === '0.0.0.0') binding.HostIp = '127.0.0.1';
+        if (binding.HostIp === '::') binding.HostIp = '::1';
+      }
+    }
+  }
   const name = String(info.Name || '').replace(/^\//, '');
   const image = info.Config?.Image;
   if (!image) throw new Error(service + ' のイメージ名が空です');
@@ -238,6 +247,7 @@ export async function recreateServiceContainer(service, onProgress, options = {}
   };
 
   if (options.selfReplace) {
+    await options.beforeSelfReplace?.();
     return replaceContainerExternally(id, name, createBody, onProgress);
   }
 

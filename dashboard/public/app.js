@@ -967,10 +967,12 @@ function renderUpdateStatus(status) {
     : '未取得';
   const updating = Boolean(status.updating);
   const available = Boolean(status.updateAvailable);
-  const needsAttention = updating || available;
+  const mismatch = Boolean(status.versionMismatch);
+  const updateFailure = status.lastJob?.ok === false ? status.lastJob.error : null;
+  const needsAttention = updating || available || mismatch || Boolean(updateFailure);
 
   updateZone.classList.toggle('is-quiet', !needsAttention);
-  updateZone.classList.toggle('is-alert', available && !updating);
+  updateZone.classList.toggle('is-alert', needsAttention && !updating);
   updateZone.classList.toggle('is-busy', updating);
   if (updateExpand) updateExpand.hidden = !needsAttention;
 
@@ -979,6 +981,10 @@ function renderUpdateStatus(status) {
     badge = '<span class="pill busy">更新中</span>';
   } else if (available) {
     badge = '<span class="pill available">更新あり</span>';
+  } else if (mismatch) {
+    badge = '<span class="pill available">版の不一致</span>';
+  } else if (!status.latestVersion) {
+    badge = '<span class="pill off">未確認</span>';
   } else {
     badge = '<span class="pill on">最新</span>';
   }
@@ -986,8 +992,10 @@ function renderUpdateStatus(status) {
   const link = status.latestUrl
     ? ` <a class="ms-login-link" href="${escapeHtml(status.latestUrl)}" target="_blank" rel="noopener noreferrer">Release</a>`
     : '';
-  const err = status.latestError
-    ? `<span class="msg err">${escapeHtml(status.latestError)}</span>`
+  const err = [status.latestError, updateFailure].filter(Boolean)
+    .map(error => `<span class="msg err">${escapeHtml(error)}</span>`).join('');
+  const recorded = mismatch
+    ? `<span class="msg">更新記録 <strong>${escapeHtml(status.recordedVersion)}</strong> と実行版が異なります</span>`
     : '';
 
   if (needsAttention) {
@@ -995,8 +1003,9 @@ function renderUpdateStatus(status) {
       updatePanel,
       `
       ${badge}
-      <span>現在 <strong>${current}</strong></span>
+      <span>ダッシュボード実行版 <strong>${current}</strong></span>
       <span>最新 <strong>${latest}</strong>${link}</span>
+      ${recorded}
       ${err}
     `
     );
@@ -1005,7 +1014,7 @@ function renderUpdateStatus(status) {
       updatePanel,
       `
       ${badge}
-      <span>${current}</span>
+      <span>ダッシュボード実行版 <strong>${current}</strong></span>
       ${err}
     `
     );

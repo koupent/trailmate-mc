@@ -42,7 +42,7 @@ describe('update manager live log re-fetch', () => {
           html_url: 'https://example.test/release'
         })
       }),
-      recreateServiceContainer: async (service, onProgress) => {
+      recreateServiceContainer: async (service, onProgress, options) => {
         if (service === 'trailmate') {
           onProgress('[docker] pulling trailmate');
           progressLines.push('pull');
@@ -51,6 +51,7 @@ describe('update manager live log re-fetch', () => {
           onProgress('[docker] recreated trailmate');
           return;
         }
+        await options.beforeSelfReplace?.();
         onProgress('[docker] recreated ' + service);
       }
     });
@@ -97,7 +98,8 @@ describe('update manager live log re-fetch', () => {
 
     releaseTrailmate();
     for (let i = 0; i < 100; i += 1) {
-      const done = await mgr.getLogs();
+      const replacement = createUpdateManager(root, { dashboardVersion: 'v0.1.6' });
+      const done = await replacement.getLogs();
       if (!done.updating && done.ok) {
         assert.doesNotMatch(done.log, /STALE DISK LOG/);
         assert.match(done.log, /VERSION=v0\.1\.6|recreate dashboard|DONE/);
