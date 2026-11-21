@@ -405,6 +405,53 @@ test('delivers a completed reaction once even when it starts behind a player rep
     assert.deepEqual(lines, ['おはよ！', '@Alice、ぺこっ！目が合ったね。']);
 });
 
+test('keeps a nearby situation change past the quiet period after a player message', async (t) => {
+    let now = 1000000;
+    t.mock.method(Date, 'now', () => now);
+    setEnv(t, {
+        ANTHROPIC_API_KEY: 'test-key', CLAUDE_MONTHLY_BUDGET_USD: '200',
+        ANTHROPIC_ADMIN_API_KEY: '', ANTHROPIC_WORKSPACE_ID: ''
+    });
+    const worldState = new WorldState();
+    worldState.nearbyPlayers = [{ name: 'Alice', distance: 2 }];
+    const lines = [];
+    const agent = {
+        bot: { username: 'Trailmate', entity: {}, health: 20 },
+        companion: { _interval: true, ctx: { worldState } },
+        openChat: async line => lines.push(line)
+    };
+    const dialogue = new CompanionDialogue(agent, { getCurrentModeId: () => 'wait' }, { chat: { spontaneous_chance: 1 } });
+    let snapshot = { ...dialogue._emptySnapshot('wait'), isNight: false, isRaining: false };
+    t.mock.method(dialogue, '_buildSnapshot', () => ({ ...snapshot, nearbyPlayers: worldState.nearbyPlayers }));
+    const contexts = [];
+    t.mock.method(globalThis, 'fetch', async (_url, request) => {
+        const context = JSON.parse(JSON.parse(request.body).messages.at(-1).content);
+        contexts.push(context);
+        const text = context.message ? 'うん、ここにいるよ！' : 'すっかり暗くなったね。足元に気をつけよ！';
+        return Response.json({ content: [{ type: 'text', text }] });
+    });
+
+    await dialogue.maybeSpeak();
+    assert.equal(await dialogue.handlePlayerMessage('Alice', '@Trailmate いる？', true), true);
+    now += 1000;
+    snapshot = { ...snapshot, isRaining: true };
+    await dialogue.maybeSpeak();
+    now += 1000;
+    snapshot = { ...snapshot, isRaining: false, isNight: true };
+    await dialogue.maybeSpeak();
+    now += 12000;
+    await dialogue.maybeSpeak();
+    assert.equal(contexts.length, 1, 'the quiet period still applies');
+    now += 1000;
+    await dialogue.maybeSpeak();
+    await setImmediate();
+    assert.deepEqual(contexts.map(context => context.event), [undefined, 'night']);
+    assert.deepEqual(lines, ['うん、ここにいるよ！', '@Alice、すっかり暗くなったね。足元に気をつけよ！']);
+    now += 1000;
+    await dialogue.maybeSpeak();
+    assert.equal(contexts.length, 2, 'the earlier rain and already handled night do not trigger repeats');
+});
+
 test('a quota rejection falls back for commentary and public replies, then Claude resumes', async (t) => {
     let now = 1000000;
     t.mock.method(Date, 'now', () => now);
