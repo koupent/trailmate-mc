@@ -356,6 +356,55 @@ test('describes a blocked path once during repeated failures and falls back afte
     assert.equal(lines[1], '@Alice、ここ、ぶつからずに通るのは難しそう。ちょっと待ってるね。');
 });
 
+test('delivers a completed reaction once even when it starts behind a player reply', async (t) => {
+    t.mock.method(Date, 'now', () => 1000000);
+    setEnv(t, {
+        ANTHROPIC_API_KEY: 'test-key', CLAUDE_MONTHLY_BUDGET_USD: '200',
+        ANTHROPIC_ADMIN_API_KEY: '', ANTHROPIC_WORKSPACE_ID: ''
+    });
+    const worldState = new WorldState();
+    worldState.nearbyPlayers = [{ name: 'Alice', distance: 2 }];
+    const lines = [];
+    const agent = {
+        bot: { username: 'Trailmate', entity: {}, health: 20 },
+        companion: { _interval: true, ctx: { worldState } },
+        openChat: async line => lines.push(line)
+    };
+    const dialogue = new CompanionDialogue(agent, { getCurrentModeId: () => 'wait' });
+    const snapshot = { ...dialogue._emptySnapshot('wait'), nearbyPlayers: worldState.nearbyPlayers };
+    t.mock.method(dialogue, '_buildSnapshot', () => snapshot);
+
+    let finishReply;
+    const pendingReply = new Promise(resolve => { finishReply = resolve; });
+    const contexts = [];
+    t.mock.method(globalThis, 'fetch', async (_url, request) => {
+        const context = JSON.parse(JSON.parse(request.body).messages.at(-1).content);
+        contexts.push(context);
+        if (context.message) {
+            await pendingReply;
+            return Response.json({ content: [{ type: 'text', text: 'おはよ！' }] });
+        }
+        return Response.json({ content: [{ type: 'text', text: 'ぺこっ！目が合ったね。' }] });
+    });
+
+    const reply = dialogue.handlePlayerMessage('Alice', '@Trailmate おはよ！', true);
+    worldState.observe({ id: 'companion_took_damage', text: 'A recent hit.', priority: 2 });
+    worldState.observe({
+        id: 'eye_contact', text: 'Made eye contact and completed a bow.',
+        reaction: true, recipient: 'Alice', priority: 0
+    });
+    await dialogue.maybeSpeak();
+    await dialogue.maybeSpeak();
+    assert.equal(contexts.length, 1, 'reaction waits for the pending reply');
+    finishReply();
+    assert.equal(await reply, true);
+    await setImmediate();
+    await dialogue.maybeSpeak();
+    assert.deepEqual(contexts.map(context => context.event), [undefined, 'eye_contact']);
+    assert.equal(contexts[1].focus.required, true);
+    assert.deepEqual(lines, ['おはよ！', '@Alice、ぺこっ！目が合ったね。']);
+});
+
 test('a quota rejection falls back for commentary and public replies, then Claude resumes', async (t) => {
     let now = 1000000;
     t.mock.method(Date, 'now', () => now);

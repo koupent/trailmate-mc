@@ -252,7 +252,7 @@ export class CompanionDialogue {
             .sort((a, b) => b.priority - a.priority || (b.seenAt ?? now) - (a.seenAt ?? now));
         const urgentEvent = candidates.find((entry) => entry.priority >= 2);
         const reactionEvent = candidates.find((entry) => entry.reaction);
-        const event = urgentEvent || reactionEvent || inventoryFillEvent || supplyRequestEvent || candidates[0];
+        const event = reactionEvent || urgentEvent || inventoryFillEvent || supplyRequestEvent || candidates[0];
         if (!event) return;
         const recipient = event.recipient
             ? snapshot.nearbyPlayers.find((player) => player.name === event.recipient)
@@ -308,14 +308,15 @@ export class CompanionDialogue {
             if (isStuckEvent && this.agent.companion?.ctx) this.agent.companion.ctx.stuckChat = null;
         };
         const useClaude = this._canGenerate(now) && this._canSendChat();
-        if (useClaude && (this._claudeRequest
-            || (!reaction && now - this._lastCommentaryAttemptAt < minInterval))) return;
+        if (useClaude && !reaction && (this._claudeRequest
+            || now - this._lastCommentaryAttemptAt < minInterval)) return;
         if (!operational) event.handled = true;
         if (casual && Math.random() > (event.chance ?? this.config.spontaneous_chance)) return;
         if (useClaude) {
             this._lastCommentaryAttemptAt = now;
             const { lastChatAt, lastPlayerChatAt, _lastReplyAt } = this;
-            // A slow reply must not hold the bot's movement loop or follow a newer message.
+            // Generation never holds movement. A completed action has its own response,
+            // while ambient comments can go stale when a newer conversation begins.
             void this._composeLine({ ...renderSnapshot, observations }, {
                 event: event.id,
                 eventDetail: event.text ?? (operational ? message : undefined),
@@ -326,8 +327,9 @@ export class CompanionDialogue {
                 recentCommentary: this._recentCommentary
             }, message).then(async (line) => {
                 if (!line) return;
-                if ((casual && !this._claudeBudget.speechFraction) || !this._canSendChat() || this.lastChatAt !== lastChatAt
-                    || this.lastPlayerChatAt !== lastPlayerChatAt || this._lastReplyAt !== _lastReplyAt) return;
+                if ((casual && !this._claudeBudget.speechFraction) || !this._canSendChat()) return;
+                if (!reaction && (this.lastChatAt !== lastChatAt
+                    || this.lastPlayerChatAt !== lastPlayerChatAt || this._lastReplyAt !== _lastReplyAt)) return;
                 const nearby = this.agent.companion?.ctx?.worldState?.nearbyPlayers;
                 if (!nearby?.some((player) => player.name === recipient.name)) return;
                 const observedRain = this._localRain();
