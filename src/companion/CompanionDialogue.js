@@ -227,32 +227,49 @@ export class CompanionDialogue {
     async maybeSpeak() {
         if (this.config.enabled === false) return;
         if (this.agent.shut_up) return;
-        if (this._actionBusy || this._isItemTransferActive()) return;
         this._claudeBudget?.refresh(Date.now());
 
         const now = Date.now();
         const snapshot = this._buildSnapshot(true);
-        const inventoryFillEvent = this.inventoryFillTracker.observe(snapshot);
-        const supplyRequestEvent = this._observeSupplyRequest();
         const world = this.agent.companion?.ctx?.worldState;
-        const recent = world?.recentObservations?.(now) ?? [];
+        const recent = world?.recentObservations?.(now, true) ?? [];
         const situation = detectSituationEvent(this._prev, snapshot, this.config);
         this._prev = snapshot;
-        if (!snapshot.nearbyPlayers.length) return;
 
         const incoming = (snapshot.activity?.commentary ?? []).map((entry) => ({ ...entry, priority: 0 }));
         const verifiedDamage = recent.some((entry) => entry.cooldownKey === 'companion_took_damage'
             && now - entry.seenAt < 1000);
-        if (situation && !recent.some((entry) => entry.id === situation.id)
+        if (snapshot.nearbyPlayers.length && situation && !recent.some((entry) => entry.id === situation.id)
             && !(situation.cooldownKey === 'companion_took_damage' && verifiedDamage)) incoming.push(situation);
         const observations = [...recent, ...incoming.map((entry) => world?.observe?.(entry, now) ?? entry)];
-        const candidates = observations.filter((entry) => !entry.handled
-            && (entry.reaction || now - (this.lastEventAt[entry.cooldownKey ?? entry.id] ?? -Infinity) >= this.config.event_cooldown_ms)
-            && (!entry.recipient || snapshot.nearbyPlayers.some((player) => player.name === entry.recipient)))
-            .sort((a, b) => b.priority - a.priority || (b.seenAt ?? now) - (a.seenAt ?? now));
-        const urgentEvent = candidates.find((entry) => entry.priority >= 2);
-        const reactionEvent = candidates.find((entry) => entry.reaction);
-        const event = urgentEvent || reactionEvent || inventoryFillEvent || supplyRequestEvent || candidates[0];
+        if (this._actionBusy || this._isItemTransferActive()) return;
+        const inventoryFillEvent = this.inventoryFillTracker.observe(snapshot);
+        const supplyRequestEvent = this._observeSupplyRequest();
+        if (!snapshot.nearbyPlayers.length) return;
+
+        const fraction = this._claudeBudget?.speechFraction ?? 1;
+        const quietInterval = this.config.priority_min_interval_ms;
+        const lastConversationAt = Math.max(this.lastChatAt, this.lastPlayerChatAt, this._lastReplyAt);
+        const useClaude = this._canGenerate(now) && this._canSendChat();
+        const minIntervalFor = (event, operational) => event.priority >= 2 ? quietInterval
+            : this.config.min_interval_ms / (operational ? 1 : fraction);
+        const eligible = (event) => {
+            if (!event || event.handled || event.speechPending || !this._isCurrentObservation(event, snapshot)) return false;
+            if (event.recipient && !snapshot.nearbyPlayers.some((player) => player.name === event.recipient)) return false;
+            if (event.reaction) return true;
+            const operational = Boolean(event.inventoryFill || event.supplyCategories);
+            if (!operational && event.priority < 2 && !fraction) return false;
+            const minInterval = minIntervalFor(event, operational);
+            return now - lastConversationAt >= (operational ? minInterval : quietInterval)
+                && (operational || now - this._lastCommentaryAt >= minInterval)
+                && now - (this.lastEventAt[event.cooldownKey ?? event.id] ?? -Infinity) >= this.config.event_cooldown_ms
+                && (!useClaude || (!this._claudeRequest && now - this._lastCommentaryAttemptAt >= minInterval));
+        };
+        const candidates = observations.filter(eligible)
+            .sort((a, b) => Number(Boolean(b.reaction)) - Number(Boolean(a.reaction))
+                || b.priority - a.priority || (b.seenAt ?? now) - (a.seenAt ?? now));
+        const immediate = candidates.find((entry) => entry.reaction || entry.priority >= 2);
+        const event = immediate || [inventoryFillEvent, supplyRequestEvent].find(eligible) || candidates[0];
         if (!event) return;
         const recipient = event.recipient
             ? snapshot.nearbyPlayers.find((player) => player.name === event.recipient)
@@ -262,18 +279,7 @@ export class CompanionDialogue {
         const urgent = event.priority >= 2;
         const reaction = event.reaction === true;
         const casual = !urgent && !operational && !reaction;
-        const fraction = this._claudeBudget?.speechFraction ?? 1;
-        if (casual && !fraction) return;
-        const quietInterval = this.config.priority_min_interval_ms ?? 15000;
-        const minInterval = urgent ? quietInterval : this.config.min_interval_ms / (casual ? fraction : 1);
         const cooldownKey = event.cooldownKey ?? event.id;
-        // The action owns the timing of its immediate response.
-        if (!reaction) {
-            const lastConversationAt = Math.max(this.lastChatAt, this.lastPlayerChatAt, this._lastReplyAt);
-            if (now - lastConversationAt < (operational ? minInterval : quietInterval)) return;
-            if (!operational && now - this._lastCommentaryAt < minInterval) return;
-            if (now - (this.lastEventAt[cooldownKey] || 0) < this.config.event_cooldown_ms) return;
-        }
 
         const isStuckEvent = event.id === 'stuck';
         const language = this.agent.language || 'ja';
@@ -307,15 +313,15 @@ export class CompanionDialogue {
             if (event.supplyCategories) this.supplyRequestTracker.markDelivered();
             if (isStuckEvent && this.agent.companion?.ctx) this.agent.companion.ctx.stuckChat = null;
         };
-        const useClaude = this._canGenerate(now) && this._canSendChat();
-        if (useClaude && (this._claudeRequest
-            || (!reaction && now - this._lastCommentaryAttemptAt < minInterval))) return;
-        if (!operational) event.handled = true;
-        if (casual && Math.random() > (event.chance ?? this.config.spontaneous_chance)) return;
+        if (casual && Math.random() > (event.chance ?? this.config.spontaneous_chance)) {
+            event.handled = true;
+            return;
+        }
         if (useClaude) {
-            this._lastCommentaryAttemptAt = now;
+            event.speechPending = true;
             const { lastChatAt, lastPlayerChatAt, _lastReplyAt } = this;
-            // A slow reply must not hold the bot's movement loop or follow a newer message.
+            // Generation never holds movement. A completed action has its own response,
+            // while ambient comments can go stale when a newer conversation begins.
             void this._composeLine({ ...renderSnapshot, observations }, {
                 event: event.id,
                 eventDetail: event.text ?? (operational ? message : undefined),
@@ -325,20 +331,40 @@ export class CompanionDialogue {
                 recipient: recipient.name,
                 recentCommentary: this._recentCommentary
             }, message).then(async (line) => {
-                if (!line) return;
-                if ((casual && !this._claudeBudget.speechFraction) || !this._canSendChat() || this.lastChatAt !== lastChatAt
-                    || this.lastPlayerChatAt !== lastPlayerChatAt || this._lastReplyAt !== _lastReplyAt) return;
+                if ((casual && !this._claudeBudget.speechFraction) || !this._canSendChat()) return;
+                if (!reaction && (this.lastChatAt !== lastChatAt
+                    || this.lastPlayerChatAt !== lastPlayerChatAt || this._lastReplyAt !== _lastReplyAt)) return;
                 const nearby = this.agent.companion?.ctx?.worldState?.nearbyPlayers;
                 if (!nearby?.some((player) => player.name === recipient.name)) return;
                 const observedRain = this._localRain();
-                const currentRain = observedRain === undefined ? snapshot.isRaining : observedRain;
-                if ((event.id === 'rain_started' && currentRain !== true)
-                    || (event.id === 'rain_stopped' && currentRain !== false)) return;
+                const latest = this._prev || snapshot;
+                if (!this._isCurrentObservation(event, observedRain === undefined
+                    ? latest : { ...latest, isRaining: observedRain })) return;
+                if (!reaction) this._lastCommentaryAttemptAt = now;
+                if (reaction) {
+                    event.handled = true;
+                } else if (!operational) {
+                    // Claude has already considered this batch, including when it chose silence.
+                    for (const entry of observations) if (!entry.reaction) entry.handled = true;
+                }
                 await deliver(line);
-            }).catch(() => console.warn('[companion] failed to send Claude commentary'));
+            }).catch(() => console.warn('[companion] failed to send Claude commentary')).finally(() => {
+                event.speechPending = false;
+            });
             return;
         }
+        if (!operational) event.handled = true;
         await deliver(message);
+    }
+
+    _isCurrentObservation(event, snapshot) {
+        switch (event.id) {
+        case 'rain_started': return snapshot.isRaining === true;
+        case 'rain_stopped': return snapshot.isRaining === false;
+        case 'night': return snapshot.isNight === true;
+        case 'day': return snapshot.isNight === false;
+        default: return true;
+        }
     }
 
     _dialogueConfig() {
