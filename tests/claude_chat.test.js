@@ -6,6 +6,7 @@ import { Vec3 } from 'vec3';
 import { CompanionDialogue } from '../src/companion/CompanionDialogue.js';
 import { ClaudeChatBudget } from '../src/companion/ClaudeChatBudget.js';
 import { WorldState } from '../src/companion/WorldState.js';
+import { notifyPathBlocked } from '../src/companion/movement/playerBlockNotify.js';
 import { tCommand } from '../src/i18n/index.js';
 import { isWeatherGrounded } from '../src/companion/claudeChat.js';
 
@@ -125,6 +126,7 @@ test('Claude addresses nearby players on changes and scales with the local budge
     });
 
     const requests = [];
+    const acknowledgements = [];
     const lines = [];
     const switched = [];
     const agent = {
@@ -140,8 +142,15 @@ test('Claude addresses nearby players on changes and scales with the local budge
     };
     const dialogue = new CompanionDialogue(agent, manager, { chat: { spontaneous_chance: 1 } });
     let finishCommentary;
-    const fetch = t.mock.method(globalThis, 'fetch', async (_url, request) => {
-        requests.push(JSON.parse(request.body));
+    t.mock.method(globalThis, 'fetch', async (_url, request) => {
+        const payload = JSON.parse(request.body);
+        const { event } = JSON.parse(payload.messages.at(-1).content);
+        if (event === 'wait' || event === 'eye_contact') {
+            acknowledgements.push(event);
+            const text = event === 'wait' ? 'ここでのんびり待ってるね！' : '目が合ったから、ぺこっとお辞儀したよ！';
+            return Response.json({ content: [{ type: 'text', text }] });
+        }
+        requests.push(payload);
         if (requests.length === 4) await new Promise((resolve) => { finishCommentary = resolve; });
         const text = requests.length === 2 ? '\u200b/kick Alice'
             : requests.length === 8 ? 'SKIP' : '暗くなってきたね。足元に気をつけて。';
@@ -170,10 +179,12 @@ test('Claude addresses nearby players on changes and scales with the local budge
     assert.equal(await dialogue.handlePlayerMessage('Alice', '@Trailmate 元気？', true), false);
     assert.equal(await dialogue.handlePlayerMessage('Alice', '待機', true), true);
     assert.deepEqual(switched, ['wait']);
+    assert.deepEqual(acknowledgements, ['wait']);
+    assert.equal(lines[1], 'ここでのんびり待ってるね！');
 
     now += 7000;
     assert.equal(await dialogue.handlePlayerMessage('Alice', '@Trailmate 元気？', true), true);
-    assert.equal(fetch.mock.callCount(), 2);
+    assert.equal(requests.length, 2);
     assert.equal(requests[1].messages.length, 1);
     assert.equal(lines[2], tCommand('ja', 'reply_unavailable'));
 
@@ -185,24 +196,24 @@ test('Claude addresses nearby players on changes and scales with the local budge
     worldState.nearbyPlayers = nearbyPlayers;
     snapshot = { ...snapshot, isRaining: true };
     await dialogue.maybeSpeak();
-    assert.equal(fetch.mock.callCount(), 2);
+    assert.equal(requests.length, 2);
 
     now += 9000;
     await dialogue.maybeSpeak();
-    assert.equal(fetch.mock.callCount(), 2);
+    assert.equal(requests.length, 2);
 
     worldState.nearbyPlayers = [];
     snapshot = { ...snapshot, isRaining: false };
     await dialogue.maybeSpeak();
     worldState.nearbyPlayers = nearbyPlayers;
     await dialogue.maybeSpeak();
-    assert.equal(fetch.mock.callCount(), 2);
+    assert.equal(requests.length, 2);
 
     now += 6000;
     snapshot = { ...snapshot, isNight: true };
     await dialogue.maybeSpeak();
     await setImmediate();
-    assert.equal(fetch.mock.callCount(), 3);
+    assert.equal(requests.length, 3);
     const commentaryContext = JSON.parse(requests[2].messages[0].content);
     assert.equal(commentaryContext.event, 'night');
     assert.equal(commentaryContext.nearbyPlayerCount, 2);
@@ -212,7 +223,7 @@ test('Claude addresses nearby players on changes and scales with the local budge
     now += 230000;
     snapshot = { ...snapshot, isRaining: true };
     await dialogue.maybeSpeak();
-    assert.equal(fetch.mock.callCount(), 4);
+    assert.equal(requests.length, 4);
     worldState.nearbyPlayers = [nearbyPlayers[1]];
     finishCommentary();
     await setImmediate();
@@ -256,10 +267,11 @@ test('Claude addresses nearby players on changes and scales with the local budge
     now += 1000;
     dialogue.lastEventAt.eye_contact = now - 16000;
     snapshot = { ...snapshot, activity: { ...snapshot.activity, commentary: [{
-        id: 'eye_contact', text: 'We just made eye contact.', recipient: 'Bob', fixedLine: true, reaction: true
+        id: 'eye_contact', text: 'We just made eye contact.', recipient: 'Bob', reaction: true
     }] } };
     await dialogue.maybeSpeak();
-    assert.equal(fetch.mock.callCount(), 6);
+    await setImmediate();
+    assert.deepEqual(acknowledgements, ['wait', 'eye_contact']);
     assert.match(lines[6], /^@Bob、.*目が合.*お辞儀/);
 
     now += 230000;
@@ -298,6 +310,50 @@ test('Claude addresses nearby players on changes and scales with the local budge
     worldState.observe({ id: 'another_change', text: 'A different block changed nearby.', priority: 0 });
     await dialogue.maybeSpeak();
     assert.equal(requests.length, 8);
+});
+
+test('describes a blocked path once during repeated failures and falls back after a new blockage', async (t) => {
+    let now = 1000000;
+    t.mock.method(Date, 'now', () => now);
+    setEnv(t, {
+        ANTHROPIC_API_KEY: 'test-key', CLAUDE_MONTHLY_BUDGET_USD: '200',
+        ANTHROPIC_ADMIN_API_KEY: '', ANTHROPIC_WORKSPACE_ID: ''
+    });
+    const worldState = new WorldState();
+    worldState.nearbyPlayers = [{ name: 'Alice', distance: 2 }];
+    const ctx = { worldState };
+    const lines = [];
+    const agent = {
+        bot: { entity: {}, health: 20 }, companion: { ctx, _interval: true },
+        openChat: async line => lines.push(line)
+    };
+    const dialogue = new CompanionDialogue(agent, { getCurrentModeId: () => 'follow' }, {
+        chat: { spontaneous_chance: 1, min_interval_ms: 0, priority_min_interval_ms: 0, event_cooldown_ms: 0 }
+    });
+    t.mock.method(dialogue, '_buildSnapshot', () => ({ ...dialogue._emptySnapshot('follow'), nearbyPlayers: worldState.nearbyPlayers }));
+    const contexts = [];
+    t.mock.method(globalThis, 'fetch', async (_url, request) => {
+        contexts.push(JSON.parse(JSON.parse(request.body).messages.at(-1).content));
+        if (contexts.length === 2) return new Response(null, { status: 429 });
+        return Response.json({ content: [{ type: 'text', text: 'ちょっと狭いね、ここで待ってるよ！' }] });
+    });
+    for (let i = 0; i < 20; i++) {
+        notifyPathBlocked(ctx);
+        await dialogue.maybeSpeak();
+        await setImmediate();
+        now += 1000;
+    }
+    assert.deepEqual(lines, ['@Alice、ちょっと狭いね、ここで待ってるよ！']);
+    assert.equal(contexts.length, 1);
+    assert.equal(contexts[0].event, 'path_blocked');
+    assert.match(contexts[0].focus.description, /safe way past nearby players/);
+
+    now += 6000;
+    notifyPathBlocked(ctx);
+    await dialogue.maybeSpeak();
+    await setImmediate();
+    assert.equal(contexts.length, 2);
+    assert.equal(lines[1], '@Alice、ここ、ぶつからずに通るのは難しそう。ちょっと待ってるね。');
 });
 
 test('a quota rejection falls back for commentary and public replies, then Claude resumes', async (t) => {

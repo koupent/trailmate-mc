@@ -56,7 +56,7 @@ const authMethodSelect = document.getElementById('authMethod');
 const spawnBtn = document.getElementById('spawn-btn');
 const despawnBtn = document.getElementById('despawn-btn');
 const spawnMsg = document.getElementById('spawn-msg');
-const spawnBlockReason = document.getElementById('spawn-block-reason');
+const playConnection = document.getElementById('play-connection');
 const spawnDiagnosticsEl = document.getElementById('spawn-diagnostics');
 const statusPanel = document.getElementById('status-panel');
 const inventoryPanel = document.getElementById('inventory-panel');
@@ -188,39 +188,13 @@ function renderSetup(setup, settings = {}) {
   );
   stepAccount.classList.toggle('is-skipped', settings.authMethod === 'NONE');
 
-  syncSpawnControls(setup);
+  syncSpawnControls();
 }
 
 /** セットアップ完了かつ診断 OK のときだけスポーン可能。 */
-function syncSpawnControls(setup = null) {
-  const setupReady = readyToSpawn;
-  const canSpawn = setupReady && spawnReady && !companionSpawned && !companionSpawning;
-  spawnBtn.disabled = !canSpawn;
+function syncSpawnControls() {
+  spawnBtn.disabled = !readyToSpawn || !spawnReady || companionSpawned || companionSpawning;
   despawnBtn.disabled = !backendReady || !companionSpawned || companionSpawning;
-
-  if (!setupReady) {
-    const blockers = setup?.blockers || [];
-    spawnBlockReason.classList.remove('hidden');
-    syncText(
-      spawnBlockReason,
-      blockers.length > 0
-        ? `スポーンできません: ${blockers.join(' / ')}`
-        : 'スポーンできません: セットアップが未完了です'
-    );
-    return;
-  }
-
-  if (!backendReady || !spawnReady) {
-    spawnBlockReason.classList.remove('hidden');
-    syncText(
-      spawnBlockReason,
-      lastBackendMessage || 'スポーンの前提条件がまだ揃っていません。下の診断を確認してください。'
-    );
-    return;
-  }
-
-  spawnBlockReason.classList.add('hidden');
-  syncText(spawnBlockReason, '');
 }
 
 function renderSpawnDiagnostics(diagnostics) {
@@ -416,9 +390,10 @@ function renderStatus(status) {
   }
   syncSpawnControls();
   syncPlayChat(spawned ? status : null);
-  const connection = document.getElementById('play-connection');
-  syncText(connection, spawned ? 'ワールドに接続中' : '未接続');
-  syncProp(connection, 'className', spawned ? 'pill on' : 'pill off');
+  const connectionLabel = spawned ? '接続中' : companionSpawning ? '接続処理中'
+    : !status || status.backendReady === false ? '準備中' : '未スポーン';
+  syncText(playConnection, connectionLabel);
+  syncProp(playConnection, 'className', spawned ? 'pill on' : companionSpawning ? 'pill busy' : 'pill off');
 
   if (!status || status.backendReady === false) {
     const message =
@@ -429,7 +404,6 @@ function renderStatus(status) {
     syncHtml(
       statusPanel,
       `
-      <div class="status-line"><span class="pill off">準備中</span></div>
       <div class="muted">${escapeHtml(message)}</div>
     `
     );
@@ -458,8 +432,8 @@ function renderStatus(status) {
     syncHtml(
       statusPanel,
       `
-      <div class="status-line"><span class="pill off">未スポーン</span> ${escapeHtml(status.botName || '')}</div>
-      <div class="muted">${status.spawning ? '接続処理中…' : 'ワールドには出ていません。時間は進みません。'}</div>
+      ${status.botName ? `<div>${escapeHtml(status.botName)}</div>` : ''}
+      ${status.spawning ? '' : '<div class="muted">ワールドには出ていません。時間は進みません。</div>'}
       <div class="muted">実行中のBot版: ${escapeHtml(status.version || '取得できません（旧版の可能性があります）')}</div>
       ${preparingNote}
       ${err}
@@ -476,7 +450,6 @@ function renderStatus(status) {
   syncHtml(
     statusPanel,
     `
-    <h2>相棒の状態</h2>
     <dl class="play-stats">
       <div><dt>現在の状態</dt><dd>${escapeHtml(stateLabel(status.activeFsm))}</dd></div>
       <div><dt>動作モード</dt><dd>${escapeHtml(stateLabel(status.preferredMode))}</dd></div>

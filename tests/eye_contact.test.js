@@ -160,7 +160,6 @@ describe('EyeContactReaction', () => {
         assert.ok(activity.actions.includes('目が合った相手にお辞儀をする'));
         assert.equal(activity.commentary[0]?.id, 'eye_contact');
         assert.deepEqual(activity.commentary[0].actionFacts.map(({ actor }) => actor), ['player', 'companion']);
-        assert.equal(activity.commentary[0].fixedLine, true);
         assert.equal(activity.commentary[0].reaction, true);
         await normal.runTick();
         assert.deepEqual(describeTreeActivity(normal.tree).commentary, []);

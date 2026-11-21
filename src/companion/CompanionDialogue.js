@@ -58,7 +58,7 @@ export class CompanionDialogue {
         this.config = { ...DEFAULT_CHAT_CONFIG, ...(companionConfig.chat || {}) };
         this._claudeKey = process.env.ANTHROPIC_API_KEY?.trim();
         this._claudeBudget = this._claudeKey ? new ClaudeChatBudget() : null;
-        this._claudeBusy = false;
+        this._claudeRequest = null;
         this._claudeRetryAt = 0;
         this._lastReplyAt = 0;
         this._lastCommentaryAt = -Infinity;
@@ -160,22 +160,21 @@ export class CompanionDialogue {
     async _replyToPlayer(username, message, now) {
         this._claudeBudget?.refresh(now);
         const fraction = this._claudeBudget?.speechFraction ?? 1;
-        if (!fraction || !this._canSendChat() || this._claudeBusy) return false;
+        if (!fraction || !this._canSendChat()) return false;
         if (now - this._lastReplyAt < this.config.player_reply_cooldown_ms / fraction) return false;
         this._lastReplyAt = now;
         const { lastPlayerChatAt } = this;
         const history = fraction >= 0.25 && this._conversation?.username === username
             ? this._conversation.history : [];
-        const line = this._claudeBudget?.fraction && now >= this._claudeRetryAt
-            ? await this._askClaude(this._buildSnapshot(), { history, message, recipient: username })
-            : '';
+        const fallback = tCommand(this.agent.language || 'ja', 'reply_unavailable');
+        const reply = await this._composeLine(this._buildSnapshot(), {
+            history, message, recipient: username, required: true
+        }, fallback);
         if (this._claudeBudget?.speechFraction === 0 || this.lastPlayerChatAt !== lastPlayerChatAt
-            || !this._canSendChat()) return false;
+            || !this._canSendChat() || this._lastReplyAt !== now) return false;
 
-        const language = this.agent.language || 'ja';
-        const reply = this._claudeBudget?.fraction && isWeatherGrounded(line, language, this._localRain()) ? line : '';
-        await this._say(reply || tCommand(language, 'reply_unavailable'));
-        if (reply) {
+        await this._say(reply);
+        if (reply !== fallback) {
             this._conversation = {
                 username,
                 history: [...history.slice(-2), { role: 'user', content: message }, { role: 'assistant', content: reply }]
@@ -194,19 +193,35 @@ export class CompanionDialogue {
         return this.agent.companion?.ctx?.worldState?.getLocalRain?.(this.agent.bot);
     }
 
-    async _askClaude(snapshot, input) {
-        if (this._claudeBusy || Date.now() < this._claudeRetryAt) return '';
-        this._claudeBusy = true;
-        try {
-            const maxTokens = Math.round(60 + 60 * this._claudeBudget.fraction);
-            return await generateClaudeLine(this._claudeKey, this.agent.language || 'ja', snapshot, { ...input, maxTokens });
-        } catch (error) {
-            this._claudeRetryAt = Date.now() + 60000;
-            console.warn(`[companion] Claude chat unavailable (${error.name === 'Error' && /^HTTP \d{3}$/.test(error.message) ? error.message : 'request failed'})`);
-            return '';
-        } finally {
-            this._claudeBusy = false;
+    _canGenerate(now) {
+        return Boolean(this._claudeBudget?.fraction && now >= this._claudeRetryAt);
+    }
+
+    async _composeLine(snapshot, input, fallback) {
+        const now = Date.now();
+        this._claudeBudget?.refresh(now);
+        if (this._canGenerate(now) && input.required) {
+            while (this._claudeRequest) await this._claudeRequest;
         }
+        if (!this._canGenerate(Date.now()) || this._claudeRequest || !this.enabled || this.agent.shut_up) return fallback;
+
+        snapshot ??= this._buildSnapshot();
+        const language = this.agent.language || 'ja';
+        const maxTokens = Math.round(60 + 60 * this._claudeBudget.fraction);
+        this._claudeRequest = generateClaudeLine(this._claudeKey, language, snapshot, { ...input, maxTokens })
+            .catch((error) => {
+                this._claudeRetryAt = Date.now() + 60000;
+                console.warn(`[companion] Claude chat unavailable (${error.name === 'Error' && /^HTTP \d{3}$/.test(error.message) ? error.message : 'request failed'})`);
+                return '';
+            }).finally(() => {
+                this._claudeRequest = null;
+            });
+        const line = await this._claudeRequest;
+        if (line === null) return '';
+        const rain = this._localRain();
+        return this._claudeBudget.fraction && line
+            && isWeatherGrounded(line, language, rain === undefined ? snapshot.isRaining : rain, input.event)
+            ? line : fallback;
     }
 
     async maybeSpeak() {
@@ -292,36 +307,34 @@ export class CompanionDialogue {
             if (event.supplyCategories) this.supplyRequestTracker.markDelivered();
             if (isStuckEvent && this.agent.companion?.ctx) this.agent.companion.ctx.stuckChat = null;
         };
-        const useClaude = this._claudeBudget?.fraction && !operational && !event.fixedLine
-            && this._canSendChat() && now >= this._claudeRetryAt;
-        if (useClaude && this._claudeBusy && !urgent) return;
-        if (useClaude && !this._claudeBusy && now - this._lastCommentaryAttemptAt < minInterval) return;
+        const useClaude = this._canGenerate(now) && this._canSendChat();
+        if (useClaude && (this._claudeRequest
+            || (!reaction && now - this._lastCommentaryAttemptAt < minInterval))) return;
         if (!operational) event.handled = true;
         if (casual && Math.random() > (event.chance ?? this.config.spontaneous_chance)) return;
-        if (useClaude && !this._claudeBusy) {
+        if (useClaude) {
             this._lastCommentaryAttemptAt = now;
-            const { lastChatAt, lastPlayerChatAt } = this;
+            const { lastChatAt, lastPlayerChatAt, _lastReplyAt } = this;
             // A slow reply must not hold the bot's movement loop or follow a newer message.
-            void this._askClaude({ ...snapshot, observations }, {
+            void this._composeLine({ ...renderSnapshot, observations }, {
                 event: event.id,
-                eventDetail: event.text,
+                eventDetail: event.text ?? (operational ? message : undefined),
+                required: operational || reaction,
                 actionFacts: event.actionFacts,
                 actorIsAddressee: event.recipient === recipient.name || undefined,
                 recipient: recipient.name,
                 recentCommentary: this._recentCommentary
-            }).then(async (line) => {
-                if (line === null) return;
+            }, message).then(async (line) => {
+                if (!line) return;
                 if ((casual && !this._claudeBudget.speechFraction) || !this._canSendChat() || this.lastChatAt !== lastChatAt
-                    || this.lastPlayerChatAt !== lastPlayerChatAt) return;
+                    || this.lastPlayerChatAt !== lastPlayerChatAt || this._lastReplyAt !== _lastReplyAt) return;
                 const nearby = this.agent.companion?.ctx?.worldState?.nearbyPlayers;
                 if (!nearby?.some((player) => player.name === recipient.name)) return;
                 const observedRain = this._localRain();
                 const currentRain = observedRain === undefined ? snapshot.isRaining : observedRain;
                 if ((event.id === 'rain_started' && currentRain !== true)
                     || (event.id === 'rain_stopped' && currentRain !== false)) return;
-                const reply = this._claudeBudget.fraction && isWeatherGrounded(line, language, currentRain, event.id)
-                    ? line : '';
-                await deliver(reply || message);
+                await deliver(line);
             }).catch(() => console.warn('[companion] failed to send Claude commentary'));
             return;
         }
@@ -346,8 +359,6 @@ export class CompanionDialogue {
         }
 
         const ctx = this.agent.companion?.ctx;
-        const language = this.agent.language || 'ja';
-
         if (command.mode === 'follow' && command.owner && ctx) {
             lockOwner(ctx, command.owner);
         }
@@ -356,16 +367,11 @@ export class CompanionDialogue {
             await this.manager.switchMode(command.mode);
         }
 
-        let message = command.message;
         if (command.mode === 'wait') {
-            message = tCommand(language, 'wait');
+            await this._speakOutcome('wait');
         } else if (command.mode === 'follow') {
             const snap = this._buildSnapshot();
-            message = tCommand(language, deriveFollowReplyKey(snap.followPhase));
-        }
-
-        if (message && !this.agent.shut_up) {
-            await this._say(message);
+            await this._speakOutcome(deriveFollowReplyKey(snap.followPhase));
         }
     }
 
@@ -373,25 +379,24 @@ export class CompanionDialogue {
      * @param {{ action: string, owner: string|null, message: string, replies?: object }} command
      */
     async _applyAction(command) {
-        const language = this.agent.language || 'ja';
         if (command.action === 'set_spawnpoint') {
-            await this._applySetSpawnpoint(command, language);
+            await this._applySetSpawnpoint();
             return;
         }
         if (command.action !== 'give_all_items') return;
 
         const ctx = this.agent.companion?.ctx;
         if (!ctx || !command.owner || !isPlayerEligible(ctx, command.owner)) {
-            await this._say(tCommand(language, 'give_all_unavailable'));
+            await this._speakOutcome('give_all_unavailable');
             return;
         }
         if (ctx.deathRecovery?.active || shouldDeferToCombat(ctx)) {
-            await this._say(tCommand(language, 'give_all_unavailable'));
+            await this._speakOutcome('give_all_unavailable');
             return;
         }
 
         if (Object.keys(countAllItems(ctx.bot)).length === 0) {
-            await this._say(tCommand(language, 'give_all_empty'));
+            await this._speakOutcome('give_all_empty');
             return;
         }
 
@@ -400,18 +405,13 @@ export class CompanionDialogue {
         this.agent.companion?.autoEquip?.pause?.();
         ctx.movement?.stop?.();
 
+        const acknowledgement = this._speakOutcome('give_all_ok')
+            .catch(() => console.warn('[companion] item transfer acknowledgement failed'));
+        let result;
         try {
-            await this._say(tCommand(language, 'give_all_ok'));
-            const result = await giveAllItemsToPlayer(ctx, command.owner, {
+            result = await giveAllItemsToPlayer(ctx, command.owner, {
                 shouldAbort: () => ctx.deathRecovery?.active || shouldDeferToCombat(ctx)
             });
-            if (result === 'empty') {
-                await this._say(tCommand(language, 'give_all_empty'));
-            } else if (result === 'unavailable' || result === 'deferred') {
-                await this._say(tCommand(language, 'give_all_unavailable'));
-            } else if (result === 'failed') {
-                await this._say(tCommand(language, 'give_all_failed'));
-            }
         } finally {
             // Whatever the sweep handed over is expected, not a shortage to report.
             if (this.agent.bot?.inventory) {
@@ -424,17 +424,21 @@ export class CompanionDialogue {
             this.manager.resume();
             this._actionBusy = false;
         }
+        await acknowledgement;
+        if (result === 'empty') {
+            await this._speakOutcome('give_all_empty');
+        } else if (result === 'unavailable' || result === 'deferred') {
+            await this._speakOutcome('give_all_unavailable');
+        } else if (result === 'failed') {
+            await this._speakOutcome('give_all_failed');
+        }
     }
 
-    /**
-     * @param {{ message: string }} command
-     * @param {string} language
-     */
-    async _applySetSpawnpoint(command, language) {
+    async _applySetSpawnpoint() {
         const bot = this.agent.bot;
         const pos = bot?.entity?.position;
         if (!pos || typeof pos.x !== 'number') {
-            await this._say(tCommand(language, 'spawnpoint_failed'));
+            await this._speakOutcome('spawnpoint_failed');
             return;
         }
 
@@ -445,11 +449,12 @@ export class CompanionDialogue {
         try {
             bot.chat(cmd);
             console.log(`[companion] set spawnpoint: ${cmd}`);
-            await this._say(tCommand(language, 'spawnpoint_ok'));
         } catch (err) {
             console.warn('[companion] spawnpoint command failed:', err.message || err);
-            await this._say(tCommand(language, 'spawnpoint_failed'));
+            await this._speakOutcome('spawnpoint_failed');
+            return;
         }
+        await this._speakOutcome('spawnpoint_ok');
     }
 
     /**
@@ -469,10 +474,17 @@ export class CompanionDialogue {
         const lastAt = this._lastNoticeAt[key];
         if (lastAt != null && now - lastAt < cooldownMs) return false;
 
-        const message = tCommand(this.agent.language || 'ja', key, vars);
-        if (!message || message === key) return false;
         this._lastNoticeAt[key] = now;
-        await this._say(message);
+        return this._speakOutcome(key, vars);
+    }
+
+    async _speakOutcome(key, vars = {}) {
+        if (!this.enabled || this.agent.shut_up) return false;
+        const fallback = tCommand(this.agent.language || 'ja', key, vars);
+        if (!fallback || fallback === key) return false;
+        const line = await this._composeLine(null, { event: key, eventDetail: fallback, required: true }, fallback);
+        if (!this.enabled || this.agent.shut_up || !line) return false;
+        await this._say(line);
         return true;
     }
 

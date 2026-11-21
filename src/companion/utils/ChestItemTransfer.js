@@ -341,7 +341,7 @@ export class ChestItemTransfer {
         resume.nextAttemptAt = now + this.config.resume_retry_ms;
         this._resume = null;
         this._queuedPlacements = (resume.queued || []).slice();
-        await this._notify('chest_deposit_resume');
+        void this._notify('chest_deposit_resume');
         return this._runDepositQueue(ctx, {
             placedBlock: { name: block.name, position: resume.position },
             approach: true
@@ -512,13 +512,13 @@ export class ChestItemTransfer {
         }
 
         if (this._resume) {
-            await this._notify('chest_deposit_later');
+            void this._notify('chest_deposit_later');
         } else if (summary.chestFull && remaining > 0) {
-            await this._notify('chest_full');
+            void this._notify('chest_full');
         } else if (remaining > 0 && summary.deposited > 0) {
-            await this._notify('chest_deposit_partial');
+            void this._notify('chest_deposit_partial');
         } else if (remaining === 0 && summary.deposited > 0) {
-            await this._notify('chest_deposit_done');
+            void this._notify('chest_deposit_done');
         }
 
         if (summary.deposited > 0) return remaining === 0 ? 'ok' : 'partial';

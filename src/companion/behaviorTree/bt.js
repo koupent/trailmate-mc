@@ -80,7 +80,7 @@ export function condition(label, fn) {
     return new BtNode('condition', label, [], fn);
 }
 
-/** `true` or `{ commentary: { id, text, actionFacts?, fixedLine?, reaction?, recipient?, chance? } }` reports a successful action. */
+/** `true` or `{ commentary: { id, text, actionFacts?, reaction?, recipient?, chance? } }` reports a successful action. */
 export function action(label, fn) {
     return new BtNode('action', label, [], fn);
 }

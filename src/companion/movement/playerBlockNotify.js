@@ -1,30 +1,17 @@
-import { tMovement } from '../../i18n/index.js';
-
-const DEFAULT_COOLDOWN_MS = 5000;
+const PATH_BLOCK_REARM_MS = 5000;
 
 /**
- * Chat once when the companion cannot path past a player without pushing them.
+ * Report one observed blockage until the path has stopped being blocked.
  * @param {import('../CompanionContext.js').CompanionContext} ctx
- * @param {{ cooldownMs?: number }} [opts]
  */
-export function notifyPathBlocked(ctx, opts = {}) {
-    const cooldownMs = opts.cooldownMs ?? DEFAULT_COOLDOWN_MS;
+export function notifyPathBlocked(ctx) {
     const now = Date.now();
-    if (!ctx.pathBlockNotify) {
-        ctx.pathBlockNotify = { lastAt: 0 };
-    }
-    if (now - ctx.pathBlockNotify.lastAt < cooldownMs) return false;
-
-    const language = ctx.agent?.language || 'ja';
-    const message = tMovement(language, 'path_blocked');
-    const bot = ctx.bot;
-    if (!bot || typeof bot.chat !== 'function') return false;
-
-    try {
-        bot.chat(message);
-    } catch {
-        return false;
-    }
-    ctx.pathBlockNotify.lastAt = now;
-    return true;
+    const previous = ctx.lastPathBlockedAt;
+    ctx.lastPathBlockedAt = now;
+    if (previous != null && now - previous < PATH_BLOCK_REARM_MS) return;
+    ctx.worldState?.observe?.({
+        id: 'path_blocked',
+        priority: 1,
+        text: 'I stopped because I could not find a safe way past nearby players without bumping into them.'
+    }, now);
 }
