@@ -520,7 +520,7 @@ describe('OwnGraveInterrupt gating', () => {
 
         await interrupt.run(ctx);
         assert.equal(chats.length, 1);
-        assert.equal(chats[0], '自分の墓を見つけたよ (2, 64, 0)');
+        assert.equal(chats[0], '自分のお墓を見つけたよ！ (2, 64, 0)。');
         assert.equal(ctx.bot.controls.sneak, false);
         assert.equal(ctx.deathRecovery.phase, 'items');
         assert.deepEqual(ctx.deathRecovery.collectionOrigin, { x: 2, y: 64, z: 0 });

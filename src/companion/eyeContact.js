@@ -9,7 +9,7 @@ export const DEFAULT_EYE_CONTACT_CONFIG = {
     max_distance: 8,
     dwell_ms: 500,
     cooldown_ms: 15000,
-    chat_chance: 0.3
+    chat_chance: 1
 };
 
 /**
@@ -73,8 +73,7 @@ export class EyeContactReaction {
                 this._beginRest(now, owner, ctx.bot.entity);
                 return;
             }
-            await this._runReactionStep(ctx, owner, now);
-            return;
+            return this._runReactionStep(ctx, owner, now);
         }
 
         const looking = Boolean(
@@ -102,7 +101,15 @@ export class EyeContactReaction {
 
         this.state = 'reacting';
         this.reactionStep = 0;
-        await this._runReactionStep(ctx, owner, now);
+        return this._runReactionStep(ctx, owner, now);
+    }
+
+    /** Release a bow before another FSM state takes control. */
+    cancel(ctx) {
+        this.watchingSince = null;
+        if (this.state !== 'reacting') return;
+        this._setSneaking(ctx.bot, false);
+        this._beginRest(this.now(), ctx.ownerEntity, ctx.bot.entity);
     }
 
     _canReact(ctx, owner) {
@@ -131,15 +138,25 @@ export class EyeContactReaction {
         }
 
         if (this.reactionStep === 3) {
-            const dialogue = this.dialogue || ctx.agent?.companion?.dialogue;
-            if (this.random() < this.config.chat_chance) {
-                await dialogue?.speakEyeContact?.();
-            }
             this._beginRest(now, owner, ctx.bot.entity);
-            return;
+            if (this.random() < this.config.chat_chance) {
+                return { commentary: {
+                    id: 'eye_contact',
+                    text: 'We just made eye contact.',
+                    actionFacts: [
+                        { actor: 'player', action: 'looked at the companion' },
+                        { actor: 'companion', action: 'bowed twice in response' }
+                    ],
+                    fixedLine: true,
+                    reaction: true,
+                    recipient: ctx.ownerName
+                } };
+            }
+            return true;
         }
 
         this.reactionStep++;
+        return true;
     }
 
     _setSneaking(bot, enabled) {

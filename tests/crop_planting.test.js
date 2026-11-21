@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
 import { FollowMode } from '../src/companion/modes/FollowMode.js';
 import { CropPlanter, createPlantingTree } from '../src/companion/planting/CropPlanter.js';
-import { runTree } from '../src/companion/behaviorTree/bt.js';
+import { describeTreeActivity, runTree } from '../src/companion/behaviorTree/bt.js';
 
 /**
  * Follow mode with planting, as the state machine runs them: the planting
@@ -18,6 +18,7 @@ function followWithPlanting() {
             if (planter.findWork(ctx)) {
                 follow.trackOwner(ctx);
                 await runTree(planting, ctx);
+                return describeTreeActivity(planting).commentary;
             } else {
                 await follow.tick(ctx);
             }
@@ -179,10 +180,13 @@ describe('follow crop planting', () => {
             farmland: [new Vec3(3, 63, 0), new Vec3(1, 63, 0), new Vec3(2, 63, 0)]
         });
 
-        await followWithPlanting().tick(world.ctx);
+        const commentary = await followWithPlanting().tick(world.ctx);
 
         assert.equal(world.planted.length, 1);
         assert.equal(world.item.count, 3);
+        assert.deepEqual(commentary.map(({ id, actionFacts }) => ({ id, actionFacts })), [{
+            id: 'crop_planted', actionFacts: [{ actor: 'companion', action: 'planted a crop' }]
+        }]);
         assert.equal(world.planted[0].reference.position.x, 1);
         assert.deepEqual(world.planted[0].face, new Vec3(0, 1, 0));
     });
@@ -369,7 +373,7 @@ describe('follow crop planting', () => {
         });
         const mode = followWithPlanting();
 
-        await assert.doesNotReject(() => mode.tick(world.ctx));
+        assert.deepEqual(await mode.tick(world.ctx), []);
         await mode.tick(world.ctx);
 
         assert.ok(world.calls.some((call) => call.type === 'followEntity'));

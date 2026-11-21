@@ -16,8 +16,6 @@ export type ChatConfig = {
   event_cooldown_ms: number;
   player_reply_cooldown_ms: number;
   spontaneous_chance: number;
-  idle_chance: number;
-  combat_commentary_chance: number;
   low_health: number;
   stuck_seconds: number;
   hostile_range: number;
@@ -210,7 +208,7 @@ export const DEFAULT_COMPANION: CompanionConfig = {
     max_distance: 8,
     dwell_ms: 500,
     cooldown_ms: 15000,
-    chat_chance: 0.3
+    chat_chance: 1
   },
   death_return: {
     enabled: true,
@@ -275,8 +273,6 @@ export const DEFAULT_COMPANION: CompanionConfig = {
     event_cooldown_ms: 120000,
     player_reply_cooldown_ms: 1500,
     spontaneous_chance: 0.85,
-    idle_chance: 0.55,
-    combat_commentary_chance: 0.6,
     low_health: 8,
     stuck_seconds: 5,
     hostile_range: 16,

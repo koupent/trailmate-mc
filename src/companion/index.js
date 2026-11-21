@@ -13,17 +13,11 @@ import {
     createChestTransferConfig
 } from './utils/ChestItemTransfer.js';
 import { CompanionDialogue, DEFAULT_CHAT_CONFIG } from './CompanionDialogue.js';
-import { applyJumpHitboxFix } from './hitboxFix.js';
-import {
-    beginDeathReturnAfterSpawn,
-    captureDeathState
-} from './deathRecovery.js';
 import {
     DEFAULT_TORCH_LIGHT_THRESHOLD,
     enableCompanionBlockProtection
 } from './blockProtection.js';
 import { attachOwnerWorkTracker } from './ownerWorkTracker.js';
-import { tCommand } from '../i18n/index.js';
 import { attachOwnerThreatTracker } from './ownerThreatTracker.js';
 import {
     DEFAULT_EYE_CONTACT_CONFIG,
@@ -116,7 +110,7 @@ export function createCompanionModes() {
  * @param {import('../host/BotHost.ts').TrailmateHost} agent
  * @param {object} companionConfig
  */
-export async function startCompanion(agent, companionConfig = {}) {
+export async function startCompanion(agent, companionConfig = {}, worldState = new WorldState()) {
     const config = {
         ...DEFAULT_CONFIG,
         ...companionConfig,
@@ -151,8 +145,8 @@ export async function startCompanion(agent, companionConfig = {}) {
         torchLightThreshold: config.torch_light_threshold
     });
 
-    const worldState = new WorldState();
     const ctx = new CompanionContext(agent, worldState, config);
+    worldState.observeActivities(ctx);
     attachOwnerWorkTracker(ctx);
     attachOwnerThreatTracker(ctx);
     // 通常ドロップは先に回収し、Recoveryの墓フェーズでは墓処理へ譲る。
@@ -183,103 +177,20 @@ export async function startCompanion(agent, companionConfig = {}) {
         autoEquip,
         dialogue,
         eyeContact,
-        itemTransfer,
-        _loopBusy: false
+        itemTransfer
     };
     itemTransfer.attach(ctx);
 
-    await manager.start();
-    await applyJumpHitboxFix(agent.bot);
-    wireDeathRecovery(agent, ctx, config);
+    const runLifecycle = (event) => manager.handleLifecycle(event).catch((err) => {
+        console.error(`[companion] ${event} handler error:`, err);
+    });
+    ctx.bot.on('death', () => { void runLifecycle('death'); });
+    ctx.bot.on('spawn', () => { void runLifecycle('respawn'); });
+    await manager.handleLifecycle('spawn');
 
     console.log('[companion] started (fsm: follow/wait/combat/duty + auto-equip + chest-share + dialogue)');
 
-    const loop = async () => {
-        if (!agent.bot || agent.bot.entity == null) return;
-
-        if (agent.companion._loopBusy) return;
-        agent.companion._loopBusy = true;
-        try {
-            // Single orchestrator: NestedStateMachine owns follow/wait/combat/duty.
-            await manager.tick();
-            // Follow may stop pathfinder and clear control states during its tick.
-            // Apply the bow afterward so each sneak stage survives until the next tick.
-            await eyeContact.tick(ctx);
-            await autoEquip.maybeRun(ctx);
-            try {
-                // Pick an interrupted chest deposit back up once control returns.
-                await itemTransfer.maybeResume(ctx);
-            } catch (err) {
-                console.error('[companion] chest item-share resume error:', err);
-            }
-            try {
-                await dialogue.maybeSpeak();
-            } catch (err) {
-                console.error('[companion] dialogue loop error:', err);
-            }
-        } finally {
-            agent.companion._loopBusy = false;
-        }
-    };
-
     agent.companion._interval = setInterval(() => {
-        loop().catch((err) => console.error('[companion] loop error:', err));
+        if (agent.bot?.entity) void manager.tick();
     }, config.tick_ms);
-
-    await autoEquip.equipBest();
-}
-
-/**
- * Record death coordinates and resume return-to-death after respawn.
- * startCompanion runs after the first spawn, so later `spawn` events are respawns.
- * @param {import('../host/BotHost.ts').TrailmateHost} agent
- * @param {import('./CompanionContext.js').CompanionContext} ctx
- * @param {object} config
- */
-function wireDeathRecovery(agent, ctx, config) {
-    const bot = agent.bot;
-
-    bot.on('death', () => {
-        try {
-            captureDeathState(ctx);
-            const pos = ctx.deathRecovery.deathPos;
-            console.log(
-                '[companion] death recorded',
-                pos
-                    ? `at ${Math.floor(pos.x)},${Math.floor(pos.y)},${Math.floor(pos.z)}`
-                    : '(no position)'
-            );
-        } catch (err) {
-            console.error('[companion] death handler error:', err);
-        }
-    });
-
-    bot.on('spawn', () => {
-        void (async () => {
-            try {
-                if (ctx.stuck?.reset && bot.entity?.position) {
-                    ctx.stuck.reset(bot.entity.position);
-                }
-                beginDeathReturnAfterSpawn(ctx, config);
-                if (ctx.deathRecovery?.active) {
-                    console.log('[companion] death return started after respawn');
-                    try {
-                        const pos = ctx.deathRecovery.deathPos;
-                        await agent.openChat?.(
-                            tCommand(agent.language || 'ja', 'death_return_start', {
-                                x: Math.floor(pos.x),
-                                y: Math.floor(pos.y),
-                                z: Math.floor(pos.z)
-                            })
-                        );
-                    } catch {
-                        /* ignore */
-                    }
-                }
-                await applyJumpHitboxFix(bot);
-            } catch (err) {
-                console.error('[companion] respawn handler error:', err);
-            }
-        })();
-    });
 }

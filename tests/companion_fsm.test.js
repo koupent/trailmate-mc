@@ -47,6 +47,11 @@ function makeTargets(overrides = {}) {
 }
 
 describe('companion fsm transitions', () => {
+    it('rejects a duty that was not assigned to an FSM state', async () => {
+        const { createRootMachine } = await import('../src/companion/stateMachine/createRootMachine.js');
+        assert.throws(() => createRootMachine({ interrupts: [{ name: 'unregistered' }] }), /No FSM state for interrupt: unregistered/);
+    });
+
     it('shouldEnterCombat when wantsCombat', () => {
         const targets = makeTargets();
         targets.ctx.agent.reflexes.wantsCombat = true;

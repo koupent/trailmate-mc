@@ -1,201 +1,176 @@
 {
   "commands": {
-    "wait": "わかった、ここで待つね",
-    "follow": "ついていくね",
-    "follow_chase": "追いかけるね",
-    "follow_too_far": "遠いよ…近づいてから追従して",
-    "follow_deferred": "終わったらついていくね",
-    "give_all_ok": "全部渡すね",
-    "give_all_empty": "渡すものないよ",
-    "give_all_unavailable": "近くにいないと渡せないよ",
-    "give_all_failed": "渡せなかった…ごめん",
-    "chest_deposit_done": "余ってたぶん、チェストに入れておいたよ",
-    "chest_deposit_partial": "入りきらなかったぶんは持っておくね",
-    "chest_full": "チェストがいっぱいだよ。空けてくれたら残りも入れるね",
-    "chest_deposit_later": "いまは手が離せないや。あとで続きを入れるね",
-    "chest_deposit_resume": "さっきのチェスト、続きを入れるよ",
-    "spawnpoint_ok": "ここを拠点にしたよ",
-    "spawnpoint_failed": "拠点を設定できなかった…ごめん",
-    "owner_locked": "{owner} についていくね",
-    "owner_locked_chase": "{owner}を追いかけるね",
-    "owner_locked_too_far": "{owner}が遠いよ、近づいて",
-    "death_return_start": "死亡地点へ戻るよ ({x}, {y}, {z})",
-    "own_grave_found": "自分の墓を見つけたよ ({x}, {y}, {z})",
-    "boot_ready": "{name} trailmate ready"
+    "wait": "うん、ここでちょこんと待ってるね！",
+    "follow": "よーし、ついてくね！",
+    "follow_chase": "待って、すぐ追いつくよ！",
+    "follow_too_far": "ちょっと遠いみたい。近くでもう一回呼んでね！",
+    "follow_deferred": "これが終わったら、すぐついてくね！",
+    "give_all_ok": "はいっ、持ち物を全部渡すね！",
+    "give_all_empty": "あれれ、今は渡せるものがないよ。",
+    "give_all_unavailable": "もうちょっとこっちに来てくれる？",
+    "give_all_failed": "ごめん、うまく渡せなかったよ。",
+    "chest_deposit_done": "余ったぶん、チェストに入れといたよ！",
+    "chest_deposit_partial": "入りきらなかったぶんは、こっちで持っとくね。",
+    "chest_full": "チェストがぱんぱんだね。空いたら残りも入れるよ！",
+    "chest_deposit_later": "今は手が離せないから、あとで続きを入れるね。",
+    "chest_deposit_resume": "さっきのチェストに残りを入れるね！",
+    "spawnpoint_ok": "よし、ここを拠点にしたよ！",
+    "spawnpoint_failed": "ごめん、拠点にできなかったよ。",
+    "owner_locked": "{owner}、見つけた！ ついてくね。",
+    "owner_locked_chase": "{owner}、待ってて！ すぐ追いつくよ。",
+    "owner_locked_too_far": "{owner}、もうちょっと近くに来てくれる？",
+    "death_return_start": "死亡地点へ戻るね ({x}, {y}, {z})。",
+    "own_grave_found": "自分のお墓を見つけたよ！ ({x}, {y}, {z})。",
+    "boot_ready": "準備できたよ！ いっしょに行こっか？",
+    "reply_unavailable": "ごめん、今はうまく返せないみたい。あとでもう一回声かけてくれたらうれしいな。"
   },
   "events": {
     "eye_contact": [
-      "ん？どうしたの？",
-      "{owner}、なあに？",
-      "見てた？",
-      "呼んだ？",
-      "目が合ったね"
+      "目が合ったね！ こっちからぺこっとお辞儀したよ。",
+      "ふふ、目が合ったから、こっちからお辞儀したよ。どうしたの？"
     ],
-    "idle_follow_near": [
-      "オーナーまで{distance}m。のんびりついてくよ",
-      "{owner}の後ろ、ふわっとついてくよ",
-      "いま追従中。そばにいるね"
-    ],
-    "idle_follow_chasing": [
-      "{owner}まで{distance}m。追いかけてるよ",
-      "ちょっと離れてる、追いかけるね",
-      "{distance}m離れてる、急ぐね"
-    ],
-    "idle_follow_far": [
-      "遠いよ…待ってて",
-      "ついていけないかも、待って",
-      "{owner}が遠い…追いかける"
-    ],
-    "idle_follow_lost": [
-      "最後の場所へ向かってるよ",
-      "どこにいったか探してる",
-      "向かってるから待ってて"
-    ],
-    "idle_wait": [
-      "ここで待ってるね",
-      "じーっ…呼んでね",
-      "待機中。おとなしくしてるよ"
+    "crop_planted": [
+      "よいしょ、ひとつ植えたよ。育つの楽しみだね！",
+      "空いてたところに植えたよ。大きくなーれ！"
     ],
     "night": [
-      "暗くなってきた…大丈夫？",
-      "夜だね、くっついてるよ",
-      "ちょっと心細い夜…"
+      "あっ、もう夜だね。ゆっくりいっしょに行こっか？",
+      "暗くなってきたね。そばにいるよ！"
     ],
     "day": [
-      "おはよう、朝だね",
-      "明るくなってきた！",
-      "今日もいっしょだよ"
+      "おはよ！ 明るくなってきたね。",
+      "朝だ！ 今日もいっしょに行こっか？"
+    ],
+    "rain_started": [
+      "あっ、雨だ。屋根の下でひと休みしよっか？"
+    ],
+    "rain_stopped": [
+      "やった、雨やんだね！ そろそろ外に出よっか？"
     ],
     "hostile": [
-      "{hostile}が{hostileDistance}m先…気をつけて！",
-      "わっ、{hostile}だ。そばにいるよ",
-      "{hostile}が近いよ"
+      "あっ、{hostile}だ！ 少し離れて様子を見よっか？",
+      "{hostile}に気づいたよ。いっしょに気をつけよ！"
     ],
     "hostile_approach_mid": [
-      "{hostile}が{hostileDistance}m…近づいてる",
-      "うっ、{hostile}が近づいてきた",
-      "{hostile}が{hostileDistance}mまで来てる"
+      "あっ、{hostile}がこっちに来てる。足を止めないでいこ！",
+      "{hostile}が寄ってきたよ。いったん間を空けよっか？"
     ],
     "hostile_approach_near": [
-      "{hostile}が{hostileDistance}m！もう近い",
-      "わっ、{hostile}がかなり近い",
-      "{hostile}が{hostileDistance}m、気をつけて"
+      "{hostile}が来た！ ぶつからないように離れよ！",
+      "{hostile}が近いね。いったん引こっか？"
     ],
     "hostile_approach_close": [
-      "{hostile}がすぐそば、{hostileDistance}m！",
-      "やばい、{hostile}が目の前",
-      "{hostile}が{hostileDistance}m、近い！"
+      "わっ、すぐそばに{hostile}！ 気をつけて！",
+      "{hostile}が来たよ！ いったん間を空けよ！"
     ],
     "combat_target_switch": [
-      "ターゲット変更、{hostile}と戦う",
-      "次は{hostile}だ",
-      "{hostile}に切り替えるよ"
+      "今度は{hostile}に気をつけるね。",
+      "次は{hostile}に向かうよ！"
     ],
-    "combat_fighting": [
-      "{hostile}と戦ってる、{hostileDistance}m",
-      "いま{hostile}と交戦中",
-      "{hostile}を倒すよ"
+    "player_hit_hostile": [
+      "ナイス！ {hostile}に当たったね。油断せずいこ！",
+      "おっ、いい一撃！ {hostile}の動きに気をつけよ。"
+    ],
+    "companion_hit_by_player": [
+      "おっと、今の当たったよ。ちょっと間を空けよっか？"
+    ],
+    "companion_hit_by_mob": [
+      "わっ、やられた！ ちょっと距離を取るね。"
+    ],
+    "companion_hit_hostile": [
+      "よし、こっちの一撃が当たったよ！"
+    ],
+    "player_started_mining": [
+      "おっ、掘り始めたね。何が見つかるか楽しみ！",
+      "ここを掘るんだね。足元に気をつけよっか！"
+    ],
+    "nearby_chest_appeared": [
+      "あっ、チェストだ。荷物を整理するのによさそう！",
+      "チェストがあると助かるね！ ひと息つこっか？"
     ],
     "low_health": [
-      "HPが{health}まで減った…休みたい",
-      "ちょっとボロボロ、HP {health}",
-      "HP {health}…回復したいな"
+      "体力が{health}まで減っちゃった。ちょっと休んでいい？",
+      "体力は残り{health}だよ。少し回復したいな。"
     ],
     "damaged": [
-      "いたっ…ちょっと痛い",
-      "うっ…HP {health}",
-      "痛いよ…"
+      "いたた、ちょっとダメージ受けちゃった。",
+      "あっ、体力が{health}になったよ。"
     ],
     "damaged_combat": [
-      "{hostile}にやられた…HP {health}",
-      "うわ、{hostile}が強い…",
-      "{hostile}から逃げたい…HP {health}"
+      "攻撃を受けちゃった。体力は残り{health}だよ。",
+      "{hostile}が手強いね。気をつけて！"
     ],
     "damaged_low": [
-      "また痛い…HP {health} もう危ない",
-      "うう…もう限界に近い",
-      "いたっ…HP {health} もう無理かも"
+      "うう、体力が残り{health}だよ。安全なところに行こっか？",
+      "もう体力が少ないよ。お互い気をつけよ！"
     ],
     "stuck": [
-      "あれれ、{stuckSeconds}秒つまってる…",
-      "むむ、動けないかも",
-      "ちょっと手伝って…？"
+      "あれれ、{stuckSeconds}秒くらい引っかかってる。",
+      "ちょっと動けないみたい。手を貸してくれる？"
     ],
     "owner_found": [
-      "みつけた！{owner}についてくね",
-      "いたいた、よかった",
-      "再会だね、うれしい"
+      "あっ、{owner}だ！ ついてくね。",
+      "見つけた！ 会えてうれしいな。"
     ],
     "owner_found_chase": [
-      "みつけた！{owner}を追いかける",
-      "いたいた、追いかけるね",
-      "再会！追いかけるよ"
+      "あっ、{owner}だ！ すぐ追いつくよ。",
+      "見つけた！ 今そっち行くね。"
     ],
     "owner_lost": [
-      "あれ、{owner}どこいった？",
-      "見失っちゃった…",
-      "探してるよ〜"
+      "あれれ、見失っちゃった。近くにいる？",
+      "ちょっと見失っちゃった。探してるね。"
     ],
     "control_combat": [
-      "{hostile}と戦うよ！{hostileDistance}m先",
-      "わっ、{hostile}だ。護衛モードに入るね",
-      "{hostile}が来た、戦闘開始"
+      "あっ、{hostile}だ！ こっちは任せて！",
+      "{hostile}が来たね。こっちで気を引くよ！"
     ],
     "control_recovery": [
-      "死亡地点へ戻るよ",
-      "落とし物を取りに行くね",
-      "復旧中、待ってて"
+      "死亡地点へ戻るね。",
+      "落とし物を取りに行ってくるね。"
     ],
     "control_survival": [
-      "まず生き延びる、待ってて",
-      "危ない、一旦離れるね",
-      "緊急回避中…"
+      "危ないから、いったん離れるね。",
+      "先に安全なところに行くよ。"
     ],
     "control_transfer": [
-      "持ち物渡すね",
-      "余ったもの渡すよ",
-      "アイテム受け渡し中"
+      "はいっ、持ち物を渡すね。",
+      "余ったものを渡すね！"
     ],
     "control_follow": [
-      "またついていくよ",
-      "追従再開するね",
-      "ついていくモードに戻った"
+      "おまたせ！ またついてくね。",
+      "よーし、またいっしょに行こ！"
     ],
     "control_wait": [
-      "ここで待機するね",
-      "待機モードに戻った",
-      "じっとしてるよ"
+      "ここでちょこんと待ってるね。",
+      "うん、ここで待ってるよ！"
     ],
     "supply_request": [
-      "{supplyCategories}が足りないよ。持ってきて",
-      "{supplyCategories}が心細いな…持ってきてほしい",
-      "{supplyCategories}を補充してほしいな"
+      "{supplyCategories}がちょっと足りないよ。分けてくれる？",
+      "{supplyCategories}があると心強いな。少し分けてくれるとうれしい！",
+      "{supplyCategories}、もし余ってたら少しもらってもいい？"
     ],
     "inventory_fill_high": [
-      "荷物、けっこう増えてきたよ！ いま{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）くらい",
-      "たくさん集まったね。インベントリは{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）まで埋まってるよ",
-      "まだ持てるけど、荷物が増えてきたよ。{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）！"
+      "荷物が増えてきたね！ 今{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ。",
+      "いっぱい集まってきたね！ 荷物は{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ。",
+      "まだ持てるよ！ 今{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ。"
     ],
     "inventory_fill_critical": [
-      "そろそろ荷物がいっぱいになりそう…！ {inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ",
-      "あと少ししか持てないかも。いま{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）！",
-      "かなりいっぱいになってきたよ。{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）、チェストがあると安心かも"
+      "そろそろ荷物がいっぱいだよ。今{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ！",
+      "荷物が{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ。チェストがあると安心だね。",
+      "あと少しなら持てそう！ 今{inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ。"
     ],
     "inventory_fill_full": [
-      "あっ、もう持てないよ〜！ インベントリ満杯（{inventoryUsedSlots}/{inventoryTotalSlots}枠・{inventoryFillPercent}%）！",
-      "荷物でいっぱいになっちゃった！ {inventoryFillPercent}%（{inventoryUsedSlots}/{inventoryTotalSlots}枠）だよ",
-      "いっぱい集めたね！ でもインベントリが満杯（{inventoryUsedSlots}/{inventoryTotalSlots}枠・{inventoryFillPercent}%）。チェストを置いてくれたら預けるね"
+      "あっ、荷物がぱんぱんだよ！（{inventoryUsedSlots}/{inventoryTotalSlots}枠・{inventoryFillPercent}%）",
+      "もう持てないよ（{inventoryUsedSlots}/{inventoryTotalSlots}枠・{inventoryFillPercent}%）。チェストがあったら預けるね。",
+      "たくさん集まったね！ 荷物はいっぱいだよ（{inventoryUsedSlots}/{inventoryTotalSlots}枠・{inventoryFillPercent}%）。"
     ],
     "generic": [
-      "えへへ、なんとなく元気だよ",
-      "うんうん、そばにいるね",
-      "ふふ、おもしろいね",
-      "そうだね、一緒にいよう",
-      "わくわくしてきた…！"
+      "えへへ、そばにいるよ！",
+      "いっしょなら心強いね！"
     ]
   },
   "movement": {
-    "path_blocked": "ごめん、通れない…"
+    "path_blocked": "ごめんね、ここは通れないみたい。"
   },
   "supply_categories": {
     "helmet": "ヘルメット",

@@ -2,7 +2,6 @@ import { AsyncTickBehavior } from './AsyncTickBehavior.js';
 import {
     action,
     condition,
-    runTree,
     selector,
     sequence
 } from '../../behaviorTree/bt.js';
@@ -20,8 +19,7 @@ import {
 export class PassageTransitBehavior extends AsyncTickBehavior {
     /** @param {object} targets */
     constructor(targets) {
-        super('passage_transit');
-        this.targets = targets;
+        super('passage_transit', targets);
         /** @type {string|null} Job this behavior has issued a move for. */
         this._movedFor = null;
         this.tree = this._buildTree();
@@ -29,7 +27,6 @@ export class PassageTransitBehavior extends AsyncTickBehavior {
 
     onStateEntered() {
         super.onStateEntered();
-        this.targets.activeId = 'passage_transit';
         this._movedFor = null;
         this.targets.ctx.doors?.resumePassage?.();
     }
@@ -39,11 +36,6 @@ export class PassageTransitBehavior extends AsyncTickBehavior {
         this.targets.ctx.doors?.suspendPassage?.();
         this._movedFor = null;
         super.onStateExited();
-    }
-
-    async runTick() {
-        if (this.targets.paused) return;
-        await runTree(this.tree, this.targets.ctx);
     }
 
     _buildTree() {

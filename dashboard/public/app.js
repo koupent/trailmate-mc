@@ -1,3 +1,4 @@
+import { bindPlayChat } from './playChat.js';
 import { createLogFollowState } from './logFollow.js';
 import { syncHtml, syncProp, syncText, syncTextKeepingScroll } from './domSync.js';
 import { renderFsmSvg } from './fsmGraph.js';
@@ -22,6 +23,8 @@ async function api(path, options = {}) {
   return data;
 }
 
+const syncPlayChat = bindPlayChat(api);
+
 function setMsg(el, text, kind = '') {
   syncText(el, text || '');
   syncProp(el, 'className', `msg ${kind}`.trim());
@@ -41,7 +44,7 @@ function escapeHtml(value) {
 
 /* ===== DOM ===== */
 const settingsForm = document.getElementById('settings-form');
-const settingsMsg = document.getElementById('settings-msg');
+const settingsMsg = document.getElementById('connection-settings-msg');
 const placeholderWarn = document.getElementById('placeholder-warn');
 const targetAddressInput = document.getElementById('targetAddress');
 const botNameInput = document.getElementById('botName');
@@ -191,9 +194,9 @@ function renderSetup(setup, settings = {}) {
 /** セットアップ完了かつ診断 OK のときだけスポーン可能。 */
 function syncSpawnControls(setup = null) {
   const setupReady = readyToSpawn;
-  const canSpawn = setupReady && spawnReady;
+  const canSpawn = setupReady && spawnReady && !companionSpawned && !companionSpawning;
   spawnBtn.disabled = !canSpawn;
-  despawnBtn.disabled = !backendReady;
+  despawnBtn.disabled = !backendReady || !companionSpawned || companionSpawning;
 
   if (!setupReady) {
     const blockers = setup?.blockers || [];
@@ -224,7 +227,7 @@ function renderSpawnDiagnostics(diagnostics) {
   if (!spawnDiagnosticsEl) return;
   const steps = Array.isArray(diagnostics?.steps) ? diagnostics.steps : [];
   if (!steps.length) {
-    syncHtml(spawnDiagnosticsEl, '');
+    syncHtml(spawnDiagnosticsEl, '<li class="muted">認証・接続の診断情報はまだありません。</li>');
     return;
   }
   const html = steps
@@ -405,11 +408,17 @@ despawnBtn.addEventListener('click', async () => {
 function renderStatus(status) {
   renderSpawnDiagnostics(status?.diagnostics);
   const spawned = Boolean(status?.backendReady !== false && status?.spawned);
+  companionSpawning = Boolean(status?.spawning);
   const companionView = companionStatusCache.update(status);
-  renderCompanionPanels(companionView.snapshot);
+  renderCompanionPanels(companionView.snapshot, spawned);
   if (companionView.stale) {
     syncHtml(fsmCurrentEl, '<div class="fsm-current-label">状態の更新待ち</div><div class="fsm-current-note">最後に取得した状態遷移を表示しています</div>');
   }
+  syncSpawnControls();
+  syncPlayChat(spawned ? status : null);
+  const connection = document.getElementById('play-connection');
+  syncText(connection, spawned ? 'ワールドに接続中' : '未接続');
+  syncProp(connection, 'className', spawned ? 'pill on' : 'pill off');
 
   if (!status || status.backendReady === false) {
     const message =
@@ -459,30 +468,30 @@ function renderStatus(status) {
     return;
   }
 
-  renderSpawnDiagnostics(null);
-
   const pos = status.position
     ? `${status.position.x}, ${status.position.y}, ${status.position.z}`
     : '-';
+  const movementDetailsOpen = statusPanel.querySelector('.play-movement-details')?.open;
 
   syncHtml(
     statusPanel,
     `
-    <div class="status-line"><span class="pill on">スポーン中</span> <strong>${escapeHtml(status.username || status.botName || '')}</strong></div>
-    <dl class="props">
-      <dt>体力</dt><dd>${fmt(status.health)} / 20</dd>
-      <dt>実行中のBot版</dt><dd>${escapeHtml(status.version || '取得できません（旧版の可能性があります）')}</dd>
-      <dt>満腹度</dt><dd>${fmt(status.food)} / 20</dd>
-      <dt>酸素</dt><dd>${fmt(status.oxygen)} / 20</dd>
+    <h2>相棒の状態</h2>
+    <dl class="play-stats">
+      <div><dt>現在の状態</dt><dd>${escapeHtml(stateLabel(status.activeFsm))}</dd></div>
+      <div><dt>動作モード</dt><dd>${escapeHtml(stateLabel(status.preferredMode))}</dd></div>
+      <div><dt>体力</dt><dd>${fmt(status.health)} / 20</dd></div>
+      <div><dt>持ち物の使用枠</dt><dd>${fmt(status.inventoryUsedSlots)} / ${fmt(status.inventoryTotalSlots)}</dd></div>
+    </dl>
+    <span class="muted play-owner">追従先 ${escapeHtml(status.ownerName || "未ロック")} · ${escapeHtml(dimensionLabel(status.dimension))} · ${escapeHtml(pos)}</span>
+    <div class="muted play-owner">満腹度 ${fmt(status.food)} / 20 · 酸素 ${fmt(status.oxygen)} / 20 · 実行中のBot版 ${escapeHtml(status.version || '取得できません')}</div>
+    ${status.movement || status.waterNavigation ? `<details class="play-owner play-movement-details"${movementDetailsOpen ? ' open' : ''}><summary>移動の詳細</summary><dl class="props">
       ${status.movement ? `<dt>移動の更新</dt><dd>${status.movement.physicsEnabled ? '有効' : '無効'} · 最終更新 ${fmt(status.movement.physicsAgeMs)}ms前 · 座標送信 ${fmt(status.movement.positionPacketAgeMs)}ms前 · サーバー補正 ${fmt(status.movement.serverCorrections5s)}回/5秒</dd>` : ''}
       ${status.waterNavigation ? `<dt>水中の行動</dt><dd>${escapeHtml(({
         near: '追従距離内で待機', following: '泳いで追従中', returning: '呼吸できる場所へ帰還中',
         recovering: '水面で回復待ち', holding: '酸素を確保するため潜水を保留', blocked: '通れる水路を探索中'
       })[status.waterNavigation.phase] || status.waterNavigation.phase || '')}</dd>` : ''}
-      <dt>座標</dt><dd>${escapeHtml(pos)}</dd>
-      <dt>ディメンション</dt><dd>${escapeHtml(dimensionLabel(status.dimension))}</dd>
-      <dt>オーナー</dt><dd>${escapeHtml(status.ownerName || '未ロック')}</dd>
-    </dl>
+    </dl></details>` : ''}
     ${
       status.unsetMobs?.length
         ? `<div class="warn">攻撃するか未設定のモブに出会いました（${escapeHtml(
@@ -586,7 +595,10 @@ function renderFsm(fsm) {
     btTitleEl,
     `「${stateLabel(shown)}」の中身${modeNote}${live ? '（いま動いている状態）' : '（いまは動いていない状態）'}`
   );
-  syncHtml(btTreeEl, renderBtTree(fsm.trees?.[shown], { live, mode: fsm.preferredMode }));
+  syncHtml(btTreeEl, [
+    renderBtTree(fsm.trees?.[shown], { live, mode: fsm.preferredMode }),
+    ...[fsm.sharedTree, ...(fsm.eventTrees || [])].filter(Boolean).map((tree) => renderBtTree(tree, { live: true }))
+  ].join(''));
 
   const history = [...(fsm.history || [])].reverse();
   syncHtml(
@@ -627,6 +639,7 @@ fsmGraphEl.addEventListener('keydown', (event) => {
 /** @type {Array<{ id: string, kind: 'mode'|'action', word: string, description: string }>|null} */
 let chatCommands = null;
 let companionSpawned = false;
+let companionSpawning = false;
 let preferredMode = null;
 
 async function loadCommands() {
@@ -645,27 +658,13 @@ async function loadCommands() {
       .map(
         (command) => `<button type="button" data-run="${escapeHtml(command.id)}">${escapeHtml(
           stateLabel(command.id)
-        )}<span class="segmented-sub">${escapeHtml(command.description)}</span></button>`
+        )}</button>`
       )
       .join('')
   );
-  syncHtml(
-    commandListEl,
-    chatCommands
-      .map(
-        (command) => `<tr>
-        <td class="cmd-word"><code>${escapeHtml(command.word)}</code><span class="cmd-kind">${
-          command.kind === 'mode' ? 'モード' : 'アクション'
-        }</span></td>
-        <td>${escapeHtml(command.description)}</td>
-        <td class="cmd-actions">
-          <button type="button" class="small" data-run="${escapeHtml(command.id)}">実行</button>
-          <button type="button" class="small" data-copy-word="${escapeHtml(command.word)}">コピー</button>
-        </td>
-      </tr>`
-      )
-      .join('')
-  );
+  syncHtml(commandListEl, chatCommands.filter((command) => command.kind === 'action')
+    .map((command) => `<button type="button" data-run="${escapeHtml(command.id)}" title="${escapeHtml(command.description)}">${escapeHtml(command.word)}</button>`)
+    .join(''));
   syncCommandButtons();
 }
 
@@ -680,27 +679,29 @@ function syncCommandButtons() {
   });
 }
 
-function renderCompanionPanels(status) {
-  companionSpawned = Boolean(status);
+function renderCompanionPanels(status, spawned) {
+  companionSpawned = spawned;
   preferredMode = status?.preferredMode ?? null;
   syncCommandButtons();
   renderFsm(status?.fsm ?? null);
 
   if (!status) {
-    syncHtml(inventoryPanel, '<span class="muted">スポーンすると表示されます</span>');
+    syncHtml(inventoryPanel, '<li class="muted">スポーンすると表示されます</li>');
+    syncText(document.getElementById('inventory-kind-count'), '');
     return;
   }
   const items = Array.isArray(status.inventory) ? status.inventory : [];
+  syncText(document.getElementById('inventory-kind-count'), `${items.length} 種類`);
   syncHtml(
     inventoryPanel,
     items.length
       ? items
           .map(
             (item) =>
-              `<span class="inv-chip">${escapeHtml(item.displayName || item.name)}<b>×${item.count}</b></span>`
+              `<li><span>${escapeHtml(item.displayName || item.name)}</span><b>×${escapeHtml(item.count)}</b></li>`
           )
           .join('')
-      : '<span class="muted">持ち物なし</span>'
+      : '<li class="muted">持ち物なし</li>'
   );
 }
 
@@ -717,23 +718,37 @@ async function runCommand(id) {
   }
 }
 
-async function copyWord(word) {
-  try {
-    await navigator.clipboard.writeText(word);
-    setMsg(commandMsg, `「${word}」をコピーしました。マイクラのチャットに貼り付けて使えます`, 'ok');
-  } catch {
-    setMsg(commandMsg, 'コピーに失敗しました。ワードを手で選択してください', 'err');
-  }
-}
+document.querySelector('.play-command-bar').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-run]');
+  if (button && !button.disabled) void runCommand(button.getAttribute('data-run'));
+});
 
-document.addEventListener('click', (event) => {
-  const run = event.target.closest('[data-run]');
-  if (run && !run.disabled) {
-    void runCommand(run.getAttribute('data-run'));
-    return;
-  }
-  const copy = event.target.closest('[data-copy-word]');
-  if (copy) void copyWord(copy.getAttribute('data-copy-word'));
+const detailTabs = [...document.querySelectorAll('.play-detail-tabs [role="tab"]')];
+function selectDetail(next) {
+  detailTabs.forEach((tab) => {
+    const selected = tab === next;
+    tab.setAttribute('aria-selected', String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+    document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+  });
+  document.getElementById('inventory-kind-count').hidden = next.id !== 'play-inventory-tab';
+}
+detailTabs.forEach((tab, index) => {
+  tab.addEventListener('click', () => selectDetail(tab));
+  tab.addEventListener('keydown', (event) => {
+    const last = detailTabs.length - 1;
+    const indexes = {
+      ArrowLeft: index === 0 ? last : index - 1,
+      ArrowRight: index === last ? 0 : index + 1,
+      Home: 0,
+      End: last
+    };
+    if (!Object.hasOwn(indexes, event.key)) return;
+    event.preventDefault();
+    const next = detailTabs[indexes[event.key]];
+    selectDetail(next);
+    next.focus();
+  });
 });
 
 async function refreshStatus() {
@@ -743,14 +758,12 @@ async function refreshStatus() {
     spawnReady = Boolean(status.spawnReady);
     lastBackendMessage =
       status.diagnostics?.summary || status.backendMessage || status.error || '';
-    syncSpawnControls();
     renderStatus(status);
     if (backendReady) void loadCommands();
   } catch (error) {
     backendReady = false;
     spawnReady = false;
     lastBackendMessage = error.message || 'ボット側の準備中です。';
-    syncSpawnControls();
     renderStatus({
       backendReady: false,
       spawnReady: false,

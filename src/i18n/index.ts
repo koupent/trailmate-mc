@@ -34,10 +34,11 @@ export function tEvent(
   language: string,
   eventId: string,
   vars: CommentaryVars = {},
-  options: { excludeMessage?: string } = {}
+  options: { excludeMessage?: string; fallback?: boolean } = {}
 ): string {
   const bundle = loadLocale(language);
-  const lines = bundle.events[eventId] || bundle.events.generic || ['…'];
+  const lines = bundle.events[eventId] || (options.fallback === false ? [] : bundle.events.generic || ['…']);
+  if (!lines.length) return '';
   const rendered = lines.map((template) => applyVars(template, vars));
   const excludedPattern = options.excludeMessage
     ? messagePattern(options.excludeMessage)

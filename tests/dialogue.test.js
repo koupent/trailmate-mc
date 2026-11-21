@@ -4,10 +4,8 @@ import {
   ACTION_COMMANDS,
   MODE_COMMANDS,
   classifyPlayerCommand,
-  detectCombatCommentary,
   detectHostileApproach,
   detectSituationEvent,
-  detectIdleCommentary,
   deriveFollowPhase,
   deriveFollowReplyKey,
   deriveHostileBand,
@@ -197,14 +195,23 @@ describe('situation events', () => {
     assert.equal(event?.id, 'owner_found_chase');
   });
 
-  it('detects control_combat on overlay takeover', () => {
+  it('does not treat an internal control change as a world observation', () => {
     const prev = { ...basePrev, controlOwner: 'follow' };
     const snap = {
       ...prev,
       controlOwner: 'combat'
     };
     const event = detectSituationEvent(prev, snap, {});
-    assert.equal(event?.id, 'control_combat');
+    assert.equal(event, null);
+  });
+
+  it('keeps movement-stuck commentary out of a fight', () => {
+    const prev = { ...basePrev, combatTarget: 'zombie', stuckSeconds: 0 };
+    const snap = { ...prev, stuckAlert: true, stuckSeconds: 8 };
+    assert.equal(detectSituationEvent(prev, snap), null);
+    assert.equal(detectSituationEvent(
+      { ...prev, combatTarget: null }, { ...snap, combatTarget: null }
+    )?.id, 'stuck');
   });
 
   it('skips control_follow when switching from wait without overlay', () => {
@@ -231,7 +238,7 @@ describe('situation events', () => {
     assert.equal(nightfall?.id, 'night');
   });
 
-  it('detects damaged_combat when hit during combat', () => {
+  it('keeps damage attribution unknown when a hostile is merely nearby', () => {
     const prev = {
       ...basePrev,
       lastDamageAgeMs: 5000,
@@ -245,7 +252,8 @@ describe('situation events', () => {
       hostile: { name: 'zombie', distance: 3 }
     };
     const event = detectSituationEvent(prev, snap, { low_health: 8 });
-    assert.equal(event?.id, 'damaged_combat');
+    assert.equal(event?.id, 'damaged');
+    assert.equal(event.actionFacts[0].actor, 'unknown');
   });
 
   it('detects damaged_low when hit at low health', () => {
@@ -261,7 +269,7 @@ describe('situation events', () => {
       health: 6
     };
     const event = detectSituationEvent(prev, snap, { low_health: 8 });
-    assert.equal(event?.id, 'damaged_low');
+    assert.equal(event?.id, 'damaged');
   });
 
   it('detects stuck from stuckAlert even after recovery reset (low stuckSeconds)', () => {
@@ -310,54 +318,6 @@ describe('situation events', () => {
   });
 });
 
-describe('idle commentary', () => {
-  const cfg = { follow_distance: 3, owner_near_radius: 12 };
-
-  it('detects idle_follow_near when close', () => {
-    const idle = detectIdleCommentary({
-      mode: 'follow',
-      controlOwner: 'follow',
-      owner: 'Alice',
-      ownerDistance: 2,
-      ownerEntityMissing: false,
-      ownerHasLos: true,
-      ownerVisible: true,
-      botPos: { x: 0, y: 64, z: 0 },
-      ownerPos: { x: 2, y: 64, z: 0 }
-    }, cfg);
-    assert.equal(idle?.id, 'idle_follow_near');
-  });
-
-  it('detects idle_follow_far when distant', () => {
-    const idle = detectIdleCommentary({
-      mode: 'follow',
-      controlOwner: 'follow',
-      owner: 'Alice',
-      ownerDistance: 20,
-      ownerEntityMissing: false,
-      ownerHasLos: false,
-      ownerVisible: false,
-      botPos: { x: 0, y: 64, z: 0 },
-      ownerPos: { x: 20, y: 64, z: 0 }
-    }, cfg);
-    assert.equal(idle?.id, 'idle_follow_far');
-  });
-
-  it('returns null for deferred follow control', () => {
-    const idle = detectIdleCommentary({
-      mode: 'follow',
-      controlOwner: 'combat',
-      owner: 'Alice'
-    }, cfg);
-    assert.equal(idle, null);
-  });
-
-  it('detects idle_wait in wait mode', () => {
-    const idle = detectIdleCommentary({ mode: 'wait' }, cfg);
-    assert.equal(idle?.id, 'idle_wait');
-  });
-});
-
 describe('rule commentary', () => {
   it('embeds facts from snapshot', () => {
     const text = renderCommentary('ja', 'hostile', {
@@ -367,18 +327,12 @@ describe('rule commentary', () => {
     assert.match(text, /ゾンビ/);
   });
 
-  it('embeds distance when template includes it', () => {
-    let sawDistance = false;
-    for (let i = 0; i < 20; i++) {
-      const text = renderCommentary('ja', 'hostile', {
-        hostile: { name: 'zombie', distance: 4.2 }
-      });
-      if (/4\.2/.test(text)) {
-        sawDistance = true;
-        break;
-      }
-    }
-    assert.equal(sawDistance, true);
+  it('describes an approaching hostile without reciting the distance', () => {
+    const text = renderCommentary('ja', 'hostile_approach_near', {
+      hostile: { name: 'zombie', distance: 4.2 }
+    });
+    assert.match(text, /ゾンビ/);
+    assert.doesNotMatch(text, /4\.2/);
   });
 
   it('embeds health on low_health', () => {
@@ -406,12 +360,12 @@ describe('i18n command keys (#13)', () => {
     assert.match(text, /10/);
     assert.match(text, /64/);
     assert.match(text, /-5/);
-    assert.match(text, /死亡地点へ戻るよ/);
+    assert.match(text, /死亡地点へ戻るね/);
   });
 
   it('embeds coordinates in own_grave_found', () => {
     const text = tCommand('ja', 'own_grave_found', { x: 1, y: 2, z: 3 });
-    assert.match(text, /自分の墓を見つけたよ/);
+    assert.match(text, /自分のお墓を見つけたよ/);
     assert.match(text, /1, 2, 3/);
   });
 });
@@ -562,7 +516,7 @@ describe('combat commentary', () => {
     assert.match(text, /クリーパー/);
   });
 
-  it('detects combat_target_switch when target changes in combat', () => {
+  it('leaves an internal target switch out of the observed facts', () => {
     const prev = {
       owner: 'Alice',
       health: 20,
@@ -581,37 +535,11 @@ describe('combat commentary', () => {
       hostile: { name: 'skeleton', distance: 2 }
     };
     const event = detectSituationEvent(prev, snap, {});
-    assert.equal(event?.id, 'combat_target_switch');
-  });
-
-  it('returns combat_fighting while in combat with a target', () => {
-    const event = detectCombatCommentary({
-      controlOwner: 'combat',
-      combatTarget: 'zombie',
-      hostile: { name: 'zombie', distance: 2.5 }
-    });
-    assert.equal(event?.id, 'combat_fighting');
-    assert.equal(event?.priority, 2);
-  });
-
-  it('does not idle-follow while in combat', () => {
-    const idle = detectIdleCommentary({
-      mode: 'follow',
-      controlOwner: 'combat',
-      owner: 'Alice',
-      ownerDistance: 2,
-      ownerEntityMissing: false,
-      ownerHasLos: true,
-      ownerVisible: true,
-      botPos: { x: 0, y: 64, z: 0 },
-      ownerPos: { x: 2, y: 64, z: 0 },
-      combatTarget: 'zombie'
-    }, { follow_distance: 3, owner_near_radius: 12 });
-    assert.equal(idle, null);
+    assert.equal(event, null);
   });
 
   it('prefers combatTarget name in commentary vars', () => {
-    const text = renderCommentary('ja', 'combat_fighting', {
+    const text = renderCommentary('ja', 'combat_target_switch', {
       combatTarget: 'skeleton',
       hostile: { name: 'zombie', distance: 3 }
     });
@@ -666,53 +594,5 @@ describe('capability notices', () => {
     ]) {
       assert.notEqual(tCommand('ja', key), key, `${key} is translated`);
     }
-  });
-});
-
-describe('eye-contact dialogue', () => {
-  function makeEyeContactDialogue() {
-    const said = [];
-    const ctx = {
-      ownerName: 'Alice',
-      itemTransfer: { active: false }
-    };
-    const agent = {
-      language: 'ja',
-      shut_up: false,
-      bot: { inventory: { slots: [] } },
-      companion: { ctx },
-      async openChat(text) { said.push(text); }
-    };
-    const manager = { getModeCatalog: () => [], interrupts: [] };
-    const dialogue = new CompanionDialogue(agent, manager, {
-      chat: {
-        min_interval_ms: 1000,
-        event_cooldown_ms: 5000
-      }
-    });
-    agent.companion.dialogue = dialogue;
-    return { agent, dialogue, said };
-  }
-
-  it('respects global and eye-contact cooldowns', async () => {
-    const { dialogue, said } = makeEyeContactDialogue();
-    const now = Date.now();
-
-    dialogue.lastChatAt = now;
-    assert.equal(await dialogue.speakEyeContact(), false);
-
-    dialogue.lastChatAt = 0;
-    dialogue.lastEventAt.eye_contact = now;
-    assert.equal(await dialogue.speakEyeContact(), false);
-    assert.equal(said.length, 0);
-  });
-
-  it('renders an eye-contact line with the owner name', async () => {
-    const { dialogue, said } = makeEyeContactDialogue();
-
-    assert.equal(await dialogue.speakEyeContact(), true);
-    assert.equal(said.length, 1);
-    assert.notEqual(said[0], 'eye_contact');
-    assert.equal(dialogue.lastEventAt.eye_contact > 0, true);
   });
 });

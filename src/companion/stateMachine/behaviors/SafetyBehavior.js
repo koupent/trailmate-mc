@@ -14,14 +14,8 @@ export class SafetyBehavior extends AsyncTickBehavior {
      * @param {object} tree Root node built with behaviorTree/bt.js
      */
     constructor(targets, id, tree) {
-        super(id);
-        this.targets = targets;
+        super(id, targets);
         this.tree = tree;
-    }
-
-    onStateEntered() {
-        super.onStateEntered();
-        this.targets.activeId = this.stateName;
     }
 
     /** @returns {Promise<boolean>} true while this state owns the bot */

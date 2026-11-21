@@ -1,5 +1,6 @@
 import { setTimeout as delay } from 'node:timers/promises';
 import type { Bot } from 'mineflayer';
+import { action, runTree, SUCCESS } from '../companion/behaviorTree/bt.js';
 
 /** Companion at full health waits until hunger drops to this value. */
 const COMPANION_HEALTHY_START_AT = 14;
@@ -139,8 +140,8 @@ async function consumeChosenFood(bot: Bot, foodItem: FoodItem, offhand: boolean)
   bot.emit('autoeat_finished', foodItem as any, offhand);
 }
 
-function installCompanionEat(bot: Bot, thresholds: EatThresholds): void {
-  bot.autoEat.eat = async (useOffhand = bot.autoEat.options.offhand) => {
+function installCompanionEat(bot: Bot, thresholds: EatThresholds) {
+  const tree = action('空腹や負傷に応じて食べる', async (useOffhand: boolean) => {
     if (
       bot.autoEat.isEating
       || bot.autoEat.disabled
@@ -172,13 +173,15 @@ function installCompanionEat(bot: Bot, thresholds: EatThresholds): void {
     } finally {
       bot.autoEat.isEating = false;
     }
-  };
+  });
+  bot.autoEat.eat = async (useOffhand = bot.autoEat.options.offhand) => await runTree(tree, useOffhand) === SUCCESS;
+  return tree;
 }
 
 /**
  * Configure mineflayer-auto-eat with deficit-aware selection and health-aware thresholds.
  */
-export function setupAutoEat(bot: Bot, thresholds: EatThresholds = DEFAULT_EAT_THRESHOLDS): void {
+export function setupAutoEat(bot: Bot, thresholds: EatThresholds = DEFAULT_EAT_THRESHOLDS) {
   const current = bot.autoEat?.options || {};
   bot.autoEat.options = {
     ...current,
@@ -190,6 +193,7 @@ export function setupAutoEat(bot: Bot, thresholds: EatThresholds = DEFAULT_EAT_T
     ])]
   };
 
-  installCompanionEat(bot, thresholds);
+  const tree = installCompanionEat(bot, thresholds);
   void bot.autoEat.eat().catch(() => {});
+  return tree;
 }

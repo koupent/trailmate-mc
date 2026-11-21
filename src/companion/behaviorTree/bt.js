@@ -29,6 +29,7 @@ class BtNode {
         this.mode = opts.mode ?? null;
         /** @type {'success'|'failure'|null} */
         this.status = null;
+        this.commentary = null;
     }
 
     async tick(ctx) {
@@ -50,11 +51,16 @@ class BtNode {
             return SUCCESS;
         }
         const result = await this.fn(ctx);
+        if (this.kind === 'action' && result?.commentary) {
+            this.commentary = result.commentary;
+            return SUCCESS;
+        }
         return result === true || result === SUCCESS ? SUCCESS : FAILURE;
     }
 
     reset() {
         this.status = null;
+        this.commentary = null;
         for (const child of this.children) child.reset();
     }
 }
@@ -74,9 +80,31 @@ export function condition(label, fn) {
     return new BtNode('condition', label, [], fn);
 }
 
-/** Does something: `true` → success (it acted), anything else → failure. */
+/** `true` or `{ commentary: { id, text, actionFacts?, fixedLine?, reaction?, recipient?, chance? } }` reports a successful action. */
 export function action(label, fn) {
     return new BtNode('action', label, [], fn);
+}
+
+export function isBehaviorTree(tree) {
+    return tree instanceof BtNode;
+}
+
+/** Read the evaluated branches only, including actions inside a subtree. */
+export function describeTreeActivity(tree, { consumeCommentary = false } = {}) {
+    const actions = [];
+    const commentary = [];
+    function visit(node) {
+        if (node.kind === 'action' && node.status === SUCCESS) {
+            actions.push(node.label);
+            if (node.commentary) {
+                commentary.push(node.commentary);
+                if (consumeCommentary) node.commentary = null;
+            }
+        }
+        for (const child of node.children) visit(child);
+    }
+    visit(tree);
+    return { actions: actions.slice(-6), commentary };
 }
 
 /**

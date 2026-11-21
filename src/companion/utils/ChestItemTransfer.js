@@ -28,6 +28,7 @@ import {
     readOpenContainerInventory
 } from './containerWindow.js';
 import { DEFAULT_RETENTION_POLICY, defaultRetentionBlock } from './retentionPolicy.js';
+import { action, runTree } from '../behaviorTree/bt.js';
 
 const CHEST_NAMES = new Set(['chest', 'trapped_chest']);
 const REPLACEABLE_NAMES = new Set([
@@ -176,6 +177,10 @@ export class ChestItemTransfer {
         this._queuedPlacements = [];
         this._busy = false;
         this._dispose = null;
+        this.placementTree = action('置かれたチェストに持ち物を預ける', async ({ ctx, oldBlock, newBlock, now }) => {
+            const result = await this.handleBlockUpdate(ctx, oldBlock, newBlock, now);
+            return result !== 'ignored' && result !== 'busy';
+        });
         /**
          * Chest left unfinished by an interruption, retried from the companion
          * loop once control comes back.
@@ -200,6 +205,11 @@ export class ChestItemTransfer {
     /** @param {import('../CompanionContext.js').CompanionContext} ctx */
     attach(ctx) {
         this.detach();
+        const handlePlacement = (oldBlock, newBlock, now) => {
+            void runTree(this.placementTree, { ctx, oldBlock, newBlock, now }).catch((err) => {
+                console.warn('[companion] chest item-share event failed:', err?.message || err);
+            });
+        };
         const onSwing = (entity) => {
             const now = Date.now();
             if (!this.noteOwnerSwing(ctx, entity, now)) return;
@@ -210,9 +220,7 @@ export class ChestItemTransfer {
                 return;
             }
             this._pendingPlacement = null;
-            void this.handleBlockUpdate(ctx, pending.oldBlock, pending.newBlock, now).catch((err) => {
-                console.warn('[companion] chest item-share event failed:', err?.message || err);
-            });
+            handlePlacement(pending.oldBlock, pending.newBlock, now);
         };
         const onBlockUpdate = (oldBlock, newBlock) => {
             const now = Date.now();
@@ -229,9 +237,7 @@ export class ChestItemTransfer {
                 this._pendingPlacement = { oldBlock, newBlock, at: now };
                 return;
             }
-            void this.handleBlockUpdate(ctx, oldBlock, newBlock).catch((err) => {
-                console.warn('[companion] chest item-share event failed:', err?.message || err);
-            });
+            handlePlacement(oldBlock, newBlock, now);
         };
         ctx.bot.on('entitySwingArm', onSwing);
         ctx.bot.on('blockUpdate', onBlockUpdate);

@@ -98,7 +98,7 @@ export class CropPlanter {
     /**
      * Place one crop. Re-checks the farm and the owner right before placing.
      * @param {import('../CompanionContext.js').CompanionContext} ctx
-     * @returns {Promise<boolean>} false when the re-check rejected the farm
+     * @returns {Promise<boolean|{commentary: object}>} false when the re-check rejected the farm
      */
     async plant(ctx) {
         const bot = ctx.bot;
@@ -121,8 +121,13 @@ export class CropPlanter {
             await bot.placeBlock(currentFarmland, new Vec3(0, 1, 0));
         } catch {
             this._unreachableUntil.set(key, Date.now() + UNREACHABLE_CROP_RETRY_MS);
+            return false;
         }
-        return true;
+        return { commentary: {
+            id: 'crop_planted',
+            text: 'The companion just planted a crop in an empty patch of farmland.',
+            actionFacts: [{ actor: 'companion', action: 'planted a crop' }]
+        } };
     }
 
     /** Forget the walk target, e.g. when the state is left. */

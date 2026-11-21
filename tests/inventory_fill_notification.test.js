@@ -15,6 +15,7 @@ function fillSnapshot(usedSlots, overrides = {}) {
         mode: 'wait',
         controlOwner: 'wait',
         owner: null,
+        nearbyPlayers: [{ name: 'Owner' }],
         health: 20,
         hunger: 20,
         foodCount: 3,
@@ -54,7 +55,6 @@ function makeDialogue(snapshot, chat = {}) {
             priority_min_interval_ms: 0,
             event_cooldown_ms: 0,
             spontaneous_chance: 1,
-            idle_chance: 0,
             ...chat
         }
     });

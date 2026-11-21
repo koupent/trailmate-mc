@@ -83,9 +83,9 @@ function sectionHtml(section) {
   return `
     <article class="card">
       <div class="card-head"><h2 class="card-title">${escapeHtml(section.title)}</h2></div>
-      ${basic.map(fieldHtml).join('')}
+      <div class="setting-grid">${basic.map(fieldHtml).join('')}</div>
       ${advanced.length
-        ? `<details class="setting-advanced"><summary>詳細（${advanced.length} 項目）</summary>${advanced.map(fieldHtml).join('')}</details>`
+        ? `<details class="setting-advanced"><summary>詳細（${advanced.length} 項目）</summary><div class="setting-grid">${advanced.map(fieldHtml).join('')}</div></details>`
         : ''}
     </article>`;
 }
@@ -120,12 +120,22 @@ function showCategory(id) {
     const active = button.getAttribute('data-settings-cat') === id;
     button.classList.toggle('is-active', active);
     button.setAttribute('aria-selected', active ? 'true' : 'false');
+    button.tabIndex = active ? 0 : -1;
   });
   document.querySelectorAll('[data-settings-panel]').forEach((panel) => {
     panel.hidden = panel.getAttribute('data-settings-panel') !== id;
   });
   // 保存ボタンは自動生成の項目がある分類でだけ出す。
   saveBar.hidden = !state.categories?.some((category) => category.id === id);
+  const selected = navEl?.querySelector('[aria-selected="true"]');
+  if (selected && navEl.clientWidth) {
+    const item = selected.getBoundingClientRect();
+    const nav = navEl.getBoundingClientRect();
+    if (item.left < nav.left) navEl.scrollLeft += item.left - nav.left;
+    if (item.right > nav.right) navEl.scrollLeft += item.right - nav.right;
+  }
+  const content = document.querySelector('.settings-content');
+  if (content) content.scrollTop = 0;
 }
 
 async function loadSettings() {
@@ -166,6 +176,27 @@ async function saveSettings() {
 navEl?.addEventListener('click', (event) => {
   const id = event.target?.closest?.('[data-settings-cat]')?.getAttribute('data-settings-cat');
   if (id) showCategory(id);
+});
+
+const categoryTabs = [...(navEl?.querySelectorAll('[data-settings-cat]') || [])];
+categoryTabs.forEach((tab, index) => {
+  const id = tab.dataset.settingsCat;
+  const panel = document.querySelector(`[data-settings-panel="${id}"]`);
+  tab.id = `settings-tab-${id}`;
+  tab.tabIndex = index === 0 ? 0 : -1;
+  panel.id = `settings-panel-${id}`;
+  panel.setAttribute('role', 'tabpanel');
+  panel.setAttribute('aria-labelledby', tab.id);
+  tab.setAttribute('aria-controls', panel.id);
+  tab.addEventListener('keydown', (event) => {
+    const count = categoryTabs.length;
+    const targets = { ArrowLeft: (index + count - 1) % count, ArrowRight: (index + 1) % count, Home: 0, End: count - 1 };
+    if (!Object.hasOwn(targets, event.key)) return;
+    event.preventDefault();
+    const next = categoryTabs[targets[event.key]];
+    showCategory(next.dataset.settingsCat);
+    next.focus({ preventScroll: true });
+  });
 });
 
 document.addEventListener('change', (event) => {

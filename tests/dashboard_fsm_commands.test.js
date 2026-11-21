@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import { once } from 'node:events';
 import { layoutNodes, renderFsmSvg } from '../dashboard/public/fsmGraph.js';
 import { bundledFsmStates, stateLabel, stateNote } from '../dashboard/public/fsmLabels.js';
 import { renderBtTree } from '../dashboard/public/btTree.js';
@@ -9,8 +10,43 @@ import {
   buildStatus,
   createControlState,
   listChatCommands,
-  runChatCommand
+  runChatCommand,
+  startControlServer
 } from '../src/runtime/controlServer.ts';
+
+it('sends dashboard conversation with a world mention and sends slash commands as typed', async (t) => {
+  const state = createControlState();
+  const sent = [];
+  const conversations = [];
+  state.host = {
+    bot: { username: 'MameCollie', entity: {}, chat: (text) => sent.push(text) },
+    chat_ingame: true,
+    chatEntries: [],
+    companion: { manager: { handlePlayerMessage: async (...message) => {
+      conversations.push(message);
+      return true;
+    } } }
+  };
+  const server = startControlServer(state, { port: 0 });
+  await once(server, 'listening');
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  const url = `http://127.0.0.1:${server.address().port}/chat`;
+  const post = (kind, text) => fetch(url, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ kind, text })
+  });
+
+  assert.equal((await post('message', '今どう？')).status, 200);
+  assert.equal((await post('command', '/time query daytime')).status, 200);
+  assert.equal((await post('command', '/help\n/tp Alex 0 64 0')).status, 400);
+  assert.equal((await post('message', '/help')).status, 400);
+  assert.deepEqual(sent, ['[管理画面] @MameCollie 今どう？', '/time query daytime']);
+  assert.deepEqual(conversations, [['管理画面', '@MameCollie 今どう？', true]]);
+  assert.deepEqual((await (await fetch(url)).json()).entries.map(({ kind, text }) => [kind, text]), [
+    ['message', '今どう？'], ['command', '/time query daytime']
+  ]);
+});
 
 const text = { label: (id) => id, note: () => '' };
 
@@ -193,8 +229,8 @@ describe('dashboard chat commands', () => {
     state.host = /** @type {any} */ ({
       companion: {
         ctx: { ownerName: 'PlayerOne' },
-        dialogue: {
-          isActionBusy: false,
+        dialogue: { isActionBusy: false },
+        manager: {
           handlePlayerMessage: async (user, message) => {
             heard.push([user, message]);
             return true;
@@ -211,7 +247,7 @@ describe('dashboard chat commands', () => {
     assert.equal(runChatCommand(createControlState(), 'wait').ok, false);
     const state = createControlState();
     state.host = /** @type {any} */ ({
-      companion: { ctx: {}, dialogue: { isActionBusy: true, handlePlayerMessage: async () => true } }
+      companion: { ctx: {}, dialogue: { isActionBusy: true }, manager: { handlePlayerMessage: async () => true } }
     });
     assert.equal(runChatCommand(state, 'follow').ok, false);
   });

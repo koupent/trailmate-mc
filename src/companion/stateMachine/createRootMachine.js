@@ -11,16 +11,18 @@
  */
 
 import { NestedStateMachine, StateTransition } from './machineApi.js';
-import { action, condition, sequence } from '../behaviorTree/bt.js';
+import { action, condition, isBehaviorTree, sequence } from '../behaviorTree/bt.js';
 import { NormalBehavior } from './behaviors/NormalBehavior.js';
 import { CombatBehavior } from './behaviors/CombatBehavior.js';
 import { PassageTransitBehavior } from './behaviors/PassageTransitBehavior.js';
 import { DutyBehavior } from './behaviors/DutyBehavior.js';
 import { PlantingBehavior } from './behaviors/PlantingBehavior.js';
 import { SafetyBehavior } from './behaviors/SafetyBehavior.js';
+import { AsyncTickBehavior } from './behaviors/AsyncTickBehavior.js';
 import { deathRecoveryInProgress } from '../deathRecovery.js';
 import {
     DUTY_STATES,
+    dutyStateOf,
     dutyPending,
     passagePending,
     pendingDutyState,
@@ -35,6 +37,9 @@ import {
  * @param {object} targets
  */
 export function createRootMachine(targets) {
+    for (const interrupt of targets.interrupts || []) {
+        if (!dutyStateOf(interrupt.name)) throw new Error(`No FSM state for interrupt: ${interrupt.name}`);
+    }
     const normal = new NormalBehavior(targets);
     const planting = new PlantingBehavior(targets);
     const combat = new CombatBehavior(targets);
@@ -186,10 +191,22 @@ export function createRootMachine(targets) {
         })
     ];
 
-    const root = new NestedStateMachine(transitions, normal);
-    root.stateName = 'companionRoot';
     const states = { normal, planting, combat, passageTransit };
     for (const duty of duties) states[duty.stateName] = duty;
+    const registeredStates = new Set([...Object.values(states), ...safety]);
+    for (const state of registeredStates) {
+        if (!isBehaviorTree(state.tree)) throw new Error(`No behavior tree for FSM state: ${state.stateName}`);
+        if (state.runTick !== AsyncTickBehavior.prototype.runTick) {
+            throw new Error(`FSM state must run through its behavior tree: ${state.stateName}`);
+        }
+    }
+    for (const transition of transitions) {
+        if (!registeredStates.has(transition.parentState) || !registeredStates.has(transition.childState)) {
+            throw new Error(`Unregistered state in FSM transition: ${transition.name}`);
+        }
+    }
+    const root = new NestedStateMachine(transitions, normal);
+    root.stateName = 'companionRoot';
     return { root, states, safetyStates: safety };
 }
 

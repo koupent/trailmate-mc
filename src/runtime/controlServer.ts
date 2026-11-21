@@ -3,7 +3,7 @@ import dotenv from 'dotenv';
 import minecraftData from 'minecraft-data';
 import type { AppConfig } from '../config.js';
 import { loadConfig } from '../config.js';
-import { bootHost, type TrailmateHost } from '../host/BotHost.js';
+import { bootHost, recordChat, type TrailmateHost } from '../host/BotHost.js';
 import {
   humanizeSpawnFailure,
   isDuplicateLoginError
@@ -23,6 +23,7 @@ import {
   setMobHostility
 } from '../world/mobHostility.js';
 import { settingsSchema } from '../settings/companionSettings.js';
+import { snapshotInventoryFill } from '../companion/utils/inventorySnapshot.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -72,6 +73,31 @@ export function startControlServer(
       }
       if (request.method === 'GET' && url.pathname === '/commands') {
         return json(response, 200, { commands: listChatCommands() });
+      }
+      if (request.method === 'GET' && url.pathname === '/chat') {
+        return json(response, 200, { entries: state.host?.chatEntries ?? [] });
+      }
+      if (request.method === 'POST' && url.pathname === '/chat') {
+        const body = await readJson(request) as { kind?: unknown; text?: unknown } | null;
+        const kind = body?.kind;
+        const text = typeof body?.text === 'string' ? body.text.trim() : '';
+        if ((kind !== 'message' && kind !== 'command') || !text || /[\p{Cc}\u2028\u2029]/u.test(text)
+          || (kind === 'command' ? !/^\/\S/.test(text) : text.startsWith('/'))) {
+          return json(response, 400, { error: '送信する内容を1行で入力してください。Minecraftコマンドは / から始めてください。' });
+        }
+        const host = state.host;
+        if (!host?.bot.entity || !host.chat_ingame) {
+          return json(response, 409, { error: '相棒をスポーンし、ゲーム内チャットを有効にしてください。' });
+        }
+        const addressed = `@${host.bot.username} ${text}`;
+        const outgoing = kind === 'command' ? text : `[管理画面] ${addressed}`;
+        if (outgoing.length > 256) return json(response, 400, { error: 'メッセージが長すぎます。' });
+        host.bot.chat(outgoing);
+        recordChat(host, kind, text);
+        const replied = kind === 'message'
+          ? Boolean(await host.companion?.manager?.handlePlayerMessage('管理画面', addressed, true))
+          : undefined;
+        return json(response, 200, { replied, entries: host.chatEntries });
       }
       if (request.method === 'POST' && url.pathname === '/command') {
         const body = (await readJson(request)) as { id?: unknown };
@@ -240,6 +266,7 @@ export function buildStatus(state: ControlState) {
     lastError: state.lastError,
     botName: host.name || bot.username,
     username: bot.username,
+    chatIngame: host.chat_ingame,
     health: bot.health ?? null,
     food: bot.food ?? null,
     oxygen: bot.oxygenLevel ?? null,
@@ -259,6 +286,7 @@ export function buildStatus(state: ControlState) {
     activeFsm: manager?.getActiveFsmId?.() ?? null,
     fsm: manager?.describeFsm?.() ?? null,
     inventory: items,
+    ...snapshotInventoryFill(bot),
     unsetMobs: listUnsetEncounters()
   };
 }
@@ -303,10 +331,10 @@ export function runChatCommand(
   if (!command) return { ok: false, error: `unknown command: ${id}` };
   const companion = state.host?.companion;
   const dialogue = companion?.dialogue;
-  if (!dialogue) return { ok: false, error: '相棒がスポーンしていません' };
+  if (!dialogue || !companion.manager?.handlePlayerMessage) return { ok: false, error: '相棒がスポーンしていません' };
   if (dialogue.isActionBusy) return { ok: false, error: '相棒が受け渡し中です' };
   const owner = companion?.ctx?.ownerName || '';
-  void dialogue.handlePlayerMessage(owner, command.word).catch((error: unknown) => {
+  void companion.manager.handlePlayerMessage(owner, command.word).catch((error: unknown) => {
     console.error('[trailmate] dashboard command failed:', error);
   });
   return { ok: true };

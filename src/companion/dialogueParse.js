@@ -8,7 +8,6 @@ import { tEvent, tSupplyCategory } from '../i18n/index.js';
 import { DEFAULT_FOLLOW_DISTANCE } from './movement/followConstants.js';
 import { isNearOwnerHorizontally } from './movement/followGeometry.js';
 
-const OVERLAY_CONTROL_OWNERS = new Set(['survival', 'recovery', 'combat', 'transfer']);
 
 /**
  * @typedef {{
@@ -297,7 +296,7 @@ function hostileLabel(id) {
  * @param {string} language
  * @param {string} eventId
  * @param {object} snap
- * @param {{ excludeMessage?: string }} [options]
+ * @param {{ excludeMessage?: string, fallback?: boolean }} [options]
  */
 export function renderCommentary(language, eventId, snap = {}, options = {}) {
     const locale = language || 'ja';
@@ -359,12 +358,12 @@ export function detectHostileApproach(prev, snap, config = {}) {
     const thresholds = config.hostile_approach_distances || DEFAULT_APPROACH_DISTANCES;
     const band = snap.hostileBand ?? deriveHostileBand(snap.hostile.distance, thresholds);
     const name = snap.hostile.name || '敵';
-    const dist = snap.hostile.distance;
 
     if (!prev?.hostile) {
         return {
             id: 'hostile',
-            text: `Hostile ${name} nearby (${dist}m)`,
+            text: `Spotted a nearby ${name}.`,
+            cooldownKey: 'hostile',
             priority: 2
         };
     }
@@ -380,42 +379,8 @@ export function detectHostileApproach(prev, snap, config = {}) {
     if (!eventId) return null;
     return {
         id: eventId,
-        text: `Hostile ${name} approaching (${band}, ${dist}m)`,
-        priority: 2
-    };
-}
-
-/**
- * Combat target switch while in combat control.
- * @param {object|null} prev
- * @param {object} snap
- * @returns {{ id: string, text: string, priority: number }|null}
- */
-export function detectCombatTargetSwitch(prev, snap) {
-    if (!snap || snap.controlOwner !== 'combat') return null;
-    if (!snap.combatTarget) return null;
-    if (!prev || prev.controlOwner !== 'combat') return null;
-    if (prev.combatTarget === snap.combatTarget) return null;
-    if (!prev.combatTarget) return null;
-    return {
-        id: 'combat_target_switch',
-        text: `Combat target -> ${snap.combatTarget}`,
-        priority: 2
-    };
-}
-
-/**
- * Ongoing combat commentary while fighting.
- * @param {object} snap
- * @returns {{ id: string, text: string, priority: number }|null}
- */
-export function detectCombatCommentary(snap) {
-    if (!snap || snap.controlOwner !== 'combat') return null;
-    if (!snap.combatTarget) return null;
-    const dist = snap.hostile?.distance != null ? `${snap.hostile.distance}m` : '?';
-    return {
-        id: 'combat_fighting',
-        text: `Fighting ${snap.combatTarget} (${dist})`,
+        text: `A ${name} is getting closer (${band} range).`,
+        cooldownKey: 'hostile',
         priority: 2
     };
 }
@@ -505,24 +470,17 @@ function ownerFoundEventId(snap, config) {
  * @param {object} snap
  * @param {{ low_health?: number, stuck_seconds?: number }} config
  */
-function detectDamagedEvent(prev, snap, config) {
+function detectDamagedEvent(prev, snap) {
     const recentDamage = snap.lastDamageAgeMs != null
         && snap.lastDamageAgeMs < 2000
         && (prev.lastDamageAgeMs == null || prev.lastDamageAgeMs >= 2000);
     if (!recentDamage) return null;
 
-    const lowHealth = config.low_health ?? 8;
-    if (snap.health != null && snap.health <= lowHealth) {
-        return { id: 'damaged_low', text: `Low HP damage (${snap.health})`, priority: 2 };
-    }
-    if (snap.hostile) {
-        return {
-            id: 'damaged_combat',
-            text: `Combat damage from ${snap.hostile.name}`,
-            priority: 2
-        };
-    }
-    return { id: 'damaged', text: `Took damage (${snap.lastDamageTaken})`, priority: 2 };
+    return {
+        id: 'damaged', priority: 2, cooldownKey: 'companion_took_damage',
+        text: 'The companion took damage. Its source is unknown.',
+        actionFacts: [{ actor: 'unknown', action: 'caused damage', target: 'companion' }]
+    };
 }
 
 /**
@@ -537,25 +495,10 @@ export function detectSituationEvent(prev, snap, config = {}) {
     const lowHealth = config.low_health ?? 8;
     const stuckSeconds = config.stuck_seconds ?? 5;
 
-    if (prev.controlOwner !== snap.controlOwner) {
-        const next = snap.controlOwner || 'follow';
-        if (
-            (next === 'follow' || next === 'wait')
-            && !OVERLAY_CONTROL_OWNERS.has(prev.controlOwner)
-        ) {
-            /* skip — registered mode switch already has a command reply */
-        } else {
-            return { id: `control_${next}`, text: `Control -> ${next}`, priority: 2 };
-        }
-    }
-
-    const targetSwitch = detectCombatTargetSwitch(prev, snap);
-    if (targetSwitch) return targetSwitch;
-
     if (!prev.owner && snap.owner) {
         return {
             id: ownerFoundEventId(snap, config),
-            text: `Found owner ${snap.owner}`,
+            text: 'Found the player the companion is following.',
             priority: 2
         };
     }
@@ -574,65 +517,25 @@ export function detectSituationEvent(prev, snap, config = {}) {
     const damaged = detectDamagedEvent(prev, snap, config);
     if (damaged) return damaged;
 
-    if (snap.stuckAlert) {
-        return { id: 'stuck', text: `Stuck for ${snap.stuckSeconds}s`, priority: 2 };
+    const fighting = Boolean(snap.combatTarget);
+    if (!fighting && (snap.stuckAlert || (snap.stuckSeconds >= stuckSeconds && prev.stuckSeconds < stuckSeconds))) {
+        return { id: 'stuck', text: 'The companion cannot move along the current route.', priority: 2 };
     }
-    if (
-        snap.stuckSeconds >= stuckSeconds
-        && prev.stuckSeconds < stuckSeconds
-    ) {
-        return { id: 'stuck', text: `Stuck for ${snap.stuckSeconds}s`, priority: 2 };
-    }
-    if (snap.isNight && !prev.isNight) {
-        return { id: 'night', text: 'Night has fallen', priority: 0 };
-    }
-    if (!snap.isNight && prev.isNight) {
-        return { id: 'day', text: 'Morning has come', priority: 0 };
-    }
-
     const approach = detectHostileApproach(prev, snap, config);
     if (approach) return approach;
 
-    return null;
-}
-
-/**
- * Soft idle mutter while following or waiting (no situation change required).
- * @param {object} snap
- * @param {{ follow_distance?: number, owner_near_radius?: number }} config
- * @returns {{ id: string, text: string, priority: number }|null}
- */
-export function detectIdleCommentary(snap, config = {}) {
-    if (!snap) return null;
-    if (snap.controlOwner === 'combat') return null;
-
-    if (snap.mode === 'follow') {
-        const phase = deriveFollowPhase(snap, config);
-        if (!phase || phase === 'deferred') return null;
-
-        const idleIds = {
-            near: 'idle_follow_near',
-            chasing: 'idle_follow_chasing',
-            far: 'idle_follow_far',
-            lost: 'idle_follow_lost'
-        };
-        const id = idleIds[phase];
-        if (!id) return null;
-
-        const dist = snap.ownerDistance != null ? `${snap.ownerDistance}m` : '近く';
-        return {
-            id,
-            text: `${snap.owner || 'だれか'} follow ${phase} (${dist})`,
-            priority: 0
-        };
+    if (snap.isNight === true && prev.isNight === false) {
+        return { id: 'night', text: 'Night has fallen', priority: 0 };
+    }
+    if (snap.isNight === false && prev.isNight === true) {
+        return { id: 'day', text: 'Morning has come', priority: 0 };
     }
 
-    if (snap.mode === 'wait') {
-        return {
-            id: 'idle_wait',
-            text: 'Waiting in place',
-            priority: 0
-        };
+    if (snap.isRaining === true && prev.isRaining === false) {
+        return { id: 'rain_started', text: 'Rain started', priority: 0 };
+    }
+    if (snap.isRaining === false && prev.isRaining === true) {
+        return { id: 'rain_stopped', text: 'Rain stopped', priority: 0 };
     }
     return null;
 }
