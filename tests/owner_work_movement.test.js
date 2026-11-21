@@ -8,6 +8,7 @@ import {
     wouldEnterOwnerWorkFov
 } from '../src/companion/ownerWorkMovement.js';
 import { isBotInOwnerFov } from '../src/companion/followPosition.js';
+import { WorldState } from '../src/companion/WorldState.js';
 import {
     OWNER_WORK_PHASES,
     seedPlayerWorkPhase
@@ -27,6 +28,7 @@ function makeCtx(overrides = {}) {
             follow_distance: 3
         },
         playerWorkById: new Map(),
+        worldState: new WorldState(),
         bot: {
             entity: { position: { x: 0, y: 64, z: -4 } },
             players: {
@@ -241,8 +243,8 @@ describe('ownerWorkMovement', () => {
         assert.equal(applyOwnerWorkRetreat(ctx), true);
         assert.equal(ctx.movement.stopCalls, 1);
         assert.equal(ctx.movement.goCalls.length, 0);
-        assert.ok(chats.length >= 1);
-        assert.match(chats[0], /通れない/);
+        assert.deepEqual(chats, []);
+        assert.equal(ctx.worldState.recentObservations().at(-1)?.id, 'path_blocked');
     });
 
     it('stops when already within push range even if a lateral target exists', () => {
@@ -261,8 +263,8 @@ describe('ownerWorkMovement', () => {
         assert.equal(applyOwnerWorkRetreat(ctx), true);
         assert.equal(ctx.movement.goCalls.length, 0);
         assert.equal(ctx.movement.stopCalls, 1);
-        assert.ok(chats.length >= 1);
-        assert.match(chats[0], /通れない/);
+        assert.deepEqual(chats, []);
+        assert.equal(ctx.worldState.recentObservations().at(-1)?.id, 'path_blocked');
     });
 
     it('does not goToward when the yield target would push through the player', () => {
@@ -288,7 +290,7 @@ describe('ownerWorkMovement', () => {
         assert.equal(applyOwnerWorkRetreat(ctx), true);
         assert.equal(ctx.movement.goCalls.length, 0, 'must not path through players');
         assert.equal(ctx.movement.stopCalls, 1);
-        assert.ok(chats.length >= 1);
-        assert.match(chats[0], /通れない/);
+        assert.deepEqual(chats, []);
+        assert.equal(ctx.worldState.recentObservations().at(-1)?.id, 'path_blocked');
     });
 });

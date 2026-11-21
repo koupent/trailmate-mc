@@ -39,28 +39,24 @@
 
       <div id="shell-app" class="shell shell-hidden">
         <section id="tab-operate" class="tab-panel is-active" role="tabpanel">
-          <header class="play-header">
-            <div class="row">
-              <span id="play-connection" class="pill off">未接続</span>
-              <button type="button" id="spawn-btn" class="primary" disabled>スポーン</button>
-              <button type="button" id="despawn-btn" disabled>デスポーン</button>
-            </div>
-          </header>
-          <div class="play-notices">
-            <span id="spawn-msg" class="msg" role="status"></span>
-            <p id="spawn-block-reason" class="warn">ボット側の準備状況を確認しています…</p>
-          </div>
           <div class="play-workspace">
             <article class="play-chat">
               <header class="play-chat-head">
                 <div><h2>相棒とチャット</h2><p id="play-bot-name"></p></div>
-                <small>ワールドへ公開</small>
+                <div class="play-world-controls" role="group" aria-label="ワールドへの接続">
+                  <button type="button" id="spawn-btn" class="primary" disabled>スポーン</button>
+                  <button type="button" id="despawn-btn" disabled>デスポーン</button>
+                </div>
+                <p id="spawn-msg" class="msg" role="status"></p>
               </header>
               <div id="conversation-feed" class="conversation-feed" role="log" tabindex="0" aria-label="相棒との会話"></div>
               <form id="play-compose" class="play-compose">
-                <div class="compose-mode" role="group" aria-label="送信する内容">
-                  <button type="button" data-compose-mode="message" aria-pressed="true">相棒に話す</button>
-                  <button type="button" data-compose-mode="command" aria-pressed="false">Minecraftコマンド</button>
+                <div class="compose-head">
+                  <div class="compose-mode" role="group" aria-label="送信する内容">
+                    <button type="button" data-compose-mode="message" aria-pressed="true">相棒に話す</button>
+                    <button type="button" data-compose-mode="command" aria-pressed="false">Minecraftコマンド</button>
+                  </div>
+                  <span class="play-chat-visibility">Minecraftの公開チャットに送信</span>
                 </div>
                 <div class="preset-heading">
                   <span id="play-presets-label">よく使うメッセージ · 押すと送信</span>
@@ -81,7 +77,13 @@
               </div>
             </article>
             <div class="play-right">
-              <div id="status-panel" class="play-summary">読み込み中…</div>
+              <section class="play-summary" aria-labelledby="play-summary-title">
+                <header class="play-summary-head">
+                  <h2 id="play-summary-title">相棒の状態</h2>
+                  <span id="play-connection" class="pill off">確認中</span>
+                </header>
+                <div id="status-panel">読み込み中…</div>
+              </section>
               <div class="play-detail-tabs" role="tablist" aria-label="相棒の詳細">
                 <button id="play-inventory-tab" type="button" role="tab" aria-controls="play-inventory" aria-selected="true">持ち物</button>
                 <button id="play-fsm-tab" type="button" role="tab" aria-controls="play-fsm" aria-selected="false" tabindex="-1">状態遷移</button>

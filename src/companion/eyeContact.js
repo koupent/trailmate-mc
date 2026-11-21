@@ -147,7 +147,6 @@ export class EyeContactReaction {
                         { actor: 'player', action: 'looked at the companion' },
                         { actor: 'companion', action: 'bowed twice in response' }
                     ],
-                    fixedLine: true,
                     reaction: true,
                     recipient: ctx.ownerName
                 } };

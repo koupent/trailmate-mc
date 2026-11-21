@@ -11,6 +11,7 @@ RUN npm ci \
 
 COPY tsconfig.json ./
 COPY locales ./locales
+COPY locales/ja.json ./locales-default/ja.json
 COPY config.example.json ./config.json
 COPY src ./src
 

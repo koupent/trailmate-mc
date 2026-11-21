@@ -559,7 +559,9 @@ describe('capability notices', () => {
       async openChat(text) { said.push(text); }
     };
     const manager = { getModeCatalog: () => [], interrupts: [] };
-    return { dialogue: new CompanionDialogue(agent, manager, {}), said, agent };
+    const dialogue = new CompanionDialogue(agent, manager, {});
+    dialogue._claudeBudget = null;
+    return { dialogue, said, agent };
   }
 
   it('holds back the same result until its cooldown passes', async () => {

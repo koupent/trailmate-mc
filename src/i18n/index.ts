@@ -18,6 +18,13 @@ function loadLocale(language: string): LocaleBundle {
   const fallback = path.join(projectRoot(), 'locales', 'ja.json');
   const target = fs.existsSync(file) ? file : fallback;
   const bundle = JSON.parse(fs.readFileSync(target, 'utf8')) as LocaleBundle;
+  // Older installations mount their locales over /app/locales during image updates.
+  const shipped = path.join(projectRoot(), 'locales-default', 'ja.json');
+  if (fs.existsSync(shipped)) {
+    const defaults = JSON.parse(fs.readFileSync(shipped, 'utf8')) as LocaleBundle;
+    bundle.commands = { ...defaults.commands, ...bundle.commands };
+    bundle.events = { ...defaults.events, ...bundle.events };
+  }
   cache.set(language, bundle);
   return bundle;
 }

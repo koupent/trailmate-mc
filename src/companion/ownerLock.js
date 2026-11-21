@@ -2,7 +2,6 @@
  * Shared owner lock helpers for FollowMode and CompanionDialogue.
  */
 
-import { tCommand } from '../i18n/index.js';
 import { deriveFollowPhase, deriveOwnerLockedKey } from './dialogueParse.js';
 import { hasLineOfSight } from '../world/lineOfSight.js';
 import { currentControlOwner } from './ControlPriority.js';
@@ -81,19 +80,15 @@ export function buildOwnerFollowFacts(ctx, mode = 'follow') {
 }
 
 /**
- * Fixed-line chat for a new owner lock.
+ * Report a new owner lock through dialogue.
  * @param {import('./CompanionContext.js').CompanionContext} ctx
  * @param {string} username
  */
 export async function notifyOwnerLocked(ctx, username) {
     const name = String(username || '').trim();
     if (!name) return;
-    if (ctx.agent?.shut_up) return;
-    if (typeof ctx.agent?.openChat !== 'function') return;
-
-    const language = ctx.agent.language || 'ja';
     const snap = buildOwnerFollowFacts(ctx, 'follow');
     const phase = deriveFollowPhase(snap, ctx.config || {});
     const key = deriveOwnerLockedKey(phase);
-    await ctx.agent.openChat(tCommand(language, key, { owner: name }));
+    await ctx.agent?.companion?.dialogue?.speakNotice(key, { owner: name });
 }
