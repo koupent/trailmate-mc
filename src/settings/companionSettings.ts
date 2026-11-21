@@ -135,9 +135,7 @@ export const SETTING_CATEGORIES: SettingCategory[] = [
         fields: [
           bool('ゲーム内チャットで話す', 'chat_ingame'),
           bool('自分から話しかける', 'companion.chat.enabled'),
-          pct('話しかける頻度', 'companion.chat.spontaneous_chance'),
-          pct('何もないときに話す頻度', 'companion.chat.idle_chance'),
-          pct('戦闘中に話す頻度', 'companion.chat.combat_commentary_chance'),
+          pct('周囲の変化に反応して話しかける頻度', 'companion.chat.spontaneous_chance'),
           sec('発言の最短間隔', 'companion.chat.min_interval_ms', 0, 600, { advanced: true }),
           sec('重要な発言の最短間隔', 'companion.chat.priority_min_interval_ms', 0, 600, { advanced: true }),
           sec('同じ話題を繰り返さない時間', 'companion.chat.event_cooldown_ms', 0, 1800, { advanced: true }),

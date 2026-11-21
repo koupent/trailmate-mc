@@ -1,5 +1,4 @@
 import { AsyncTickBehavior } from './AsyncTickBehavior.js';
-import { runTree } from '../../behaviorTree/bt.js';
 import { createPlantingTree } from '../../planting/CropPlanter.js';
 
 /**
@@ -9,14 +8,8 @@ import { createPlantingTree } from '../../planting/CropPlanter.js';
 export class PlantingBehavior extends AsyncTickBehavior {
     /** @param {object} targets */
     constructor(targets) {
-        super('planting');
-        this.targets = targets;
+        super('planting', targets);
         this.tree = createPlantingTree(targets.planter);
-    }
-
-    onStateEntered() {
-        super.onStateEntered();
-        this.targets.activeId = 'planting';
     }
 
     onStateExited() {
@@ -24,9 +17,7 @@ export class PlantingBehavior extends AsyncTickBehavior {
         super.onStateExited();
     }
 
-    async runTick() {
-        if (this.targets.paused) return;
+    prepareTick() {
         this.targets.followMode.trackOwner?.(this.targets.ctx);
-        await runTree(this.tree, this.targets.ctx);
     }
 }

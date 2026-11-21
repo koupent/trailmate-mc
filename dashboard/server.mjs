@@ -42,6 +42,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const publicDir = path.join(here, 'public');
 const projectRoot = process.env.PROJECT_ROOT || path.resolve(here, '..');
 const port = Number(process.env.DASHBOARD_PORT || 8787);
+const bindHost = process.env.DASHBOARD_BIND || '127.0.0.1';
 const controlUrl = (process.env.TRAILMATE_CONTROL_URL || 'http://trailmate:8790').replace(/\/$/, '');
 const viaproxyService = process.env.VIAPROXY_SERVICE || 'viaproxy';
 const updateManager = createUpdateManager(projectRoot);
@@ -137,6 +138,17 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/commands') {
       return proxyControl(response, '/commands', 'GET');
     }
+    if (url.pathname === '/api/chat' && (request.method === 'GET' || request.method === 'POST')) {
+      if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+        || (request.headers.origin && request.headers.origin !== url.origin)) {
+        return json(response, 403, { error: 'チャットとMinecraftコマンドはローカルの管理画面から操作してください。' });
+      }
+      if (request.method === 'GET') return proxyControl(response, '/chat');
+      if (request.headers['content-type']?.split(';')[0] !== 'application/json') {
+        return json(response, 415, { error: 'JSON 形式で送信してください。' });
+      }
+      return proxyControl(response, '/chat', 'POST', JSON.stringify(await readJson(request)));
+    }
     if (request.method === 'POST' && url.pathname === '/api/command') {
       const body = await readJson(request);
       return proxyControl(response, '/command', 'POST', JSON.stringify({ id: body?.id }));
@@ -188,8 +200,8 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(port, '0.0.0.0', () => {
-  console.log(`[dashboard] http://0.0.0.0:${port}`);
+server.listen(port, bindHost, () => {
+  console.log(`[dashboard] http://${bindHost}:${port}`);
   startProxyWatchdog();
 });
 
@@ -211,8 +223,9 @@ async function readSettings() {
   const envText = await fs.readFile(PATHS.env, 'utf8');
   const env = parseEnv(envText);
   const viaproxyText = await fs.readFile(PATHS.viaproxy, 'utf8');
-  const targetAddress = matchYaml(viaproxyText, 'target-address') || '';
-  const authMethod = matchYaml(viaproxyText, 'auth-method') || 'ACCOUNT';
+  const backend = matchProxyBackend(viaproxyText);
+  const targetAddress = (backend ? matchYaml(backend[1], 'address', '  ') : matchYaml(viaproxyText, 'target-address')) || '';
+  const authMethod = (backend ? matchYaml(backend[1], 'auth-method', '  ') : matchYaml(viaproxyText, 'auth-method')) || 'ACCOUNT';
   const botName = env.BOT_NAME || 'Trailmate';
   let config = {};
   try {
@@ -285,8 +298,14 @@ async function writeSettings(body) {
   await fs.writeFile(PATHS.env, envText, 'utf8');
 
   let yml = await fs.readFile(PATHS.viaproxy, 'utf8');
-  yml = upsertYaml(yml, 'target-address', targetAddress);
-  yml = upsertYaml(yml, 'auth-method', authMethod);
+  const backend = matchProxyBackend(yml);
+  if (backend) {
+    const body = upsertYaml(upsertYaml(backend[1], 'address', targetAddress, '  '), 'auth-method', authMethod, '  ');
+    const heading = backend[0].slice(0, backend[0].length - backend[1].length);
+    yml = yml.slice(0, backend.index) + heading + body + yml.slice(backend.index + backend[0].length);
+  } else {
+    yml = upsertYaml(upsertYaml(yml, 'target-address', targetAddress), 'auth-method', authMethod);
+  }
   await fs.writeFile(PATHS.viaproxy, yml, 'utf8');
 
   if (minecraftVersion) {
@@ -1169,7 +1188,7 @@ async function sendUiCopy(response) {
 function serveStatic(pathname, response) {
   const file = pathname === '/' ? 'index.html' : pathname.slice(1);
   if (
-    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'fsmLabels.js', 'btTree.js', 'logFollow.js', 'retention.js', 'mobs.js', 'companionSettings.js', 'companionStatus.js', 'styles.css'].includes(
+    !['index.html', 'app.js', 'domSync.js', 'fsmGraph.js', 'fsmLabels.js', 'btTree.js', 'logFollow.js', 'retention.js', 'mobs.js', 'companionSettings.js', 'companionStatus.js', 'styles.css', 'playChat.js', 'play.css'].includes(
       file
     )
   ) {
@@ -1205,15 +1224,19 @@ function upsertEnv(text, key, value) {
   return `${text.replace(/\s*$/, '')}\n${line}\n`;
 }
 
-function matchYaml(text, key) {
-  const re = new RegExp(`^${key}:\\s*(.+)$`, 'm');
+function matchProxyBackend(text) {
+  return /^backend:[ \t]*\r?\n((?:[ \t]+[^\r\n]*(?:\r?\n|$)|\r?\n)*)/m.exec(text);
+}
+
+function matchYaml(text, key, indent = '') {
+  const re = new RegExp(`^${indent}${key}:[ \\t]*(.+)$`, 'm');
   const match = text.match(re);
   return match ? match[1].trim().replace(/^['"]|['"]$/g, '') : null;
 }
 
-function upsertYaml(text, key, value) {
-  const line = `${key}: ${value}`;
-  const re = new RegExp(`^${key}:\\s*.*$`, 'm');
+function upsertYaml(text, key, value, indent = '') {
+  const line = `${indent}${key}: ${value}`;
+  const re = new RegExp(`^${indent}${key}:[ \\t]*[^\\r\\n]*`, 'm');
   if (re.test(text)) return text.replace(re, line);
   return `${text.replace(/\s*$/, '')}\n${line}\n`;
 }

@@ -87,6 +87,7 @@ services:
         condition: service_healthy
     environment:
       DASHBOARD_PORT: 8787
+      DASHBOARD_BIND: 0.0.0.0
       TRAILMATE_CONTROL_URL: http://trailmate:8790
       PROJECT_ROOT: /project
       COMPOSE_PROJECT_NAME: trailmate-mc
@@ -95,7 +96,7 @@ services:
       - ./:/project
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "8787:8787"
+      - "127.0.0.1:8787:8787"
     healthcheck:
       test:
         [

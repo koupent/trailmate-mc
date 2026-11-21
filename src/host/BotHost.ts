@@ -5,11 +5,13 @@ import { plugin as autoEat } from 'mineflayer-auto-eat';
 import armorManager from 'mineflayer-armor-manager';
 import type { AppConfig } from '../config.js';
 import { startCompanion } from '../companion/index.js';
+import { WorldState } from '../companion/WorldState.js';
 import { Reflexes } from '../reflexes/Reflexes.js';
 import { setupAutoEat } from './autoEat.js';
-import { tCommand } from '../i18n/index.js';
 import { extractKickReason } from '../runtime/spawnErrors.js';
 import { installMovementPacketLimiter } from './movementPackets.js';
+
+export type ChatEntry = { kind: 'companion' | 'message' | 'command'; text: string; at: number };
 
 export type TrailmateHost = {
   bot: Bot;
@@ -17,10 +19,17 @@ export type TrailmateHost = {
   shut_up: boolean;
   language: string;
   chat_ingame: boolean;
+  chatEntries: ChatEntry[];
   openChat: (text: string) => Promise<void>;
   companion: any;
   reflexes: Reflexes | null;
+  autoEatTree?: ReturnType<typeof setupAutoEat>;
 };
+
+export function recordChat(host: TrailmateHost, kind: ChatEntry['kind'], text: string): void {
+  host.chatEntries.push({ kind, text, at: Date.now() });
+  if (host.chatEntries.length > 100) host.chatEntries.shift();
+}
 
 export function createBot(config: AppConfig): Bot {
   const options: mineflayer.BotOptions = {
@@ -49,6 +58,8 @@ export function createBot(config: AppConfig): Bot {
 
 export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
   const bot = createBot(config);
+  const worldState = new WorldState();
+  worldState.observeWeather(bot);
 
   const host: TrailmateHost = {
     bot,
@@ -56,6 +67,7 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
     shut_up: false,
     language: config.language,
     chat_ingame: config.chat_ingame,
+    chatEntries: [],
     companion: null,
     reflexes: null,
     openChat: async (text: string) => {
@@ -65,6 +77,7 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
       if (host.chat_ingame) {
         bot.chat(message);
       }
+      recordChat(host, 'companion', message);
     }
   };
 
@@ -100,7 +113,7 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
   });
 
   trackDamage(bot);
-  setupAutoEat(bot, config.companion.auto_eat);
+  host.autoEatTree = setupAutoEat(bot, config.companion.auto_eat);
 
   host.reflexes = new Reflexes(
     bot,
@@ -108,18 +121,22 @@ export async function bootHost(config: AppConfig): Promise<TrailmateHost> {
     config.companion.torch_light_threshold
   );
 
-  await startCompanion(host, config.companion);
+  await startCompanion(host, config.companion, worldState);
 
   bot.on('chat', (username, message) => {
     if (username === bot.username) return;
-    void host.companion?.dialogue?.handlePlayerMessage?.(username, message);
+    void host.companion?.manager?.handlePlayerMessage(username, message, true).catch((err: unknown) => {
+      console.error('[companion] chat error:', err);
+    });
   });
   bot.on('whisper', (username, message) => {
     if (username === bot.username) return;
-    void host.companion?.dialogue?.handlePlayerMessage?.(username, message);
+    void host.companion?.manager?.handlePlayerMessage(username, message).catch((err: unknown) => {
+      console.error('[companion] whisper error:', err);
+    });
   });
 
-  await host.openChat(tCommand(config.language, 'boot_ready', { name: host.name }));
+  await host.companion.manager.handleLifecycle('ready');
   console.log(`[trailmate] spawned as ${host.name}`);
   return host;
 }

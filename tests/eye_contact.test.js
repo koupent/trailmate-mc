@@ -1,6 +1,8 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { Vec3 } from 'vec3';
+import { action, describeTreeActivity, runTree } from '../src/companion/behaviorTree/bt.js';
+import { NormalBehavior } from '../src/companion/stateMachine/behaviors/NormalBehavior.js';
 import {
     EyeContactReaction,
     isLookingAt
@@ -32,7 +34,7 @@ function makeReactionFixture(overrides = {}) {
     const owner = entity(0, 64, 3, 0, 0);
     const botEntity = entity(0, 64, 0);
     let raycastResult = null;
-    let spoken = 0;
+    const topics = [];
 
     const bot = {
         entity: botEntity,
@@ -62,13 +64,7 @@ function makeReactionFixture(overrides = {}) {
             return fsmId;
         }
     };
-    const dialogue = {
-        isActionBusy: false,
-        async speakEyeContact() {
-            spoken++;
-            return true;
-        }
-    };
+    const dialogue = { isActionBusy: false };
     const movement = { hasGoal: false, isMoving: false };
     const ctx = {
         bot,
@@ -95,24 +91,28 @@ function makeReactionFixture(overrides = {}) {
         owner,
         reaction,
         sneakPackets,
+        async tick() {
+            const result = await reaction.tick(ctx);
+            if (result?.commentary) topics.push(result.commentary);
+        },
         advance(ms) { now += ms; },
         setFsmId(value) { fsmId = value; },
         setRaycastResult(value) { raycastResult = value; },
-        spoken() { return spoken; }
+        topics
     };
 }
 
 async function reachReaction(fixture) {
-    await fixture.reaction.tick(fixture.ctx);
+    await fixture.tick();
     fixture.advance(500);
-    await fixture.reaction.tick(fixture.ctx);
+    await fixture.tick();
 }
 
 async function finishReaction(fixture, clearBeforeTick = false) {
     for (let i = 0; i < 3; i++) {
         fixture.advance(250);
         if (clearBeforeTick) fixture.bot.clearControlStates();
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
     }
 }
 
@@ -139,22 +139,57 @@ describe('isLookingAt', () => {
 });
 
 describe('EyeContactReaction', () => {
+    it('runs in the normal behavior tree and reports the completed bow there', async () => {
+        const fixture = makeReactionFixture();
+        const { ctx, reaction } = fixture;
+        ctx.agent.companion.eyeContact = reaction;
+        const waitTree = action('待機する', () => true);
+        const waitMode = { tree: waitTree, tick: () => runTree(waitTree, ctx) };
+        const normal = new NormalBehavior({ ctx, agent: ctx.agent, waitMode, followMode: waitMode, preferredMode: 'wait' });
+        normal.onStateEntered();
+        await normal.runTick();
+        fixture.advance(500);
+        await normal.runTick();
+        assert.equal(fixture.bot.getControlState('sneak'), true);
+        assert.deepEqual(describeTreeActivity(normal.tree).commentary, []);
+        for (let i = 0; i < 3; i++) {
+            fixture.advance(250);
+            await normal.runTick();
+        }
+        const activity = describeTreeActivity(normal.tree);
+        assert.ok(activity.actions.includes('目が合った相手にお辞儀をする'));
+        assert.equal(activity.commentary[0]?.id, 'eye_contact');
+        assert.deepEqual(activity.commentary[0].actionFacts.map(({ actor }) => actor), ['player', 'companion']);
+        assert.equal(activity.commentary[0].fixedLine, true);
+        assert.equal(activity.commentary[0].reaction, true);
+        await normal.runTick();
+        assert.deepEqual(describeTreeActivity(normal.tree).commentary, []);
+    });
+
+    it('stands up when the normal state gives up control', async () => {
+        const fixture = makeReactionFixture();
+        await reachReaction(fixture);
+        fixture.reaction.cancel(fixture.ctx);
+        assert.equal(fixture.bot.getControlState('sneak'), false);
+        assert.equal(fixture.reaction.state, 'resting');
+    });
+
     it('waits for dwell time, then looks back and bows twice over four ticks', async () => {
         const fixture = makeReactionFixture();
 
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         fixture.advance(499);
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         assert.deepEqual(fixture.sneakPackets, []);
 
         fixture.advance(1);
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         await finishReaction(fixture);
 
         assert.equal(fixture.lookCalls.length, 4);
         assert.ok(fixture.lookCalls.every((call) => call.force === true));
         assert.deepEqual(fixture.sneakPackets, [true, false, true, false]);
-        assert.equal(fixture.spoken(), 1);
+        assert.equal(fixture.topics.length, 1);
     });
 
     it('does not duplicate sneak packets when stop clears controls before every tick', async () => {
@@ -179,9 +214,9 @@ describe('EyeContactReaction', () => {
         for (const arrange of cases) {
             const fixture = makeReactionFixture();
             arrange(fixture);
-            await fixture.reaction.tick(fixture.ctx);
+            await fixture.tick();
             fixture.advance(1000);
-            await fixture.reaction.tick(fixture.ctx);
+            await fixture.tick();
             assert.deepEqual(fixture.sneakPackets.filter(Boolean), []);
         }
     });
@@ -193,7 +228,7 @@ describe('EyeContactReaction', () => {
 
         fixture.movement.hasGoal = true;
         fixture.advance(250);
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
 
         assert.equal(fixture.bot.getControlState('sneak'), false);
         assert.deepEqual(fixture.sneakPackets, [true, false]);
@@ -205,15 +240,15 @@ describe('EyeContactReaction', () => {
         await finishReaction(fixture);
 
         fixture.advance(20000);
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         assert.deepEqual(fixture.sneakPackets, [true, false, true, false]);
 
         fixture.owner.yaw = Math.PI / 2;
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         fixture.owner.yaw = 0;
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         fixture.advance(500);
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
 
         assert.deepEqual(fixture.sneakPackets, [true, false, true, false, true]);
     });
@@ -224,12 +259,12 @@ describe('EyeContactReaction', () => {
         await finishReaction(fixture);
 
         fixture.owner.yaw = Math.PI / 2;
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         fixture.owner.yaw = 0;
         fixture.advance(1000);
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
         fixture.advance(500);
-        await fixture.reaction.tick(fixture.ctx);
+        await fixture.tick();
 
         assert.deepEqual(fixture.sneakPackets, [true, false, true, false]);
     });
@@ -238,17 +273,17 @@ describe('EyeContactReaction', () => {
         const speaks = makeReactionFixture({ random: 0.29 });
         await reachReaction(speaks);
         await finishReaction(speaks);
-        assert.equal(speaks.spoken(), 1);
+        assert.deepEqual(speaks.topics.map(({ id, recipient }) => [id, recipient]), [['eye_contact', 'Alice']]);
 
         const staysQuiet = makeReactionFixture({ random: 0.3 });
         await reachReaction(staysQuiet);
         await finishReaction(staysQuiet);
-        assert.equal(staysQuiet.spoken(), 0);
+        assert.equal(staysQuiet.topics.length, 0);
 
         const disabled = makeReactionFixture({ config: { enabled: false } });
         await reachReaction(disabled);
         await finishReaction(disabled);
         assert.deepEqual(disabled.sneakPackets, []);
-        assert.equal(disabled.spoken(), 0);
+        assert.equal(disabled.topics.length, 0);
     });
 });

@@ -2,7 +2,6 @@ import { AsyncTickBehavior } from './AsyncTickBehavior.js';
 import {
     action,
     condition,
-    runTree,
     selector,
     sequence
 } from '../../behaviorTree/bt.js';
@@ -26,8 +25,7 @@ export class DutyBehavior extends AsyncTickBehavior {
      * @param {{ id: string, label: string, interrupts: Array<{ name: string, shouldRun: Function, run: Function }> }} spec
      */
     constructor(targets, spec) {
-        super(spec.id);
-        this.targets = targets;
+        super(spec.id, targets);
         this.interrupts = spec.interrupts;
 
         this.tree = sequence(spec.label, [
@@ -62,16 +60,6 @@ export class DutyBehavior extends AsyncTickBehavior {
                 })
             ])
         ]);
-    }
-
-    onStateEntered() {
-        super.onStateEntered();
-        this.targets.activeId = this.stateName;
-    }
-
-    async runTick() {
-        if (this.targets.paused) return;
-        await runTree(this.tree, this.targets.ctx);
     }
 
     /** Light survival while recovering without full combat ownership. */

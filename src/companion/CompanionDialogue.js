@@ -1,8 +1,7 @@
-import { isHostile, getNearestEntityWhere } from '../world/entities.js';
+import { isHostile } from '../world/entities.js';
+import { hasLineOfSight } from '../world/lineOfSight.js';
 import {
     classifyPlayerCommand,
-    detectCombatCommentary,
-    detectIdleCommentary,
     detectSituationEvent,
     deriveFollowPhase,
     deriveFollowReplyKey,
@@ -22,6 +21,8 @@ import { SupplyRequestTracker } from './utils/SupplyRequestTracker.js';
 import { tCommand } from '../i18n/index.js';
 import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
+import { generateClaudeLine, isWeatherGrounded } from './claudeChat.js';
+import { ClaudeChatBudget } from './ClaudeChatBudget.js';
 
 /** Repeat window for a capability notice with the same key. */
 export const DEFAULT_NOTICE_COOLDOWN_MS = 30000;
@@ -33,8 +34,6 @@ export const DEFAULT_CHAT_CONFIG = {
     event_cooldown_ms: 120000,
     player_reply_cooldown_ms: 1500,
     spontaneous_chance: 0.85,
-    idle_chance: 0.55,
-    combat_commentary_chance: 0.6,
     low_health: 8,
     stuck_seconds: 5,
     hostile_range: 12,
@@ -44,7 +43,7 @@ export const DEFAULT_CHAT_CONFIG = {
 };
 
 /**
- * Keyword commands + snapshot-driven rule-based commentary (no LLM).
+ * Keyword commands and snapshot-driven commentary, with optional Claude chat.
  */
 export class CompanionDialogue {
     /**
@@ -57,6 +56,15 @@ export class CompanionDialogue {
         this.manager = manager;
         this.companionConfig = companionConfig;
         this.config = { ...DEFAULT_CHAT_CONFIG, ...(companionConfig.chat || {}) };
+        this._claudeKey = process.env.ANTHROPIC_API_KEY?.trim();
+        this._claudeBudget = this._claudeKey ? new ClaudeChatBudget() : null;
+        this._claudeBusy = false;
+        this._claudeRetryAt = 0;
+        this._lastReplyAt = 0;
+        this._lastCommentaryAt = -Infinity;
+        this._lastCommentaryAttemptAt = -Infinity;
+        this._recentCommentary = [];
+        this._conversation = null;
         this.lastChatAt = 0;
         this.lastPlayerChatAt = 0;
         /** @type {Record<string, number>} */
@@ -71,7 +79,7 @@ export class CompanionDialogue {
         this._actionBusy = false;
         /** @type {Record<string, number>} last time each capability notice was spoken */
         this._lastNoticeAt = {};
-        console.log('[companion] dialogue ready (keyword commands + rule commentary)');
+        console.log(`[companion] dialogue ready (Claude chat ${this._claudeKey ? 'enabled' : 'disabled'})`);
     }
 
     get enabled() {
@@ -120,8 +128,9 @@ export class CompanionDialogue {
     /**
      * @param {string} username
      * @param {string} message
+     * @param {boolean} [publicChat]
      */
-    async handlePlayerMessage(username, message) {
+    async handlePlayerMessage(username, message, publicChat = false) {
         if (this.agent.shut_up) return false;
         if (this._actionBusy || this._isItemTransferActive()) return false;
         const now = Date.now();
@@ -129,6 +138,15 @@ export class CompanionDialogue {
 
         const text = String(message || '').trim();
         if (!text) return false;
+
+        if (publicChat && this.enabled) {
+            const addressed = /^@([a-z0-9_]+)[\s:：]+(.+)$/is.exec(text);
+            const botName = this.agent.bot?.username || this.agent.name;
+            if (addressed && addressed[1].toLowerCase() === botName?.toLowerCase()) {
+                const question = addressed[2].trim().slice(0, 300);
+                return question ? this._replyToPlayer(username, question, now) : false;
+            }
+        }
 
         const allowedIds = this.manager.getModeCatalog().map((m) => m.id);
         const command = classifyPlayerCommand(text, username, allowedIds);
@@ -139,55 +157,114 @@ export class CompanionDialogue {
         return true;
     }
 
+    async _replyToPlayer(username, message, now) {
+        this._claudeBudget?.refresh(now);
+        const fraction = this._claudeBudget?.speechFraction ?? 1;
+        if (!fraction || !this._canSendChat() || this._claudeBusy) return false;
+        if (now - this._lastReplyAt < this.config.player_reply_cooldown_ms / fraction) return false;
+        this._lastReplyAt = now;
+        const { lastPlayerChatAt } = this;
+        const history = fraction >= 0.25 && this._conversation?.username === username
+            ? this._conversation.history : [];
+        const line = this._claudeBudget?.fraction && now >= this._claudeRetryAt
+            ? await this._askClaude(this._buildSnapshot(), { history, message, recipient: username })
+            : '';
+        if (this._claudeBudget?.speechFraction === 0 || this.lastPlayerChatAt !== lastPlayerChatAt
+            || !this._canSendChat()) return false;
+
+        const language = this.agent.language || 'ja';
+        const reply = this._claudeBudget?.fraction && isWeatherGrounded(line, language, this._localRain()) ? line : '';
+        await this._say(reply || tCommand(language, 'reply_unavailable'));
+        if (reply) {
+            this._conversation = {
+                username,
+                history: [...history.slice(-2), { role: 'user', content: message }, { role: 'assistant', content: reply }]
+            };
+        }
+        return true;
+    }
+
+    _canSendChat() {
+        return this.enabled && !this.agent.shut_up && !this._actionBusy
+            && !this._isItemTransferActive() && this.agent.companion?._interval
+            && this.agent.bot?.entity && this.agent.bot.health > 0;
+    }
+
+    _localRain() {
+        return this.agent.companion?.ctx?.worldState?.getLocalRain?.(this.agent.bot);
+    }
+
+    async _askClaude(snapshot, input) {
+        if (this._claudeBusy || Date.now() < this._claudeRetryAt) return '';
+        this._claudeBusy = true;
+        try {
+            const maxTokens = Math.round(60 + 60 * this._claudeBudget.fraction);
+            return await generateClaudeLine(this._claudeKey, this.agent.language || 'ja', snapshot, { ...input, maxTokens });
+        } catch (error) {
+            this._claudeRetryAt = Date.now() + 60000;
+            console.warn(`[companion] Claude chat unavailable (${error.name === 'Error' && /^HTTP \d{3}$/.test(error.message) ? error.message : 'request failed'})`);
+            return '';
+        } finally {
+            this._claudeBusy = false;
+        }
+    }
+
     async maybeSpeak() {
         if (this.config.enabled === false) return;
         if (this.agent.shut_up) return;
         if (this._actionBusy || this._isItemTransferActive()) return;
-
-        const snapshot = this._buildSnapshot();
-        const dialogueConfig = this._dialogueConfig();
-        const inventoryFillEvent = this.inventoryFillTracker.observe(snapshot);
-        const supplyRequestEvent = this._observeSupplyRequest();
-        const situationEvent = detectSituationEvent(this._prev, snapshot, this.config);
-        this._prev = snapshot;
-
-        // Urgent state changes keep precedence. Inventory milestones and
-        // supply requests are guaranteed: both stay queued until delivered,
-        // so they only outrank low-priority situation chatter.
-        let event = situationEvent?.priority >= 2
-            ? situationEvent
-            : inventoryFillEvent || supplyRequestEvent || situationEvent;
-
-        if (!event) {
-            event = detectCombatCommentary(snapshot);
-            if (!event) event = detectIdleCommentary(snapshot, dialogueConfig);
-            if (!event) return;
-            const chance = event.id === 'combat_fighting'
-                ? (this.config.combat_commentary_chance ?? 0.6)
-                : this.config.idle_chance;
-            if (Math.random() > chance) return;
-        } else if (event.priority < 2 && Math.random() > this.config.spontaneous_chance) {
-            return;
-        }
+        this._claudeBudget?.refresh(Date.now());
 
         const now = Date.now();
-        const minInterval = event.priority >= 2
-            ? (this.config.priority_min_interval_ms ?? 15000)
-            : this.config.min_interval_ms;
-        if (now - this.lastChatAt < minInterval) return;
-        if (now - this.lastPlayerChatAt < minInterval) return;
-        if (now - (this.lastEventAt[event.id] || 0) < this.config.event_cooldown_ms) return;
+        const snapshot = this._buildSnapshot(true);
+        const inventoryFillEvent = this.inventoryFillTracker.observe(snapshot);
+        const supplyRequestEvent = this._observeSupplyRequest();
+        const world = this.agent.companion?.ctx?.worldState;
+        const recent = world?.recentObservations?.(now) ?? [];
+        const situation = detectSituationEvent(this._prev, snapshot, this.config);
+        this._prev = snapshot;
+        if (!snapshot.nearbyPlayers.length) return;
 
-        const isStuckEvent = event.id === 'stuck';
-        if (!isStuckEvent) {
-            const recovery = this.manager.interrupts?.find((i) => i.name === 'recovery');
-            if (recovery && Date.now() < (recovery.cooldownUntil || 0)) return;
-            if (this.agent.companion?.ctx?.movement?.isHeld) return;
+        const incoming = (snapshot.activity?.commentary ?? []).map((entry) => ({ ...entry, priority: 0 }));
+        const verifiedDamage = recent.some((entry) => entry.cooldownKey === 'companion_took_damage'
+            && now - entry.seenAt < 1000);
+        if (situation && !recent.some((entry) => entry.id === situation.id)
+            && !(situation.cooldownKey === 'companion_took_damage' && verifiedDamage)) incoming.push(situation);
+        const observations = [...recent, ...incoming.map((entry) => world?.observe?.(entry, now) ?? entry)];
+        const candidates = observations.filter((entry) => !entry.handled
+            && (entry.reaction || now - (this.lastEventAt[entry.cooldownKey ?? entry.id] ?? -Infinity) >= this.config.event_cooldown_ms)
+            && (!entry.recipient || snapshot.nearbyPlayers.some((player) => player.name === entry.recipient)))
+            .sort((a, b) => b.priority - a.priority || (b.seenAt ?? now) - (a.seenAt ?? now));
+        const urgentEvent = candidates.find((entry) => entry.priority >= 2);
+        const reactionEvent = candidates.find((entry) => entry.reaction);
+        const event = urgentEvent || reactionEvent || inventoryFillEvent || supplyRequestEvent || candidates[0];
+        if (!event) return;
+        const recipient = event.recipient
+            ? snapshot.nearbyPlayers.find((player) => player.name === event.recipient)
+            : snapshot.nearbyPlayers[0];
+
+        const operational = Boolean(event.inventoryFill || event.supplyCategories);
+        const urgent = event.priority >= 2;
+        const reaction = event.reaction === true;
+        const casual = !urgent && !operational && !reaction;
+        const fraction = this._claudeBudget?.speechFraction ?? 1;
+        if (casual && !fraction) return;
+        const quietInterval = this.config.priority_min_interval_ms ?? 15000;
+        const minInterval = urgent ? quietInterval : this.config.min_interval_ms / (casual ? fraction : 1);
+        const cooldownKey = event.cooldownKey ?? event.id;
+        // The action owns the timing of its immediate response.
+        if (!reaction) {
+            const lastConversationAt = Math.max(this.lastChatAt, this.lastPlayerChatAt, this._lastReplyAt);
+            if (now - lastConversationAt < (operational ? minInterval : quietInterval)) return;
+            if (!operational && now - this._lastCommentaryAt < minInterval) return;
+            if (now - (this.lastEventAt[cooldownKey] || 0) < this.config.event_cooldown_ms) return;
         }
 
+        const isStuckEvent = event.id === 'stuck';
         const language = this.agent.language || 'ja';
         const inventoryFill = event.inventoryFill;
         const renderSnapshot = { ...snapshot };
+        if (event.target) renderSnapshot.combatTarget = event.target;
         if (inventoryFill) {
             renderSnapshot.inventoryFillPercent = inventoryFill.percent;
             renderSnapshot.inventoryUsedSlots = inventoryFill.usedSlots;
@@ -198,22 +275,57 @@ export class CompanionDialogue {
             renderSnapshot.supplyCategories = event.supplyCategories;
         }
         const message = renderCommentary(language, event.id, renderSnapshot, {
-            excludeMessage: inventoryFill ? this._lastInventoryFillMessage : ''
+            excludeMessage: inventoryFill ? this._lastInventoryFillMessage : '',
+            fallback: false
         });
-        if (!message) return;
-        await this._say(message);
-        this.lastEventAt[event.id] = now;
-        if (inventoryFill) {
-            this._lastInventoryFillMessage = message;
-            this.inventoryFillTracker.markDelivered();
+        const address = !operational ? `@${recipient.name}${language === 'ja' ? '、' : ', '}` : '';
+        const deliver = async (reply) => {
+            if (!reply) return;
+            await this._say(address + reply);
+            this.lastEventAt[cooldownKey] = Date.now();
+            if (!operational && !reaction) this._lastCommentaryAt = this.lastEventAt[cooldownKey];
+            if (!operational) this._recentCommentary = [...this._recentCommentary.slice(-1), reply];
+            if (inventoryFill) {
+                this._lastInventoryFillMessage = reply;
+                this.inventoryFillTracker.markDelivered();
+            }
+            if (event.supplyCategories) this.supplyRequestTracker.markDelivered();
+            if (isStuckEvent && this.agent.companion?.ctx) this.agent.companion.ctx.stuckChat = null;
+        };
+        const useClaude = this._claudeBudget?.fraction && !operational && !event.fixedLine
+            && this._canSendChat() && now >= this._claudeRetryAt;
+        if (useClaude && this._claudeBusy && !urgent) return;
+        if (useClaude && !this._claudeBusy && now - this._lastCommentaryAttemptAt < minInterval) return;
+        if (!operational) event.handled = true;
+        if (casual && Math.random() > (event.chance ?? this.config.spontaneous_chance)) return;
+        if (useClaude && !this._claudeBusy) {
+            this._lastCommentaryAttemptAt = now;
+            const { lastChatAt, lastPlayerChatAt } = this;
+            // A slow reply must not hold the bot's movement loop or follow a newer message.
+            void this._askClaude({ ...snapshot, observations }, {
+                event: event.id,
+                eventDetail: event.text,
+                actionFacts: event.actionFacts,
+                actorIsAddressee: event.recipient === recipient.name || undefined,
+                recipient: recipient.name,
+                recentCommentary: this._recentCommentary
+            }).then(async (line) => {
+                if (line === null) return;
+                if ((casual && !this._claudeBudget.speechFraction) || !this._canSendChat() || this.lastChatAt !== lastChatAt
+                    || this.lastPlayerChatAt !== lastPlayerChatAt) return;
+                const nearby = this.agent.companion?.ctx?.worldState?.nearbyPlayers;
+                if (!nearby?.some((player) => player.name === recipient.name)) return;
+                const observedRain = this._localRain();
+                const currentRain = observedRain === undefined ? snapshot.isRaining : observedRain;
+                if ((event.id === 'rain_started' && currentRain !== true)
+                    || (event.id === 'rain_stopped' && currentRain !== false)) return;
+                const reply = this._claudeBudget.fraction && isWeatherGrounded(line, language, currentRain, event.id)
+                    ? line : '';
+                await deliver(reply || message);
+            }).catch(() => console.warn('[companion] failed to send Claude commentary'));
+            return;
         }
-        if (event.supplyCategories) {
-            this.supplyRequestTracker.markDelivered();
-        }
-        if (isStuckEvent) {
-            const ctx = this.agent.companion?.ctx;
-            if (ctx) ctx.stuckChat = null;
-        }
+        await deliver(message);
     }
 
     _dialogueConfig() {
@@ -341,32 +453,6 @@ export class CompanionDialogue {
     }
 
     /**
-     * Speak after an eye-contact bow, subject to the ordinary chat gates.
-     * @returns {Promise<boolean>} whether the line was spoken
-     */
-    async speakEyeContact() {
-        if (!this.enabled || this.agent.shut_up) return false;
-        if (this._actionBusy || this._isItemTransferActive()) return false;
-
-        const now = Date.now();
-        if (now - this.lastChatAt < this.config.min_interval_ms) return false;
-        if (now - this.lastPlayerChatAt < this.config.min_interval_ms) return false;
-        if (now - (this.lastEventAt.eye_contact || 0) < this.config.event_cooldown_ms) return false;
-
-        const owner = this.agent.companion?.ctx?.ownerName;
-        const message = renderCommentary(
-            this.agent.language || 'ja',
-            'eye_contact',
-            { owner }
-        );
-        if (!message) return false;
-
-        await this._say(message);
-        this.lastEventAt.eye_contact = now;
-        return true;
-    }
-
-    /**
      * Speak on behalf of another capability (chest transfer, ...). Capabilities
      * report outcomes that can repeat for as long as their cause lasts, so the
      * same key is held back until its cooldown passes.
@@ -420,7 +506,8 @@ export class CompanionDialogue {
             inventoryEmptySlots: 36,
             inventoryFillPercent: 0,
             timeOfDay: null,
-            isNight: false,
+            isNight: null,
+            isRaining: null,
             stuckSeconds: 0,
             stuckAlert: false,
             hostile: null,
@@ -431,7 +518,7 @@ export class CompanionDialogue {
         };
     }
 
-    _buildSnapshot() {
+    _buildSnapshot(consumeCommentary = false) {
         const ctx = this.agent.companion?.ctx;
         const bot = this.agent.bot;
         const mode = this.manager.getCurrentModeId();
@@ -440,14 +527,15 @@ export class CompanionDialogue {
             return this._emptySnapshot(mode);
         }
 
-        const nearbyPlayers = (ctx.worldState.visiblePlayers || []).map((p) => ({
+        const nearbyPlayers = (ctx.worldState.nearbyPlayers || []).map((p) => ({
             name: p.name,
             distance: Number(p.distance.toFixed(1))
         }));
 
         let hostile = null;
         try {
-            const enemy = getNearestEntityWhere(bot, (e) => isHostile(e), this.config.hostile_range);
+            const enemy = bot.nearestEntity((e) => isHostile(e)
+                && bot.entity.position.distanceTo(e.position) <= this.config.hostile_range && hasLineOfSight(bot, e));
             if (enemy) {
                 hostile = {
                     name: enemy.name,
@@ -458,14 +546,14 @@ export class CompanionDialogue {
             hostile = null;
         }
 
-        const timeOfDay = bot.time?.timeOfDay ?? 0;
-        const isNight = timeOfDay >= 13000 && timeOfDay < 23000;
+        const timeOfDay = bot.time?.timeOfDay ?? null;
+        const isNight = timeOfDay == null ? null : timeOfDay >= 13000 && timeOfDay < 23000;
         const lastDamageAgeMs = bot.lastDamageTime
             ? Date.now() - bot.lastDamageTime
             : null;
 
         const inventoryFill = snapshotInventoryFill(bot);
-        const combatTarget = bot.pvp?.target?.name || hostile?.name || null;
+        const combatTarget = bot.pvp?.target?.name || null;
         const hostileBand = hostile
             ? deriveHostileBand(
                 hostile.distance,
@@ -475,12 +563,16 @@ export class CompanionDialogue {
 
         const snap = {
             ...buildOwnerFollowFacts(ctx, mode),
+            activity: consumeCommentary ? this.manager.describeDialogueActivity?.({ consumeCommentary }) : undefined,
+            observations: ctx.worldState.recentObservations?.(Date.now(), !consumeCommentary) ?? [],
+            location: ctx.worldState.describeLocation?.(bot),
             nearbyPlayers,
             health: bot.health,
             hunger: bot.food,
             ...inventoryFill,
             timeOfDay,
             isNight,
+            isRaining: this._localRain() ?? null,
             stuckSeconds: Number(
                 (ctx.stuckChat?.seconds ?? ctx.stuck?.seconds ?? 0).toFixed(1)
             ),

@@ -2,7 +2,8 @@ import { AsyncTickBehavior } from './AsyncTickBehavior.js';
 import { maybePlaceSupportTorch } from '../torchSupport.js';
 import {
     action,
-    runTree,
+    condition,
+    selector,
     sequence,
     subtree
 } from '../../behaviorTree/bt.js';
@@ -15,12 +16,15 @@ import {
 export class NormalBehavior extends AsyncTickBehavior {
     /** @param {object} targets */
     constructor(targets) {
-        super('normal');
-        this.targets = targets;
+        super('normal', targets);
         /** @type {'follow'|'wait'|null} Mode whose onEnter has run. */
         this._mode = null;
 
         const { followMode, waitMode } = targets;
+        const bow = () => selector('視線への反応', [
+            action('目が合った相手にお辞儀をする', (ctx) => targets.agent.companion?.eyeContact?.tick(ctx)),
+            condition('視線への反応は不要', () => true)
+        ]);
         // One tree per mode. The mode is chosen above the state machine, so
         // the normal state simply runs (and shows) the tree of that mode.
         this.trees = {
@@ -33,9 +37,13 @@ export class NormalBehavior extends AsyncTickBehavior {
                         // 松明配置の失敗で追従を止めない。
                     }
                     return true;
-                })
+                }),
+                bow()
             ], { mode: 'follow' }),
-            wait: subtree('待機モードの平常時', waitMode.tree, (ctx) => waitMode.tick(ctx), { mode: 'wait' })
+            wait: sequence('待機モードの平常時', [
+                subtree('その場で待機する', waitMode.tree, (ctx) => waitMode.tick(ctx)),
+                bow()
+            ], { mode: 'wait' })
         };
     }
 
@@ -46,25 +54,23 @@ export class NormalBehavior extends AsyncTickBehavior {
 
     onStateEntered() {
         super.onStateEntered();
-        this.targets.activeId = 'normal';
         this._enterMode(this.targets.preferredMode);
     }
 
     onStateExited() {
+        this.targets.agent.companion?.eyeContact?.cancel?.(this.targets.ctx);
         this._exitMode();
         super.onStateExited();
     }
 
-    async runTick() {
+    prepareTick() {
         const { targets } = this;
-        if (targets.paused) return;
         // A switch made while another state owned the bot simply takes
         // effect here, on the first normal tick.
         if (targets.preferredMode !== this._mode) {
             this._exitMode();
             this._enterMode(targets.preferredMode);
         }
-        await runTree(this.trees[this._mode], targets.ctx);
     }
 
     /** @param {'follow'|'wait'} modeId */

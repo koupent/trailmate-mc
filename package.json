@@ -1,7 +1,7 @@
 {
   "name": "trailmate-mc",
   "version": "0.1.0",
-  "description": "Rule-based Minecraft exploration companion (Mineflayer). No LLM.",
+  "description": "Minecraft exploration companion (Mineflayer) with optional Claude chat.",
   "type": "module",
   "private": true,
   "engines": {

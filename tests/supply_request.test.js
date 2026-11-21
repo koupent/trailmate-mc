@@ -84,7 +84,6 @@ function makeDialogue(entries, { chat = {}, ctx = null, language = 'ja' } = {}) 
             priority_min_interval_ms: 0,
             event_cooldown_ms: 0,
             spontaneous_chance: 1,
-            idle_chance: 0,
             ...chat
         }
     });
@@ -92,6 +91,7 @@ function makeDialogue(entries, { chat = {}, ctx = null, language = 'ja' } = {}) 
         mode: 'wait',
         controlOwner: 'wait',
         owner: null,
+        nearbyPlayers: [{ name: 'Owner' }],
         health: 20,
         hunger: 20,
         stuckSeconds: 0,
@@ -384,7 +384,7 @@ describe('supply request dialogue', () => {
         assert.deepEqual(messages, []);
 
         await dialogue.handlePlayerMessage('Owner', '全回収');
-        assert.deepEqual(messages, ['全部渡すね']);
+        assert.deepEqual(messages, ['はいっ、持ち物を全部渡すね！']);
 
         await dialogue.maybeSpeak();
         assert.equal(messages.length, 1);

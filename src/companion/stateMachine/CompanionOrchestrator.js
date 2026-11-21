@@ -11,8 +11,9 @@ import { prepareCompanionWorldTick } from './prepareTick.js';
 import { startPassageUpkeep, syncPassageTransit } from './passageUpkeep.js';
 import { deathRecoveryInProgress } from '../deathRecovery.js';
 import { refreshDutyFlags, shouldEnterPassageTransit } from './transitions.js';
-import { describeTree } from '../behaviorTree/bt.js';
+import { action, describeTree, describeTreeActivity, isBehaviorTree, runTree, sequence, SUCCESS } from '../behaviorTree/bt.js';
 import { CropPlanter } from '../planting/CropPlanter.js';
+import { createLifecycleTrees } from './lifecycleTrees.js';
 
 /** Recent transitions kept for the dashboard timeline. */
 const HISTORY_LIMIT = 12;
@@ -54,6 +55,29 @@ export class CompanionOrchestrator {
         this.root = built.root;
         this.fsmStates = built.states;
         this.safetyStates = built.safetyStates;
+        this._lastActivity = { actions: [], commentary: [] };
+        this.sharedTree = sequence('状態共通の処理', [
+            action('装備を見直す', async (ctx) => {
+                await agent.companion?.autoEquip?.maybeRun(ctx);
+                return true;
+            }),
+            action('途中のチェスト預け入れを再開する', async (ctx) => {
+                try {
+                    await agent.companion?.itemTransfer?.maybeResume(ctx);
+                } catch (err) {
+                    console.error('[companion] chest item-share resume error:', err);
+                }
+                return true;
+            }),
+            action('状況の変化に応じて話しかける', async () => {
+                await agent.companion?.dialogue?.maybeSpeak();
+                return true;
+            })
+        ]);
+        this.incomingChatTree = action('呼びかけやチャットコマンドに応じる', ({ username, message, publicChat }) => (
+            agent.companion?.dialogue?.handlePlayerMessage(username, message, publicChat)
+        ));
+        this.lifecycleTrees = createLifecycleTrees();
         this.root.active = true;
         this.root.onStateEntered();
         /** @type {Array<{ kind: 'state'|'mode', name: string, from: string, to: string, at: number }>} newest last */
@@ -125,8 +149,39 @@ export class CompanionOrchestrator {
             // Each state's behavior tree with the result of its last tick.
             // The normal state shows the tree of the selected mode only.
             trees: Object.fromEntries(all.map((state) => [state.stateName, describeTree(state.tree)])),
+            sharedTree: describeTree(this.sharedTree),
+            eventTrees: this.eventTrees.map(describeTree),
             history: this.transitionHistory
         };
+    }
+
+    get eventTrees() {
+        return [
+            this.incomingChatTree,
+            this.agent.autoEatTree,
+            this.agent.companion?.itemTransfer?.placementTree,
+            ...Object.values(this.lifecycleTrees)
+        ].filter(Boolean);
+    }
+
+    describeDialogueActivity({ consumeCommentary = false } = {}) {
+        const state = this.root.activeState;
+        const activity = {
+            state: state.stateName,
+            task: state.tree.label,
+            ...this._lastActivity
+        };
+        if (consumeCommentary) {
+            activity.commentary = [...activity.commentary, ...[this.sharedTree, ...this.eventTrees].flatMap(
+                (tree) => describeTreeActivity(tree, { consumeCommentary }).commentary
+            )];
+            this._lastActivity = { ...this._lastActivity, commentary: [] };
+        }
+        return activity;
+    }
+
+    async handlePlayerMessage(username, message, publicChat = false) {
+        return await runTree(this.incomingChatTree, { username, message, publicChat }) === SUCCESS;
     }
 
     /**
@@ -147,13 +202,16 @@ export class CompanionOrchestrator {
         return true;
     }
 
-    async start() {
-        // Root enter already called NormalBehavior.onStateEntered.
+    async handleLifecycle(event) {
+        const tree = this.lifecycleTrees[event];
+        if (!isBehaviorTree(tree)) throw new Error(`No behavior tree for companion event: ${event}`);
+        return runTree(tree, this.ctx);
     }
 
     async tick() {
         if (this._busy) return;
         this._busy = true;
+        this._lastActivity = { ...this._lastActivity, commentary: [] };
         try {
             // Safety states can take over from any state, in every tick:
             // environmental damage, riding as a passenger, an item hand-over.
@@ -161,6 +219,8 @@ export class CompanionOrchestrator {
             for (const state of this.safetyStates) {
                 if (await state.claim()) {
                     this._switchTo(state, `any_to_${state.stateName}`);
+                    if (this.ctx.bot?.entity) this.ctx.worldState?.update?.(this.ctx);
+                    this._recordActivity(state);
                     return;
                 }
             }
@@ -202,7 +262,8 @@ export class CompanionOrchestrator {
                     ? { stop() {} }
                     : startPassageUpkeep(this.ctx, this.targets);
                 try {
-                    await active.runTick();
+                    const tree = await active.runTick();
+                    if (tree) this._recordActivity(active, tree);
                 } catch (err) {
                     console.error(`[companion/fsm] ${active.stateName || 'active'} error:`, err);
                 } finally {
@@ -215,8 +276,18 @@ export class CompanionOrchestrator {
         } catch (err) {
             console.error('[companion] fsm tick error:', err);
         } finally {
-            this._busy = false;
+            try {
+                await runTree(this.sharedTree, this.ctx);
+            } catch (err) {
+                console.error('[companion/fsm] shared tree error:', err);
+            } finally {
+                this._busy = false;
+            }
         }
+    }
+
+    _recordActivity(state, tree = state.tree) {
+        this._lastActivity = { actionState: state.stateName, ...describeTreeActivity(tree) };
     }
 
     /** @param {{ kind: 'state'|'mode', name: string, from: string, to: string }} entry */
