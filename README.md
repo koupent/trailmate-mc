@@ -343,7 +343,7 @@ Windows 起動時は Docker Desktop が Tailscale より先に立ち上がるこ
 ### 注意
 
 - 更新源は **GitHub Release のみ** です（`main` へのマージだけでは他 PC には届きません）
-- v0.1.42以前の更新処理は、ZIPで固定された旧イメージを再取得し、`VERSION`だけ新しくする場合があります。修正版への初回切替は、新しいWindows ZIPの中身を既存プロジェクトへ上書き展開し、`start.bat`を実行してください。配布ZIPは`.env`・`config.json`・認証データを含まないため、これらを削除する必要はありません。プレイ画面の「実行中のBot版」で本体の版を確認できます。
+- v0.1.42以前の更新処理は、公開済みの旧イメージを再取得し、`VERSION`だけ新しくする場合があります。通常のWindows構成では [復旧スクリプト](scripts/repair-windows-update.ps1) をインストール先で一度実行すると、v0.1.44 の公開イメージへ切り替わります。復旧後の更新は管理画面の「ユーザー設定」から行えます。
 - GHCR パッケージが private だと pull に失敗します。配布するなら public にしてください
 - `docker-compose.yml` / `start.bat` などホスト側ファイルの変更がある Release は、ZIP を再展開してください（Release ノートに記載）
 - 手動で更新する場合: `docker compose pull` のあと `restart.bat`

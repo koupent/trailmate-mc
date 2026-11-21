@@ -7,12 +7,14 @@ import { pinComposeRelease, releaseImageRef } from './releaseVersion.mjs';
 const githubRepo = process.env.GITHUB_REPO || 'koupent/trailmate-mc';
 const DEFAULT_DESPAWN_GRACE_MS = 4000;
 const updateServices = ['trailmate', 'dashboard'];
+const DASHBOARD_START_TIMEOUT_MS = 120000;
 
 /**
  * @param {string} projectRoot
  * @param {{
  *   recreateServiceContainer?: typeof recreateServiceContainer,
  *   fetch?: typeof fetch,
+ *   dashboardVersion?: string,
  *   despawnGraceMs?: number
  * }} [deps]
  */
@@ -23,19 +25,25 @@ export function createUpdateManager(projectRoot, deps = {}) {
   const lockFile = path.join(projectRoot, 'data', 'update.lock');
   const recreate = deps.recreateServiceContainer || recreateServiceContainer;
   const fetchFn = deps.fetch || globalThis.fetch;
+  const dashboardVersion = String(
+    deps.dashboardVersion ?? process.env.DASHBOARD_VERSION ?? process.env.TRAILMATE_VERSION ?? ''
+  ).trim();
   // サーバーがセッションを落とすのを待つ猶予（テストからは 0 にできる）
   const despawnGraceMs = Number.isFinite(deps.despawnGraceMs)
     ? Math.max(0, Number(deps.despawnGraceMs))
     : DEFAULT_DESPAWN_GRACE_MS;
 
-  /** @type {{ active: boolean, startedAt: number | null, finishedAt: number | null, ok: boolean | null, error: string | null, targetVersion: string | null, log: string }} */
   let job = emptyJob();
+  let refreshJob;
 
   return { getStatus, getLogs, startApply };
 
   async function getStatus() {
-    await hydrateJobFromDisk();
-    const currentVersion = await readCurrentVersion();
+    await refreshJobState();
+    const recordedVersion = await readRecordedVersion();
+    const currentVersion = dashboardVersion || recordedVersion || 'dev';
+    const versionMismatch = Boolean(dashboardVersion && recordedVersion
+      && normalizeTag(dashboardVersion) !== normalizeTag(recordedVersion));
     let latest = null;
     let latestError = null;
     try {
@@ -54,6 +62,8 @@ export function createUpdateManager(projectRoot, deps = {}) {
 
     return {
       currentVersion,
+      recordedVersion,
+      versionMismatch,
       latestVersion,
       latestUrl: latest?.url || null,
       latestName: latest?.name || null,
@@ -72,7 +82,7 @@ export function createUpdateManager(projectRoot, deps = {}) {
   }
 
   async function getLogs() {
-    await hydrateJobFromDisk();
+    await refreshJobState();
     const updating = job.active || (await hasLock());
     return {
       updating,
@@ -87,7 +97,7 @@ export function createUpdateManager(projectRoot, deps = {}) {
    * @param {{ targetVersion?: string }} [options]
    */
   async function startApply(options = {}) {
-    await hydrateJobFromDisk();
+    await refreshJobState();
     if (job.active || (await hasLock())) {
       return {
         ...(await getLogs()),
@@ -122,6 +132,7 @@ export function createUpdateManager(projectRoot, deps = {}) {
       job.finishedAt = Date.now();
       job.ok = false;
       job.error = error instanceof Error ? error.message : String(error);
+      job.dashboardPendingAt = null;
       appendLog('失敗: ' + job.error);
       await clearLock();
       await persistJob();
@@ -135,16 +146,14 @@ export function createUpdateManager(projectRoot, deps = {}) {
     };
   }
 
-  async function readCurrentVersion() {
+  async function readRecordedVersion() {
     try {
       const text = (await fs.readFile(versionFile, 'utf8')).trim();
       if (text) return text;
     } catch {
       /* missing */
     }
-    const fromEnv = String(process.env.TRAILMATE_VERSION || process.env.DASHBOARD_VERSION || '').trim();
-    if (fromEnv && fromEnv !== 'dev') return fromEnv;
-    return fromEnv || 'dev';
+    return null;
   }
 
   async function fetchLatestRelease() {
@@ -202,6 +211,28 @@ export function createUpdateManager(projectRoot, deps = {}) {
     }
   }
 
+  function refreshJobState() {
+    refreshJob ??= hydrateJobFromDisk().then(settleDashboardUpdate).finally(() => {
+      refreshJob = null;
+    });
+    return refreshJob;
+  }
+
+  async function settleDashboardUpdate() {
+    if (!job.dashboardPendingAt) return;
+    const confirmed = dashboardVersion && normalizeTag(dashboardVersion) === normalizeTag(job.targetVersion);
+    if (!confirmed && Date.now() - job.dashboardPendingAt < DASHBOARD_START_TIMEOUT_MS) return;
+    if (confirmed) await fs.writeFile(versionFile, job.targetVersion + '\n', 'utf8');
+    job.dashboardPendingAt = null;
+    job.active = false;
+    job.finishedAt = Date.now();
+    job.ok = Boolean(confirmed);
+    job.error = confirmed ? null : '更新先のダッシュボードの起動を確認できませんでした。';
+    appendLog(confirmed ? '[updater] DONE: ' + job.targetVersion + ' の起動を確認' : '失敗: ' + job.error);
+    await persistJob();
+    await clearLock();
+  }
+
   async function persistJob() {
     await fs.mkdir(path.dirname(stateFile), { recursive: true });
     const { log, ...rest } = job;
@@ -215,12 +246,9 @@ export function createUpdateManager(projectRoot, deps = {}) {
   async function runUpdater(targetVersion) {
     await fs.mkdir(path.dirname(logFile), { recursive: true });
 
-    const onProgress = (line) => {
-      appendLog(line);
-      void persistJob();
-    };
+    const onProgress = appendLog;
 
-    // dashboard 以外を先に更新し、VERSION を書いてから自身を更新する
+    // dashboard 以外を先に更新し、VERSION は差し替え後のプロセスで確定する。
     for (const service of updateServices) {
       if (service === 'dashboard') continue;
       if (service === 'trailmate') {
@@ -234,36 +262,24 @@ export function createUpdateManager(projectRoot, deps = {}) {
       }
     }
 
-    const composeFile = path.join(projectRoot, 'docker-compose.yml');
-    try {
-      const compose = await fs.readFile(composeFile, 'utf8');
-      await fs.writeFile(composeFile + '.update', pinComposeRelease(compose, targetVersion, githubRepo), 'utf8');
-      await fs.rename(composeFile + '.update', composeFile);
-    } catch (error) {
-      if (error.code !== 'ENOENT') throw error;
-    }
-    await fs.writeFile(versionFile, targetVersion + '\n', 'utf8');
-    appendLog('[updater] VERSION=' + targetVersion);
-
-    job.active = false;
-    job.finishedAt = Date.now();
-    job.ok = true;
-    job.error = null;
-    appendLog('[updater] recreate dashboard（接続が切れることがあります。再読み込みしてください）');
-    await persistJob();
-    await clearLock();
-
-    try {
-      await recreate('dashboard', onProgress, { selfReplace: true, targetVersion });
-      appendLog('[updater] DONE（dashboard 差し替えを起動済み）');
-      await persistJob();
-    } catch (error) {
-      appendLog(
-        'dashboard 差し替えの起動に失敗: ' +
-          (error instanceof Error ? error.message : String(error))
-      );
-      await persistJob();
-    }
+    appendLog('[updater] recreate dashboard');
+    await recreate('dashboard', onProgress, {
+      selfReplace: true,
+      targetVersion,
+      async beforeSelfReplace() {
+        const composeFile = path.join(projectRoot, 'docker-compose.yml');
+        try {
+          const compose = await fs.readFile(composeFile, 'utf8');
+          await fs.writeFile(composeFile + '.update', pinComposeRelease(compose, targetVersion, githubRepo), 'utf8');
+          await fs.rename(composeFile + '.update', composeFile);
+        } catch (error) {
+          if (error.code !== 'ENOENT') throw error;
+        }
+        job.dashboardPendingAt = Date.now();
+        appendLog('[updater] ダッシュボードを切り替えます。一時的に接続が切れることがあります。');
+        await persistJob();
+      }
+    });
   }
 
   function appendLog(text) {
@@ -348,6 +364,7 @@ function emptyJob() {
     active: false,
     startedAt: null,
     finishedAt: null,
+    dashboardPendingAt: null,
     ok: null,
     error: null,
     targetVersion: null,
