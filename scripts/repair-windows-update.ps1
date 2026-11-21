@@ -15,11 +15,10 @@ try {
     $versionFile = Join-Path $root "VERSION"
     $compose = [IO.File]::ReadAllText($composeFile)
     $start = [IO.File]::ReadAllText($startFile)
-    if (Test-Path -LiteralPath $versionFile) {
-        $installed = [IO.File]::ReadAllText($versionFile).Trim().TrimStart("v")
-        if ([version]$installed -gt [version]$tag.TrimStart("v")) {
-            throw "This repair targets $tag. The installation records a newer release."
-        }
+    # VERSION can claim a new release even if the old updater never changed the image.
+    $pin = [regex]::Match($compose, '(?m)^    image: ghcr\.io/koupent/trailmate-dashboard:v(\d+\.\d+\.\d+)\b')
+    if ($pin.Success -and [version]$pin.Groups[1].Value -gt [version]$tag.TrimStart("v")) {
+        throw "This repair targets $tag. Compose already specifies a newer dashboard."
     }
     if ($env:COMPOSE_FILE -or (Get-ChildItem -Name -File -Filter '*compose.override.*')) {
         throw "This installation uses a Compose override. Its image and port settings need to be checked first."
