@@ -700,6 +700,7 @@ const detailTabs = [...document.querySelectorAll('.play-detail-tabs [role="tab"]
 const memoryPlayer = document.getElementById('memory-player');
 const memoryControls = document.getElementById('memory-controls');
 const memoryNotes = document.getElementById('memory-notes');
+const memoryEmpty = document.getElementById('memory-empty');
 const memoryForm = document.getElementById('memory-form');
 const memoryStatus = document.getElementById('memory-status');
 const memoryEdit = document.getElementById('memory-edit');
@@ -707,7 +708,11 @@ const memorySave = document.getElementById('memory-save');
 const memoryCancel = document.getElementById('memory-cancel');
 const memoryTab = document.getElementById('play-memory-tab');
 const memoryUnread = document.getElementById('memory-unread');
-const memoryLabels = { nickname: '呼び方', preferences: '好み', plans: '一緒にやっていること', milestones: '思い出' };
+const memoryLabels = { nickname: '呼び方', preferences: '好み', plans: '目標・一緒にやっていること', milestones: '思い出' };
+const memoryExamples = {
+  nickname: '相棒に呼んでほしい名前', preferences: '好きな遊び方や建築スタイル',
+  plans: '集めたい素材や建築の予定', milestones: '一緒に達成したこと'
+};
 const memorySeenKey = 'trailmate-memory-seen';
 let memoryPlayers = [];
 let memorySeen = new Map();
@@ -753,17 +758,22 @@ function updateMemoryBadge(players = memoryPlayers) {
 
 function renderMemory() {
   const entry = memoryPlayers.find(({ player }) => player === memoryPlayer.value);
+  memoryEmpty.hidden = Boolean(entry);
   memoryNotes.replaceChildren();
-  if (!entry) return;
   for (const [field, name] of Object.entries(memoryLabels)) {
+    const group = document.createElement('div');
     const term = document.createElement('dt');
     const note = document.createElement('dd');
     term.textContent = name;
-    note.textContent = entry.notes[field] || '—';
-    memoryNotes.append(term, note);
+    const saved = entry?.notes[field];
+    note.textContent = saved || (entry ? '未登録' : memoryExamples[field]);
+    note.classList.toggle('muted', !saved);
+    group.append(term, note);
+    memoryNotes.append(group);
   }
-  if (isMemoryVisible()) markMemorySeen(entry);
+  if (entry && isMemoryVisible()) markMemorySeen(entry);
 }
+renderMemory();
 
 async function loadMemory({ background = false } = {}) {
   if (memoryLoading || (background && Date.now() < nextMemoryPoll)) return;
@@ -796,7 +806,7 @@ async function loadMemory({ background = false } = {}) {
     }
     updateMemoryBadge();
     if (!background || changed || memoryStatus.textContent === '読み込み中…' || !memoryStatus.textContent) {
-      setMsg(memoryStatus, players.length ? '' : 'まだ保存された記憶はありません。');
+      setMsg(memoryStatus, '');
     }
   } catch (error) {
     if (!background || memoryStatus.textContent === '読み込み中…') setMsg(memoryStatus, error.message, 'err');

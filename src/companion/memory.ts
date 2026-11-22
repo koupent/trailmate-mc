@@ -7,6 +7,13 @@ type Field = typeof MEMORY_FIELDS[number];
 type Notes = Partial<Record<Field, string>>;
 type Memory = { player: string; notes: Notes; revision: number };
 
+export function materialGoal(message: string): string | undefined {
+  // An explicit plan in the player's own words is usable even if Claude omits a candidate.
+  const match = /^(?:今日(?:の目標は|は)?|これから(?:は)?)[、,\s]*([\p{L}\p{N}ー・、, ]{1,64}?)を(?:集め(?:る|たい|ます)|掘(?:る|りたい))(?:(?:予定|つもり)(?:だ|です)?)?(?:よ|ね)?[。！!]*$/u.exec(message.trim());
+  const materials = match?.[1].trim();
+  if (materials) return '素材集めの目標：' + materials;
+}
+
 function playerKey(player: unknown): string {
   if (player === '管理画面') return 'dashboard';
   if (typeof player !== 'string' || !/^[a-z0-9_]{1,16}$/i.test(player)) return '';
