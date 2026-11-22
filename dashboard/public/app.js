@@ -697,6 +697,100 @@ document.querySelector('.play-command-bar').addEventListener('click', (event) =>
 });
 
 const detailTabs = [...document.querySelectorAll('.play-detail-tabs [role="tab"]')];
+const memoryPlayer = document.getElementById('memory-player');
+const memoryControls = document.getElementById('memory-controls');
+const memoryNotes = document.getElementById('memory-notes');
+const memoryForm = document.getElementById('memory-form');
+const memoryStatus = document.getElementById('memory-status');
+const memoryEdit = document.getElementById('memory-edit');
+const memorySave = document.getElementById('memory-save');
+const memoryCancel = document.getElementById('memory-cancel');
+const memoryLabels = { nickname: '呼び方', preferences: '好み', plans: '一緒にやっていること', milestones: '思い出' };
+let memoryPlayers = [];
+
+function renderMemory() {
+  const entry = memoryPlayers.find(({ player }) => player === memoryPlayer.value);
+  memoryNotes.replaceChildren();
+  if (!entry) return;
+  for (const [field, name] of Object.entries(memoryLabels)) {
+    const term = document.createElement('dt');
+    const note = document.createElement('dd');
+    term.textContent = name;
+    note.textContent = entry.notes[field] || '—';
+    memoryNotes.append(term, note);
+  }
+}
+
+async function loadMemory() {
+  if (!memoryForm.hidden) return;
+  setMsg(memoryStatus, '読み込み中…');
+  try {
+    const { players } = await api('/api/memory');
+    if (!memoryForm.hidden) return;
+    const selected = memoryPlayer.value;
+    memoryPlayers = players;
+    memoryPlayer.replaceChildren(...players.map(({ player }) => new Option(player, player)));
+    if (players.some(({ player }) => player === selected)) memoryPlayer.value = selected;
+    memoryControls.hidden = players.length === 0;
+    renderMemory();
+    setMsg(memoryStatus, players.length ? '' : 'まだ保存された記憶はありません。');
+  } catch (error) {
+    setMsg(memoryStatus, error.message, 'err');
+  }
+}
+
+memoryPlayer.addEventListener('change', renderMemory);
+memoryEdit.addEventListener('click', () => {
+  const entry = memoryPlayers.find(({ player }) => player === memoryPlayer.value);
+  if (!entry) return;
+  const fields = document.getElementById('memory-fields');
+  fields.replaceChildren();
+  for (const [field, name] of Object.entries(memoryLabels)) {
+    const label = document.createElement('label');
+    const input = document.createElement('input');
+    input.name = field;
+    input.maxLength = 140;
+    input.value = entry.notes[field] || '';
+    label.append(name, input);
+    fields.append(label);
+  }
+  memoryNotes.hidden = true;
+  memoryForm.hidden = false;
+  memoryPlayer.disabled = memoryEdit.disabled = true;
+  fields.querySelector('input').focus();
+});
+
+function closeMemoryEditor() {
+  memoryForm.hidden = true;
+  memoryNotes.hidden = false;
+  memoryPlayer.disabled = memoryEdit.disabled = false;
+  memoryEdit.focus();
+}
+
+memoryCancel.addEventListener('click', () => {
+  closeMemoryEditor();
+  void loadMemory();
+});
+memoryForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  if (memorySave.disabled) return;
+  const index = memoryPlayers.findIndex(({ player }) => player === memoryPlayer.value);
+  const { player, revision } = memoryPlayers[index];
+  const notes = Object.fromEntries(new FormData(memoryForm));
+  memorySave.disabled = memoryCancel.disabled = true;
+  try {
+    const { entry } = await api('/api/memory', { method: 'PUT', body: JSON.stringify({ player, notes, revision }) });
+    memoryPlayers[index] = entry;
+    renderMemory();
+    closeMemoryEditor();
+    setMsg(memoryStatus, '記憶を保存しました。', 'ok');
+  } catch (error) {
+    setMsg(memoryStatus, error.message, 'err');
+  } finally {
+    memorySave.disabled = memoryCancel.disabled = false;
+  }
+});
+
 function selectDetail(next) {
   detailTabs.forEach((tab) => {
     const selected = tab === next;
@@ -705,6 +799,7 @@ function selectDetail(next) {
     document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
   });
   document.getElementById('inventory-kind-count').hidden = next.id !== 'play-inventory-tab';
+  if (next.id === 'play-memory-tab') void loadMemory();
 }
 detailTabs.forEach((tab, index) => {
   tab.addEventListener('click', () => selectDetail(tab));
