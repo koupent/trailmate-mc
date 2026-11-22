@@ -11,7 +11,7 @@ import { setupAutoEat } from './autoEat.js';
 import { extractKickReason } from '../runtime/spawnErrors.js';
 import { installMovementPacketLimiter } from './movementPackets.js';
 
-export type ChatEntry = { kind: 'companion' | 'message' | 'command'; text: string; at: number };
+export type ChatEntry = { kind: 'companion' | 'message' | 'command'; text: string; at: number; player?: string };
 
 export type TrailmateHost = {
   bot: Bot;
@@ -26,8 +26,8 @@ export type TrailmateHost = {
   autoEatTree?: ReturnType<typeof setupAutoEat>;
 };
 
-export function recordChat(host: TrailmateHost, kind: ChatEntry['kind'], text: string): void {
-  host.chatEntries.push({ kind, text, at: Date.now() });
+export function recordChat(host: TrailmateHost, kind: ChatEntry['kind'], text: string, player?: string): void {
+  host.chatEntries.push({ kind, text, at: Date.now(), ...(player && { player }) });
   if (host.chatEntries.length > 100) host.chatEntries.shift();
 }
 

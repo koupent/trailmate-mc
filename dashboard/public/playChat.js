@@ -50,6 +50,12 @@ export function bindPlayChat(api) {
   const feed = byId('conversation-feed');
   const input = byId('play-message');
   const sendButton = byId('play-send');
+  const sender = byId('play-chat-sender');
+  const senderKey = 'trailmate-chat-sender';
+  let selectedSender = '';
+  try { selectedSender = localStorage.getItem(senderKey) || ''; } catch { /* Session only. */ }
+  let onlinePlayers = [];
+  let senderOptions = '';
   const feedback = byId('play-send-status');
   const quick = byId('play-presets');
   const modeButtons = composer.querySelectorAll('[data-compose-mode]');
@@ -78,9 +84,31 @@ export function bindPlayChat(api) {
 
   function updateControls() {
     input.disabled = !available;
-    sendButton.disabled = !available || pending;
+    sender.disabled = !available;
+    const senderUnavailable = Boolean(selectedSender && !onlinePlayers.includes(selectedSender));
+    byId('play-chat-sender-status').hidden = !available || !senderUnavailable;
+    sendButton.disabled = !available || pending || (mode === 'message' && senderUnavailable);
     quick.querySelectorAll('button').forEach((button) => { button.disabled = sendButton.disabled; });
   }
+
+  function renderSenders() {
+    const options = JSON.stringify([onlinePlayers, selectedSender]);
+    if (options === senderOptions) return;
+    senderOptions = options;
+    sender.replaceChildren(new Option('管理画面（プレイヤー未選択）', ''),
+      ...onlinePlayers.map(player => new Option(player, player)));
+    if (selectedSender && !onlinePlayers.includes(selectedSender)) {
+      sender.append(new Option(selectedSender + '（不在）', selectedSender));
+    }
+    sender.value = selectedSender;
+  }
+  sender.addEventListener('change', () => {
+    selectedSender = sender.value;
+    try { localStorage.setItem(senderKey, selectedSender); } catch { /* Session only. */ }
+    renderSenders();
+    updateControls();
+  });
+  renderSenders();
 
   function renderEntries(entries, follow = false) {
     const signature = JSON.stringify(entries);
@@ -92,7 +120,8 @@ export function bindPlayChat(api) {
       const row = document.createElement('div');
       row.className = entry.kind === 'companion' ? 'conversation-entry' : 'conversation-entry mine';
       const meta = document.createElement('small');
-      const who = entry.kind === 'companion' ? '相棒' : entry.kind === 'command' ? 'あなた · Minecraftコマンド' : 'あなた';
+      const who = entry.kind === 'companion' ? '相棒' : entry.kind === 'command'
+        ? 'あなた · Minecraftコマンド' : entry.player || 'あなた';
       meta.textContent = `${who} · ${formatTime.format(entry.at)}`;
       const body = document.createElement('p');
       if (entry.kind === 'command') body.className = 'slash-text';
@@ -127,6 +156,7 @@ export function bindPlayChat(api) {
   async function send(text, fromInput = false, preset = null) {
     if (!available || pending) return;
     const kind = mode;
+    if (kind === 'message' && selectedSender && !onlinePlayers.includes(selectedSender)) return;
     const error = validate(kind, text);
     if (error) {
       showFeedback(error, true);
@@ -137,7 +167,8 @@ export function bindPlayChat(api) {
     updateControls();
     showFeedback(kind === 'command' ? '発行中…' : '返答を待っています…');
     try {
-      const data = await api('/api/chat', { method: 'POST', body: JSON.stringify({ kind, text }) });
+      const player = kind === 'message' && selectedSender ? selectedSender : undefined;
+      const data = await api('/api/chat', { method: 'POST', body: JSON.stringify({ kind, text, player }) });
       if (preset && presets[kind].includes(preset)) {
         preset.uses++;
         savePresets(kind);
@@ -359,6 +390,9 @@ export function bindPlayChat(api) {
       updateControls();
     }
     byId('play-bot-name').textContent = status?.username || status?.botName || '';
+    onlinePlayers = Array.isArray(status?.onlinePlayers) ? status.onlinePlayers : [];
+    renderSenders();
+    updateControls();
     if (available) void refresh();
   };
 }
