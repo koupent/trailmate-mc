@@ -23,6 +23,7 @@ import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
 import { generateClaudeLine, isWeatherGrounded } from './claudeChat.js';
 import { ClaudeChatBudget } from './ClaudeChatBudget.js';
+import { companionMemory, MEMORY_FIELDS, normalizeMemoryNotes } from './memory.js';
 
 /** Repeat window for a capability notice with the same key. */
 export const DEFAULT_NOTICE_COOLDOWN_MS = 30000;
@@ -51,10 +52,11 @@ export class CompanionDialogue {
      * @param {import('./ModeManager.js').ModeManager} manager
      * @param {object} companionConfig
      */
-    constructor(agent, manager, companionConfig = {}) {
+    constructor(agent, manager, companionConfig = {}, memory = companionMemory) {
         this.agent = agent;
         this.manager = manager;
         this.companionConfig = companionConfig;
+        this.memory = memory;
         this.config = { ...DEFAULT_CHAT_CONFIG, ...(companionConfig.chat || {}) };
         this._claudeKey = process.env.ANTHROPIC_API_KEY?.trim();
         this._claudeBudget = this._claudeKey ? new ClaudeChatBudget() : null;
@@ -167,14 +169,29 @@ export class CompanionDialogue {
         const history = fraction >= 0.25 && this._conversation?.username === username
             ? this._conversation.history : [];
         const fallback = tCommand(this.agent.language || 'ja', 'reply_unavailable');
+        let remembered;
+        let proposal;
+        if (this._canGenerate(now)) {
+            try { remembered = this.memory.get(username); }
+            catch { console.warn('[companion] could not read player memory'); }
+        }
         const reply = await this._composeLine(this._buildSnapshot(), {
-            history, message, recipient: username, required: true
+            history, message, recipient: username, required: true,
+            memory: remembered?.notes,
+            onMemory: update => { proposal = update; }
         }, fallback);
         if (this._claudeBudget?.speechFraction === 0 || this.lastPlayerChatAt !== lastPlayerChatAt
             || !this._canSendChat() || this._lastReplyAt !== now) return false;
 
         await this._say(reply);
         if (reply !== fallback) {
+            if (proposal && MEMORY_FIELDS.includes(proposal.field)) {
+                const notes = normalizeMemoryNotes({ ...remembered?.notes, [proposal.field]: proposal.note });
+                if (notes?.[proposal.field]) {
+                    try { this.memory.save(username, notes, remembered?.revision ?? 0); }
+                    catch { console.warn('[companion] could not save player memory'); }
+                }
+            }
             this._conversation = {
                 username,
                 history: [...history.slice(-2), { role: 'user', content: message }, { role: 'assistant', content: reply }]

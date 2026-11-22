@@ -138,16 +138,18 @@ const server = http.createServer(async (request, response) => {
     if (request.method === 'GET' && url.pathname === '/api/commands') {
       return proxyControl(response, '/commands', 'GET');
     }
-    if (url.pathname === '/api/chat' && (request.method === 'GET' || request.method === 'POST')) {
+    if ((url.pathname === '/api/chat' && (request.method === 'GET' || request.method === 'POST'))
+      || (url.pathname === '/api/memory' && (request.method === 'GET' || request.method === 'PUT'))) {
       if (!['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
         || (request.headers.origin && request.headers.origin !== url.origin)) {
-        return json(response, 403, { error: 'チャットとMinecraftコマンドはローカルの管理画面から操作してください。' });
+        return json(response, 403, { error: 'ローカルの管理画面から操作してください。' });
       }
-      if (request.method === 'GET') return proxyControl(response, '/chat');
+      const controlPath = url.pathname === '/api/chat' ? '/chat' : '/memory';
+      if (request.method === 'GET') return proxyControl(response, controlPath);
       if (request.headers['content-type']?.split(';')[0] !== 'application/json') {
         return json(response, 415, { error: 'JSON 形式で送信してください。' });
       }
-      return proxyControl(response, '/chat', 'POST', JSON.stringify(await readJson(request)));
+      return proxyControl(response, controlPath, request.method, JSON.stringify(await readJson(request)));
     }
     if (request.method === 'POST' && url.pathname === '/api/command') {
       const body = await readJson(request);

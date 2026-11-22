@@ -162,7 +162,7 @@ test('Claude addresses nearby players on changes and scales with the local budge
     assert.equal(await dialogue.handlePlayerMessage('Alice', '普通の会話だよ', true), false);
     assert.equal(await dialogue.handlePlayerMessage('Alice', '@Trailmate 今どう？'), false);
     assert.equal(await dialogue.handlePlayerMessage('Alice', '@Trailmate 待機中？', true), true);
-    assert.equal(requests[0].max_tokens, 72);
+    assert.equal(requests[0].max_tokens, 152);
     assert.deepEqual(requests[0].thinking, { type: 'disabled' });
     assert.match(requests[0].system, /タメ口/);
     assert.match(requests[0].messages[0].content, /待機中/);

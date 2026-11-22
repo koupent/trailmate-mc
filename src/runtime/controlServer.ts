@@ -24,6 +24,7 @@ import {
 } from '../world/mobHostility.js';
 import { settingsSchema } from '../settings/companionSettings.js';
 import { snapshotInventoryFill } from '../companion/utils/inventorySnapshot.js';
+import { companionMemory, normalizeMemoryNotes } from '../companion/memory.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -76,6 +77,21 @@ export function startControlServer(
       }
       if (request.method === 'GET' && url.pathname === '/chat') {
         return json(response, 200, { entries: state.host?.chatEntries ?? [] });
+      }
+      if (url.pathname === '/memory' && request.method === 'GET') {
+        return json(response, 200, { players: companionMemory.list() });
+      }
+      if (url.pathname === '/memory' && request.method === 'PUT') {
+        const body = await readJson(request) as { player?: unknown; notes?: unknown; revision?: unknown } | null;
+        const notes = normalizeMemoryNotes(body?.notes);
+        const { player, revision } = body ?? {};
+        if (!notes || typeof player !== 'string' || typeof revision !== 'number' || !Number.isSafeInteger(revision)) {
+          return json(response, 400, { error: '記憶は各項目140文字以内で入力してください。' });
+        }
+        if (!companionMemory.get(player)) return json(response, 404, { error: 'プレイヤーの記憶が見つかりません。' });
+        const entry = companionMemory.save(player, notes, revision);
+        if (!entry) return json(response, 409, { error: '会話中に記憶が更新されました。コピーを控えて、いったん閲覧に戻ってください。' });
+        return json(response, 200, { ok: true, entry });
       }
       if (request.method === 'POST' && url.pathname === '/chat') {
         const body = await readJson(request) as { kind?: unknown; text?: unknown } | null;

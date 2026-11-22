@@ -88,6 +88,7 @@
                 <button id="play-inventory-tab" type="button" role="tab" aria-controls="play-inventory" aria-selected="true">持ち物</button>
                 <button id="play-fsm-tab" type="button" role="tab" aria-controls="play-fsm" aria-selected="false" tabindex="-1">状態遷移</button>
                 <button id="play-auth-tab" type="button" role="tab" aria-controls="play-auth" aria-selected="false" tabindex="-1">認証状態</button>
+                <button id="play-memory-tab" type="button" role="tab" aria-controls="play-memory" aria-selected="false" tabindex="-1">記憶</button>
                 <span id="inventory-kind-count"></span>
               </div>
               <div id="play-inventory" role="tabpanel" aria-labelledby="play-inventory-tab" class="play-detail" tabindex="0">
@@ -109,6 +110,21 @@
                 <ul id="spawn-diagnostics" class="spawn-diagnostics" aria-live="polite">
                   <li class="muted">認証・接続状態を確認中…</li>
                 </ul>
+              </div>
+              <div id="play-memory" role="tabpanel" aria-labelledby="play-memory-tab" class="play-detail" tabindex="0" hidden>
+                <div id="memory-controls" class="row" hidden>
+                  <label>プレイヤー <select id="memory-player"></select></label>
+                  <button id="memory-edit" type="button">編集</button>
+                </div>
+                <dl id="memory-notes" class="memory-notes"></dl>
+                <form id="memory-form" hidden>
+                  <div id="memory-fields" class="memory-fields"></div>
+                  <div class="row">
+                    <button id="memory-cancel" type="button">キャンセル</button>
+                    <button id="memory-save" type="submit" class="primary">保存</button>
+                  </div>
+                </form>
+                <p id="memory-status" class="msg" role="status"></p>
               </div>
             </div>
           </div>
