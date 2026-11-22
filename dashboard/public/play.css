@@ -114,6 +114,9 @@ body { background: var(--play-canvas); color: var(--play-ink); }
 .play-detail-tabs { display: flex; gap: 13px; padding: 0 20px; align-items: stretch; border-block: 1px solid var(--play-line); background: #f5f7f1; }
 .play-detail-tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 9px 2px 7px; background: transparent; color: var(--play-muted); }
 .play-detail-tabs button[aria-selected="true"] { color: var(--play-green); border-bottom-color: var(--play-green); font-weight: 700; }
+.play-detail-tabs button.has-unread { color: #783000; background: #fff1d9; }
+.memory-unread { border-radius: 8px; padding: 2px 5px; background: #9b3c08; color: #fff; font-size: 10px; }
+.memory-unread[hidden] { display: none; }
 #inventory-kind-count { margin-left: auto; align-self: center; color: var(--play-muted); font-size: 12px; }
 .play-detail { flex: 1 1 0; min-height: 0; padding: 10px 20px; overflow: auto; scrollbar-width: thin; scrollbar-color: #7b9988 #e9ede5; }
 .play-detail .fsm-graph { min-height: 0; }
@@ -176,8 +179,15 @@ body { background: var(--play-canvas); color: var(--play-ink); }
 #play-preset-dialog { width: min(480px,calc(100vw - 24px)); padding: 19px; border: 1px solid var(--play-line); border-radius: 11px; background: var(--play-paper); color: var(--play-ink); }
 #play-preset-dialog::backdrop { background: #172c2480; }
 #play-preset-dialog h2 { margin: 0; font-size: 17px; }
+.preset-order { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 13px; }
+#play-preset-reorder-hint { margin: 6px 0 0; font-size: 12px; }
 #play-preset-list { max-height: 190px; overflow: auto; padding: 0; list-style: none; }
-#play-preset-list li { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--play-line); overflow-wrap: anywhere; }
+#play-preset-list li { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; padding: 6px 0; border-bottom: 1px solid var(--play-line); }
+#play-preset-list li > span { flex: 1 1 90px; min-width: 0; overflow-wrap: anywhere; }
+#play-preset-list li > span[draggable="true"] { cursor: grab; }
+#play-preset-list li > button,.preset-reorder button { padding: 4px 7px; font-size: 12px; }
+#play-preset-list li.is-drop-target { background: #e3f0e7; box-shadow: inset 0 -2px var(--play-green); }
+.preset-reorder { display: flex; gap: 3px; }
 #play-preset-form { display: grid; gap: 9px; }
 #play-preset-form label { display: grid; gap: 4px; font-size: 13px; }
 #play-preset-form .row { justify-content: end; }
