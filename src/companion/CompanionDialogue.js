@@ -23,7 +23,7 @@ import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
 import { generateClaudeLine, isWeatherGrounded } from './claudeChat.js';
 import { ClaudeChatBudget } from './ClaudeChatBudget.js';
-import { companionMemory, MEMORY_FIELDS, normalizeMemoryNotes } from './memory.js';
+import { companionMemory, materialGoal, MEMORY_FIELDS, normalizeMemoryNotes } from './memory.js';
 
 /** Repeat window for a capability notice with the same key. */
 export const DEFAULT_NOTICE_COOLDOWN_MS = 30000;
@@ -168,10 +168,12 @@ export class CompanionDialogue {
         const { lastPlayerChatAt } = this;
         const history = fraction >= 0.25 && this._conversation?.username === username
             ? this._conversation.history : [];
-        const fallback = tCommand(this.agent.language || 'ja', 'reply_unavailable');
+        const language = this.agent.language || 'ja';
+        const fallback = tCommand(language, 'reply_unavailable');
+        const plan = materialGoal(message);
         let remembered;
         let proposal;
-        if (this._canGenerate(now)) {
+        if (plan || this._canGenerate(now)) {
             try { remembered = this.memory.get(username); }
             catch { console.warn('[companion] could not read player memory'); }
         }
@@ -183,15 +185,26 @@ export class CompanionDialogue {
         if (this._claudeBudget?.speechFraction === 0 || this.lastPlayerChatAt !== lastPlayerChatAt
             || !this._canSendChat() || this._lastReplyAt !== now) return false;
 
-        await this._say(reply);
-        if (reply !== fallback) {
-            if (proposal && MEMORY_FIELDS.includes(proposal.field)) {
-                const notes = normalizeMemoryNotes({ ...remembered?.notes, [proposal.field]: proposal.note });
-                if (notes?.[proposal.field]) {
-                    try { this.memory.save(username, notes, remembered?.revision ?? 0); }
-                    catch { console.warn('[companion] could not save player memory'); }
-                }
+        const candidate = proposal && MEMORY_FIELDS.includes(proposal.field)
+            ? normalizeMemoryNotes({ [proposal.field]: proposal.note })
+            : null;
+        let memorySaved = false;
+        if (plan || (candidate && Object.keys(candidate).length)) {
+            const notes = { ...remembered?.notes, ...(plan && { plans: plan }), ...candidate };
+            const revision = remembered?.revision ?? 0;
+            try {
+                const saved = this.memory.save(username, notes, revision);
+                memorySaved = Boolean(saved && saved.revision > revision);
             }
+            catch { console.warn('[companion] could not save player memory'); }
+        }
+        let spokenReply = reply;
+        if (memorySaved) {
+            const confirmation = tCommand(language, 'memory_saved');
+            spokenReply = reply === fallback ? confirmation : reply + ' ' + confirmation;
+        }
+        await this._say(spokenReply);
+        if (reply !== fallback) {
             this._conversation = {
                 username,
                 history: [...history.slice(-2), { role: 'user', content: message }, { role: 'assistant', content: reply }]

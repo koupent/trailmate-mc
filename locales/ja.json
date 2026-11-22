@@ -22,7 +22,8 @@
     "death_return_start": "死亡地点へ戻るね ({x}, {y}, {z})。",
     "own_grave_found": "自分のお墓を見つけたよ！ ({x}, {y}, {z})。",
     "boot_ready": "準備できたよ！ いっしょに行こっか？",
-    "reply_unavailable": "ごめん、今はうまく返せないみたい。あとでもう一回声かけてくれたらうれしいな。"
+    "reply_unavailable": "ごめん、今はうまく返せないみたい。あとでもう一回声かけてくれたらうれしいな。",
+    "memory_saved": "覚えておくね！"
   },
   "events": {
     "path_blocked": [

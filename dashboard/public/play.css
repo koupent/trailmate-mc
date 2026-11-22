@@ -122,9 +122,12 @@ body { background: var(--play-canvas); color: var(--play-ink); }
 .play-detail .fsm-graph { min-height: 0; }
 .play-detail-tabs { overflow-x: auto; }
 .play-detail-tabs button { flex: none; white-space: nowrap; }
-.memory-notes { margin: 14px 0 0; }
+.memory-empty { padding: 5px 0 0; }
+.memory-empty p { margin: 6px 0 0; font-size: 13px; }
+.memory-notes { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,180px),1fr)); gap: 8px; margin: 12px 0 0; }
+.memory-notes > div { border: 1px solid var(--play-line); border-radius: 8px; background: #f8faf5; padding: 10px 12px; }
 .memory-notes dt,.memory-fields label { color: var(--play-muted); font-size: 13px; }
-.memory-notes dd { margin: 2px 0 12px; overflow-wrap: anywhere; }
+.memory-notes dd { margin: 4px 0 0; overflow-wrap: anywhere; }
 .memory-fields { display: grid; gap: 8px; margin: 12px 0; }
 .memory-fields label { display: grid; gap: 3px; }
 .memory-fields input { width: 100%; min-width: 0; }
