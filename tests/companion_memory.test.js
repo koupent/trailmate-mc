@@ -3,8 +3,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
-import { once } from 'node:events';
+import { EventEmitter, once } from 'node:events';
 import { CompanionDialogue } from '../src/companion/CompanionDialogue.js';
+import { WorldState } from '../src/companion/WorldState.js';
 import { companionMemory, createMemoryStore, normalizeMemoryNotes } from '../src/companion/memory.js';
 import { createControlState, startControlServer } from '../src/runtime/controlServer.js';
 
@@ -56,7 +57,9 @@ test('manual edits and clearing survive reload and stale generated updates canno
     assert.equal(store.save('Alice', {}, initial.revision)?.revision, 2);
     assert.equal(store.save('alice', { nickname: '以前の呼び方' }, initial.revision), null);
     assert.deepEqual(createMemoryStore(file).get('Alice')?.notes, {});
-    assert.equal(normalizeMemoryNotes({ prompt: 'invalid' }), null);
+    assert.equal(normalizeMemoryNotes({ '見出し：不正': 'invalid' }), null);
+    assert.equal(normalizeMemoryNotes(JSON.parse('{"__proto__":"invalid"}')), null);
+    assert.deepEqual(normalizeMemoryNotes({ '一緒に釣り': '桟橋を作った' }), { '一緒に釣り': '桟橋を作った' });
     assert.equal(normalizeMemoryNotes({ plans: 'invalid\nline' }), null);
 });
 
@@ -65,6 +68,8 @@ test('dashboard chat retains a stated material goal without a Claude memory prop
     t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
     const store = createMemoryStore(path.join(dir, 'memory.json'));
     t.mock.method(companionMemory, 'list', store.list);
+    t.mock.method(companionMemory, 'get', store.get);
+    t.mock.method(companionMemory, 'save', store.save);
     const key = process.env.ANTHROPIC_API_KEY;
     process.env.ANTHROPIC_API_KEY = 'test-key';
     t.after(() => {
@@ -84,7 +89,7 @@ test('dashboard chat retains a stated material goal without a Claude memory prop
     const spoken = [];
     const state = createControlState();
     const host = {
-        bot: { username: 'Trailmate', entity: {}, health: 20, chat() {} },
+        bot: { username: 'Trailmate', entity: {}, health: 20, players: { Alice: {}, Bob: {} }, chat() {} },
         chatEntries: [], chat_ingame: true,
         companion: { _interval: true, manager: {} },
         openChat: async line => { spoken.push(line); }
@@ -98,15 +103,15 @@ test('dashboard chat retains a stated material goal without a Claude memory prop
     if (!server.listening) await once(server, 'listening');
     t.after(() => new Promise(resolve => server.close(resolve)));
     const base = 'http://127.0.0.1:' + server.address().port;
-    const send = async text => {
+    const send = async (text, player) => {
         const response = await realFetch(base + '/chat', {
             method: 'POST', headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ kind: 'message', text })
+            body: JSON.stringify({ kind: 'message', text, player })
         });
         assert.equal(response.status, 200);
         assert.equal((await response.json()).replied, true);
     };
-    assert.deepEqual(await (await realFetch(base + '/memory')).json(), { players: [] });
+    assert.deepEqual(await (await realFetch(base + '/memory')).json(), { players: [], onlinePlayers: ['Alice', 'Bob'] });
     await send('今日は鉄鉱石と石炭を集めるよ');
     assert.equal(spoken.at(-1), 'いっしょに集めよっか？ 覚えておくね！');
     await send('今日は鉄鉱石と石炭を集めるよ');
@@ -126,7 +131,87 @@ test('dashboard chat retains a stated material goal without a Claude memory prop
     assert.deepEqual(store.get('管理画面').notes, {
         plans: '素材集めの目標：金鉱石', preferences: '洞窟探検が好き'
     });
+    await send('僕のことはリクって呼んで', 'Alice');
+    assert.equal(store.get('Alice').notes.nickname, 'リク');
+    assert.equal(store.get('Bob'), undefined);
+    assert.equal(store.get('管理画面').notes.nickname, undefined);
+    delete host.bot.players.Alice;
+    const disconnected = await realFetch(base + '/chat', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ kind: 'message', text: '僕のことはケイって呼んで', player: 'Alice' })
+    });
+    assert.equal(disconnected.status, 409);
+    assert.equal(store.get('Alice').notes.nickname, 'リク');
+    const added = await realFetch(base + '/memory', {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ player: 'bob', revision: 0, notes: { '一緒に釣り': '桟橋を作った' } })
+    });
+    assert.equal(added.status, 200);
+    assert.equal((await added.json()).entry.player, 'Bob');
     t.mock.method(store, 'save', () => null);
     await send('今日は鉄を集めるよ');
     assert.doesNotMatch(spoken.at(-1), /覚えておくね|memory_saved/);
+});
+
+test('keeps the companion name, each player’s memory, and verified interactions separate', async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'trailmate-memory-'));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const file = path.join(dir, 'memory.json');
+    const key = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = 'test-key';
+    t.after(() => {
+        if (key === undefined) delete process.env.ANTHROPIC_API_KEY;
+        else process.env.ANTHROPIC_API_KEY = key;
+    });
+    const store = createMemoryStore(file);
+    store.save('Alice', { preferences: '石造りが好き' }, 0);
+    const requests = [];
+    t.mock.method(globalThis, 'fetch', async (_url, options) => {
+        const { messages } = JSON.parse(options.body);
+        const context = JSON.parse(messages.at(-1).content);
+        requests.push({ context, history: messages.slice(0, -1) });
+        const note = context.message.includes('リク') ? '\nMEMORY {"subject":"companion","field":"nickname","note":"リク"}'
+            : context.message.includes('釣り') ? '\nMEMORY {"subject":"player","field":"釣りの場所","note":"小屋の裏の桟橋"}' : '';
+        return Response.json({ content: [{ type: 'text', text: 'うん、いいね！' + note }] });
+    });
+    const bot = Object.assign(new EventEmitter(), {
+        username: 'Trailmate', health: 20, entity: { id: 1 },
+        players: { Alice: { username: 'Alice', entity: { id: 2 } }, Bob: { username: 'Bob', entity: { id: 3 } } }
+    });
+    const lines = [];
+    const agent = { bot, companion: { _interval: true }, openChat: async line => lines.push(line) };
+    const dialogue = new CompanionDialogue(agent, { getCurrentModeId: () => 'wait' }, {
+        chat: { player_reply_cooldown_ms: 0 }
+    }, store);
+    agent.companion.dialogue = dialogue;
+    const world = new WorldState();
+    world.observeActivities({ agent, bot, config: {} });
+    const say = (player, line) => dialogue.handlePlayerMessage(player, '@Trailmate ' + line, true);
+
+    await say('Alice', '私のことはリクって呼んで');
+    assert.equal(store.get('相棒'), undefined);
+    await say('Alice', '君の名前はポチだよ');
+    assert.equal(lines.at(-1), 'ぼくの名前はポチだよ！ 覚えておくね！');
+    await say('Alice', 'あなたの名前は何ですか？');
+    assert.equal(lines.at(-1), 'ぼくの名前はポチだよ！');
+    assert.equal(store.get('Alice').notes.nickname, 'リク');
+    await say('Bob', '僕の名前はソラだよ');
+    await say('Bob', 'いつも小屋の裏の桟橋で釣りをするんだ');
+    assert.equal(requests.at(-1).history.some(message => message.content.includes('リク')), false);
+    await say('Alice', '次は何しよっか');
+    assert.equal(requests.at(-1).context.memory.nickname, 'リク');
+    assert.equal(requests.at(-1).context.companionIdentity.nickname, 'ポチ');
+    assert.equal(requests.at(-1).context.memory['釣りの場所'], undefined);
+    assert.ok(requests.at(-1).history.some(message => message.content.includes('ポチ')));
+    bot.emit('entityHurt', bot.entity, bot.players.Alice.entity);
+    bot.emit('entityHurt', bot.entity, { type: 'player', id: 99 });
+    assert.equal(store.get('Bob').notes.received_hit, undefined);
+    assert.match(store.get('Alice').notes.received_hit, /意図は不明/);
+    bot.emit('entityHurt', bot.entity, bot.players.Bob.entity);
+    const reloaded = createMemoryStore(file);
+    assert.match(reloaded.get('Bob').notes.received_hit, /意図は不明/);
+    assert.equal(reloaded.get('Bob').notes['釣りの場所'], '小屋の裏の桟橋');
+    assert.equal(reloaded.get('Bob').notes.name, 'ソラ');
+    assert.equal(reloaded.get('Alice').notes.preferences, '石造りが好き');
+    assert.equal(reloaded.get('相棒').notes.nickname, 'ポチ');
 });

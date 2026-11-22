@@ -23,7 +23,7 @@ import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
 import { generateClaudeLine, isWeatherGrounded } from './claudeChat.js';
 import { ClaudeChatBudget } from './ClaudeChatBudget.js';
-import { companionMemory, materialGoal, MEMORY_FIELDS, normalizeMemoryNotes } from './memory.js';
+import { companionMemory, COMPANION_MEMORY, materialGoal, normalizeMemoryNotes, statedName } from './memory.js';
 
 /** Repeat window for a capability notice with the same key. */
 export const DEFAULT_NOTICE_COOLDOWN_MS = 30000;
@@ -66,7 +66,7 @@ export class CompanionDialogue {
         this._lastCommentaryAt = -Infinity;
         this._lastCommentaryAttemptAt = -Infinity;
         this._recentCommentary = [];
-        this._conversation = null;
+        this._conversations = new Map();
         this.lastChatAt = 0;
         this.lastPlayerChatAt = 0;
         /** @type {Record<string, number>} */
@@ -166,51 +166,83 @@ export class CompanionDialogue {
         if (now - this._lastReplyAt < this.config.player_reply_cooldown_ms / fraction) return false;
         this._lastReplyAt = now;
         const { lastPlayerChatAt } = this;
-        const history = fraction >= 0.25 && this._conversation?.username === username
-            ? this._conversation.history : [];
+        const speaker = username.toLowerCase();
+        const history = fraction >= 0.25 ? this._conversations.get(speaker) ?? [] : [];
         const language = this.agent.language || 'ja';
         const fallback = tCommand(language, 'reply_unavailable');
         const plan = materialGoal(message);
+        const naming = statedName(message);
+        const askingCompanionName = /^(?:あなた|君|きみ|相棒)の(?:名前|呼び名)(?:は(?:何(?:ですか|だっけ)?|なに)?|を教えて)?[?？。！!]*$/u.test(message);
+        const minecraftName = this.agent.bot?.username || this.agent.name || 'Trailmate';
         let remembered;
+        let companionProfile;
         let proposal;
-        if (plan || this._canGenerate(now)) {
-            try { remembered = this.memory.get(username); }
-            catch { console.warn('[companion] could not read player memory'); }
+        if (plan || naming || askingCompanionName || this._canGenerate(now)) {
+            try {
+                remembered = this.memory.get(username);
+                companionProfile = this.memory.get(COMPANION_MEMORY);
+            } catch { console.warn('[companion] could not read player memory'); }
         }
-        const reply = await this._composeLine(this._buildSnapshot(), {
-            history, message, recipient: username, required: true,
-            memory: remembered?.notes,
-            onMemory: update => { proposal = update; }
-        }, fallback);
+        const nickname = naming?.subject === 'companion' ? naming.name : companionProfile?.notes.nickname;
+        const reply = askingCompanionName || naming?.subject === 'companion'
+            ? tCommand(language, 'companion_name_reply', { name: nickname || minecraftName })
+            : await this._composeLine(this._buildSnapshot(), {
+                history, message, recipient: username, required: true,
+                memory: remembered?.notes,
+                companionIdentity: { minecraftName, nickname },
+                onMemory: update => { proposal = update; }
+            }, fallback);
         if (this._claudeBudget?.speechFraction === 0 || this.lastPlayerChatAt !== lastPlayerChatAt
             || !this._canSendChat() || this._lastReplyAt !== now) return false;
 
-        const candidate = proposal && MEMORY_FIELDS.includes(proposal.field)
-            ? normalizeMemoryNotes({ [proposal.field]: proposal.note })
-            : null;
-        let memorySaved = false;
-        if (plan || (candidate && Object.keys(candidate).length)) {
-            const notes = { ...remembered?.notes, ...(plan && { plans: plan }), ...candidate };
-            const revision = remembered?.revision ?? 0;
-            try {
-                const saved = this.memory.save(username, notes, revision);
-                memorySaved = Boolean(saved && saved.revision > revision);
-            }
-            catch { console.warn('[companion] could not save player memory'); }
-        }
+        const botNote = proposal?.subject === 'companion';
+        const candidate = !naming && proposal && typeof proposal.field === 'string' && (!botNote || proposal.field === 'nickname')
+            ? normalizeMemoryNotes({ [proposal.field]: proposal.note }) : null;
+        const playerChanges = {
+            ...(plan && { plans: plan }), ...(!botNote && candidate),
+            ...(naming?.subject === 'player' && { [naming.field]: naming.name })
+        };
+        const companionChanges = naming?.subject === 'companion' ? { nickname }
+            : botNote ? candidate : null;
+        const playerSaved = this._remember(username, remembered, playerChanges);
+        const companionSaved = this._remember(COMPANION_MEMORY, companionProfile, companionChanges);
+        const memorySaved = playerSaved || companionSaved;
         let spokenReply = reply;
+        if (naming?.subject === 'companion' && !companionSaved && nickname !== companionProfile?.notes.nickname) {
+            spokenReply = tCommand(language, 'companion_name_reply', { name: companionProfile?.notes.nickname || minecraftName });
+        }
         if (memorySaved) {
             const confirmation = tCommand(language, 'memory_saved');
-            spokenReply = reply === fallback ? confirmation : reply + ' ' + confirmation;
+            spokenReply = reply === fallback ? confirmation : spokenReply + ' ' + confirmation;
         }
         await this._say(spokenReply);
         if (reply !== fallback) {
-            this._conversation = {
-                username,
-                history: [...history.slice(-2), { role: 'user', content: message }, { role: 'assistant', content: reply }]
-            };
+            this._conversations.delete(speaker);
+            this._conversations.set(speaker, [...history.slice(-2), { role: 'user', content: message }, {
+                role: 'assistant', content: naming?.subject === 'companion' && !companionSaved ? spokenReply : reply
+            }]);
+            if (this._conversations.size > 16) this._conversations.delete(this._conversations.keys().next().value);
         }
         return true;
+    }
+
+    _remember(player, previous, changes) {
+        if (!changes || !Object.keys(changes).length) return false;
+        const notes = normalizeMemoryNotes({ ...previous?.notes, ...changes });
+        if (!notes) return false;
+        const revision = previous?.revision ?? 0;
+        try {
+            const saved = this.memory.save(player, notes, revision);
+            return Boolean(saved && saved.revision > revision);
+        } catch {
+            console.warn('[companion] could not save memory');
+            return false;
+        }
+    }
+
+    rememberPlayerInteraction(player, field, note) {
+        try { this._remember(player, this.memory.get(player), { [field]: note }); }
+        catch { console.warn('[companion] could not read player memory'); }
     }
 
     _canSendChat() {

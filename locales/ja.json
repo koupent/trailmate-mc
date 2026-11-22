@@ -23,7 +23,8 @@
     "own_grave_found": "自分のお墓を見つけたよ！ ({x}, {y}, {z})。",
     "boot_ready": "準備できたよ！ いっしょに行こっか？",
     "reply_unavailable": "ごめん、今はうまく返せないみたい。あとでもう一回声かけてくれたらうれしいな。",
-    "memory_saved": "覚えておくね！"
+    "memory_saved": "覚えておくね！",
+    "companion_name_reply": "ぼくの名前は{name}だよ！"
   },
   "events": {
     "path_blocked": [

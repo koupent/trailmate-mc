@@ -58,6 +58,10 @@
                   </div>
                   <span class="play-chat-visibility">Minecraftの公開チャットに送信</span>
                 </div>
+                <div class="play-chat-sender">
+                  <label>送信者 <select id="play-chat-sender" aria-describedby="play-chat-sender-status"></select></label>
+                  <span id="play-chat-sender-status" class="warn" hidden>選んだプレイヤーが不在です。送信者を選び直してください。</span>
+                </div>
                 <div class="preset-heading">
                   <span id="play-presets-label">よく使うメッセージ · 押すと送信</span>
                   <button type="button" id="play-presets-manage">＋ 登録・管理</button>
@@ -116,15 +120,20 @@
               <div id="play-memory" role="tabpanel" aria-labelledby="play-memory-tab" class="play-detail" tabindex="0" hidden>
                 <div id="memory-empty" class="memory-empty">
                   <h2>まだ保存された記憶はありません</h2>
-                  <p class="muted">「相棒に話す」から「今日は鉄鉱石と石炭を集めるよ」と伝えると、素材集めの目標がここに残ります。ゲーム内では相棒をメンションして話しかけてください。</p>
+                  <p class="muted">ゲーム内で相棒に話しかけるか、「相棒に話す」で送信者を選んでください。呼び方、目標、一緒にあった出来事などが残ります。</p>
                 </div>
                 <div id="memory-controls" class="row" hidden>
-                  <label>プレイヤー <select id="memory-player"></select></label>
+                  <label>見る記憶 <select id="memory-player"></select></label>
                   <button id="memory-edit" type="button">編集</button>
                 </div>
                 <dl id="memory-notes" class="memory-notes"></dl>
                 <form id="memory-form" hidden>
+                  <h2 id="memory-edit-title"></h2>
                   <div id="memory-fields" class="memory-fields"></div>
+                  <div class="row memory-add">
+                    <input id="memory-new-title" maxlength="24" aria-label="新しいメモの見出し" placeholder="新しいメモの見出し">
+                    <button id="memory-add" type="button">メモを追加</button>
+                  </div>
                   <div class="row">
                     <button id="memory-cancel" type="button">キャンセル</button>
                     <button id="memory-save" type="submit" class="primary">保存</button>

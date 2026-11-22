@@ -96,6 +96,10 @@ export class WorldState {
                 if (!actor || source.id === target.id) return;
                 const id = player?.username ? 'companion_hit_by_player' : 'companion_hit_by_mob';
                 if (this.recentObservations().some((entry) => entry.id === id && entry.recipient === player?.username)) return;
+                if (player?.username) {
+                    ctx.agent?.companion?.dialogue?.rememberPlayerInteraction?.(player.username,
+                        'received_hit', 'このプレイヤーの攻撃が相棒に当たったことがある。意図は不明。');
+                }
                 this.observe({
                     id, priority: 3, cooldownKey: 'companion_took_damage', recipient: player?.username,
                     text: 'The damage source was identified. The attacker’s intent is unknown.',

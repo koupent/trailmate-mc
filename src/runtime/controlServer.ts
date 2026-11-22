@@ -24,7 +24,7 @@ import {
 } from '../world/mobHostility.js';
 import { settingsSchema } from '../settings/companionSettings.js';
 import { snapshotInventoryFill } from '../companion/utils/inventorySnapshot.js';
-import { companionMemory, normalizeMemoryNotes } from '../companion/memory.js';
+import { companionMemory, COMPANION_MEMORY, DASHBOARD_MEMORY, isMinecraftPlayerName, normalizeMemoryNotes } from '../companion/memory.js';
 
 const DUPLICATE_LOGIN_RETRY_DELAY_MS = Number(
   process.env.SPAWN_DUPLICATE_RETRY_DELAY_MS || 12000
@@ -79,22 +79,28 @@ export function startControlServer(
         return json(response, 200, { entries: state.host?.chatEntries ?? [] });
       }
       if (url.pathname === '/memory' && request.method === 'GET') {
-        return json(response, 200, { players: companionMemory.list() });
+        return json(response, 200, {
+          players: companionMemory.list(),
+          onlinePlayers: state.host ? onlinePlayerNames(state.host) : []
+        });
       }
       if (url.pathname === '/memory' && request.method === 'PUT') {
         const body = await readJson(request) as { player?: unknown; notes?: unknown; revision?: unknown } | null;
         const notes = normalizeMemoryNotes(body?.notes);
         const { player, revision } = body ?? {};
-        if (!notes || typeof player !== 'string' || typeof revision !== 'number' || !Number.isSafeInteger(revision)) {
-          return json(response, 400, { error: '記憶は各項目140文字以内で入力してください。' });
+        if (!notes || typeof player !== 'string' || typeof revision !== 'number' || !Number.isSafeInteger(revision) || revision < 0) {
+          return json(response, 400, { error: '記憶は最大32項目、項目名は24文字以内、内容は140文字以内で入力してください。' });
         }
-        if (!companionMemory.get(player)) return json(response, 404, { error: 'プレイヤーの記憶が見つかりません。' });
-        const entry = companionMemory.save(player, notes, revision);
+        const knownPlayer = state.host && resolveOnlinePlayer(state.host, player);
+        if (player !== COMPANION_MEMORY && player !== DASHBOARD_MEMORY && !knownPlayer && !companionMemory.get(player)) {
+          return json(response, 404, { error: 'プレイヤーの記憶が見つかりません。' });
+        }
+        const entry = companionMemory.save(knownPlayer || player, notes, revision);
         if (!entry) return json(response, 409, { error: '会話中に記憶が更新されました。コピーを控えて、いったん閲覧に戻ってください。' });
         return json(response, 200, { ok: true, entry });
       }
       if (request.method === 'POST' && url.pathname === '/chat') {
-        const body = await readJson(request) as { kind?: unknown; text?: unknown } | null;
+        const body = await readJson(request) as { kind?: unknown; text?: unknown; player?: unknown } | null;
         const kind = body?.kind;
         const text = typeof body?.text === 'string' ? body.text.trim() : '';
         if ((kind !== 'message' && kind !== 'command') || !text || /[\p{Cc}\u2028\u2029]/u.test(text)
@@ -105,13 +111,19 @@ export function startControlServer(
         if (!host?.bot.entity || !host.chat_ingame) {
           return json(response, 409, { error: '相棒をスポーンし、ゲーム内チャットを有効にしてください。' });
         }
+        let speaker = DASHBOARD_MEMORY;
+        if (kind === 'message' && body?.player != null) {
+          const online = resolveOnlinePlayer(host, body.player);
+          if (!online) return json(response, 409, { error: '選んだプレイヤーが見つかりません。送信者を選び直してください。' });
+          speaker = online;
+        }
         const addressed = `@${host.bot.username} ${text}`;
         const outgoing = kind === 'command' ? text : `[管理画面] ${addressed}`;
         if (outgoing.length > 256) return json(response, 400, { error: 'メッセージが長すぎます。' });
         host.bot.chat(outgoing);
-        recordChat(host, kind, text);
+        recordChat(host, kind, text, speaker !== DASHBOARD_MEMORY ? speaker : undefined);
         const replied = kind === 'message'
-          ? Boolean(await host.companion?.manager?.handlePlayerMessage('管理画面', addressed, true))
+          ? Boolean(await host.companion?.manager?.handlePlayerMessage(speaker, addressed, true))
           : undefined;
         return json(response, 200, { replied, entries: host.chatEntries });
       }
@@ -257,6 +269,18 @@ export async function despawnCompanion(
   }
 }
 
+function onlinePlayerNames(host: TrailmateHost): string[] {
+  const bot = host.bot;
+  return Object.keys(bot.players ?? {}).filter(name => isMinecraftPlayerName(name)
+    && name.toLowerCase() !== bot.username.toLowerCase());
+}
+
+function resolveOnlinePlayer(host: TrailmateHost, name: unknown): string | undefined {
+  if (isMinecraftPlayerName(name)) {
+    return onlinePlayerNames(host).find(player => player.toLowerCase() === name.toLowerCase());
+  }
+}
+
 export function buildStatus(state: ControlState) {
   const host = state.host;
   if (!host?.bot) {
@@ -282,6 +306,7 @@ export function buildStatus(state: ControlState) {
     lastError: state.lastError,
     botName: host.name || bot.username,
     username: bot.username,
+    onlinePlayers: onlinePlayerNames(host),
     chatIngame: host.chat_ingame,
     health: bot.health ?? null,
     food: bot.food ?? null,

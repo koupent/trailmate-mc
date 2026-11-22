@@ -706,13 +706,15 @@ const memoryStatus = document.getElementById('memory-status');
 const memoryEdit = document.getElementById('memory-edit');
 const memorySave = document.getElementById('memory-save');
 const memoryCancel = document.getElementById('memory-cancel');
+const memoryFields = document.getElementById('memory-fields');
+const memoryNewTitle = document.getElementById('memory-new-title');
 const memoryTab = document.getElementById('play-memory-tab');
 const memoryUnread = document.getElementById('memory-unread');
-const memoryLabels = { nickname: '呼び方', preferences: '好み', plans: '目標・一緒にやっていること', milestones: '思い出' };
-const memoryExamples = {
-  nickname: '相棒に呼んでほしい名前', preferences: '好きな遊び方や建築スタイル',
-  plans: '集めたい素材や建築の予定', milestones: '一緒に達成したこと'
+const memoryLabels = {
+  nickname: '呼び方', name: 'プレイヤーの名前', preferences: '好み',
+  plans: '目標・一緒にやっていること', milestones: '思い出', received_hit: '相棒に当たった攻撃'
 };
+const localMemorySubjects = ['管理画面', '相棒'];
 const memorySeenKey = 'trailmate-memory-seen';
 let memoryPlayers = [];
 let memorySeen = new Map();
@@ -725,6 +727,17 @@ let memoryLoading = false;
 let nextMemoryPoll = 0;
 let memoryWriteVersion = 0;
 let chooseUnreadMemory = false;
+
+function memorySubjectName(player) {
+  if (player === '相棒') return '相棒自身';
+  if (player === '管理画面') return '管理画面（プレイヤー未選択）';
+  return player;
+}
+
+function memoryFieldName(player, field) {
+  if (player === '相棒' && field === 'nickname') return '相棒の呼び名';
+  return Object.hasOwn(memoryLabels, field) ? memoryLabels[field] : field;
+}
 
 function isMemoryVisible() {
   return readyToSpawn && currentTab === 'operate' && document.visibilityState === 'visible'
@@ -751,23 +764,28 @@ function updateMemoryBadge(players = memoryPlayers) {
   memoryTab.classList.toggle('has-unread', unread);
   for (const option of memoryPlayer.options) {
     const player = players.find(entry => entry.player === option.value);
-    const label = player && hasUnreadMemory(player) ? option.value + '（新着）' : option.value;
+    const label = memorySubjectName(option.value) + (player && hasUnreadMemory(player) ? '（新着）' : '');
     syncText(option, label);
   }
 }
 
 function renderMemory() {
   const entry = memoryPlayers.find(({ player }) => player === memoryPlayer.value);
-  memoryEmpty.hidden = Boolean(entry);
+  const notes = Object.entries(entry?.notes ?? {});
+  memoryEmpty.hidden = notes.length > 0;
+  syncText(memoryEmpty.querySelector('h2'), entry ? memorySubjectName(entry.player) + 'の記憶はまだありません'
+    : 'まだ保存された記憶はありません');
+  syncText(memoryEmpty.querySelector('p'), entry?.player === '相棒'
+    ? 'ここで相棒の呼び名を編集できます。ゲーム内アカウント名は変わりません。'
+    : 'ゲーム内で相棒をメンションするか、左の「相棒に話す」で送信者を選んでください。呼び方や目標、一緒にあった出来事などが残ります。');
+  syncText(memoryEdit, notes.length ? '編集' : 'メモを追加');
   memoryNotes.replaceChildren();
-  for (const [field, name] of Object.entries(memoryLabels)) {
+  for (const [field, saved] of notes) {
     const group = document.createElement('div');
     const term = document.createElement('dt');
     const note = document.createElement('dd');
-    term.textContent = name;
-    const saved = entry?.notes[field];
-    note.textContent = saved || (entry ? '未登録' : memoryExamples[field]);
-    note.classList.toggle('muted', !saved);
+    term.textContent = memoryFieldName(entry.player, field);
+    note.textContent = saved;
     group.append(term, note);
     memoryNotes.append(group);
   }
@@ -782,8 +800,11 @@ async function loadMemory({ background = false } = {}) {
   const writeVersion = memoryWriteVersion;
   if (!background && !memoryPlayers.length && memoryForm.hidden) setMsg(memoryStatus, '読み込み中…');
   try {
-    const { players } = await api('/api/memory');
+    const { players, onlinePlayers = [] } = await api('/api/memory');
     if (writeVersion !== memoryWriteVersion) return;
+    for (const player of [...onlinePlayers, ...localMemorySubjects]) {
+      if (!players.some(entry => entry.player.toLowerCase() === player.toLowerCase())) players.push({ player, notes: {}, revision: 0 });
+    }
     if (!memoryForm.hidden) {
       updateMemoryBadge(players);
       return;
@@ -819,30 +840,63 @@ memoryPlayer.addEventListener('change', () => {
   renderMemory();
   updateMemoryBadge();
 });
+function addMemoryField(player, field, value) {
+  const label = document.createElement('label');
+  const input = document.createElement('input');
+  input.name = field;
+  input.maxLength = 140;
+  input.value = value;
+  label.append(memoryFieldName(player, field), input);
+  memoryFields.append(label);
+  return input;
+}
+
 memoryEdit.addEventListener('click', () => {
   const entry = memoryPlayers.find(({ player }) => player === memoryPlayer.value);
   if (!entry) return;
-  const fields = document.getElementById('memory-fields');
-  fields.replaceChildren();
-  for (const [field, name] of Object.entries(memoryLabels)) {
-    const label = document.createElement('label');
-    const input = document.createElement('input');
-    input.name = field;
-    input.maxLength = 140;
-    input.value = entry.notes[field] || '';
-    label.append(name, input);
-    fields.append(label);
-  }
+  syncText(document.getElementById('memory-edit-title'), memorySubjectName(entry.player) + 'の記憶を編集');
+  memoryFields.replaceChildren();
+  memoryNewTitle.value = '';
+  memoryNewTitle.setCustomValidity('');
+  const fields = entry.player === '相棒' ? { nickname: '', ...entry.notes } : entry.notes;
+  for (const [field, value] of Object.entries(fields)) addMemoryField(entry.player, field, value);
+  memoryEmpty.hidden = true;
   memoryNotes.hidden = true;
   memoryForm.hidden = false;
   memoryPlayer.disabled = memoryEdit.disabled = true;
-  fields.querySelector('input').focus();
+  (memoryFields.querySelector('input') || memoryNewTitle).focus();
+});
+
+memoryNewTitle.addEventListener('input', () => memoryNewTitle.setCustomValidity(''));
+const memoryAdd = document.getElementById('memory-add');
+memoryNewTitle.addEventListener('keydown', event => {
+  if (event.key !== 'Enter' || event.isComposing) return;
+  event.preventDefault();
+  memoryAdd.click();
+});
+memoryAdd.addEventListener('click', () => {
+  const title = memoryNewTitle.value.trim();
+  const field = Object.keys(memoryLabels).find(key => memoryFieldName(memoryPlayer.value, key) === title) || title;
+  const fields = [...memoryFields.querySelectorAll('input')];
+  const existing = fields.find(input => input.name === field);
+  if (existing) {
+    existing.focus();
+    return;
+  }
+  if (!/^[\p{L}\p{N} _・-]{1,24}$/u.test(field) || Object.hasOwn(Object.prototype, field) || fields.length >= 32) {
+    memoryNewTitle.setCustomValidity('使える文字で見出しを入力してください。メモは最大32項目です。');
+    memoryNewTitle.reportValidity();
+    return;
+  }
+  addMemoryField(memoryPlayer.value, field, '').focus();
+  memoryNewTitle.value = '';
 });
 
 function closeMemoryEditor() {
   memoryForm.hidden = true;
   memoryNotes.hidden = false;
   memoryPlayer.disabled = memoryEdit.disabled = false;
+  renderMemory();
   memoryEdit.focus();
 }
 
@@ -862,9 +916,8 @@ memoryForm.addEventListener('submit', async (event) => {
     memoryWriteVersion++;
     memoryPlayers[index] = entry;
     markMemorySeen(entry);
-    renderMemory();
-    updateMemoryBadge();
     closeMemoryEditor();
+    updateMemoryBadge();
     setMsg(memoryStatus, '記憶を保存しました。', 'ok');
   } catch (error) {
     setMsg(memoryStatus, error.message, 'err');
