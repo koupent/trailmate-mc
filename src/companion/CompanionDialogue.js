@@ -28,6 +28,14 @@ import { companionMemory, COMPANION_MEMORY, materialGoal, normalizeMemoryNotes, 
 /** Repeat window for a capability notice with the same key. */
 export const DEFAULT_NOTICE_COOLDOWN_MS = 30000;
 
+function addressPlayer(line, nickname, language, fallback = '') {
+    const name = typeof nickname === 'string' && nickname.trim();
+    if (!name || !/^[\p{L}\p{N} _・-]{1,24}$/u.test(name)) return fallback + line;
+    if (line.includes(name)) return line;
+    const body = language === 'ja' ? line.replace(/^プレイヤー(?:さん)?[、,]\s*/u, '') : line;
+    return name + (language === 'ja' ? '、' : ', ') + body;
+}
+
 export const DEFAULT_CHAT_CONFIG = {
     enabled: true,
     min_interval_ms: 45000,
@@ -177,12 +185,12 @@ export class CompanionDialogue {
         let remembered;
         let companionProfile;
         let proposal;
-        if (plan || naming || askingCompanionName || this._canGenerate(now)) {
-            try {
-                remembered = this.memory.get(username);
+        try {
+            remembered = this.memory.get(username);
+            if (naming?.subject === 'companion' || askingCompanionName || this._canGenerate(now)) {
                 companionProfile = this.memory.get(COMPANION_MEMORY);
-            } catch { console.warn('[companion] could not read player memory'); }
-        }
+            }
+        } catch { console.warn('[companion] could not read player memory'); }
         const nickname = naming?.subject === 'companion' ? naming.name : companionProfile?.notes.nickname;
         const reply = askingCompanionName || naming?.subject === 'companion'
             ? tCommand(language, 'companion_name_reply', { name: nickname || minecraftName })
@@ -214,6 +222,10 @@ export class CompanionDialogue {
         if (memorySaved) {
             const confirmation = tCommand(language, 'memory_saved');
             spokenReply = reply === fallback ? confirmation : spokenReply + ' ' + confirmation;
+        }
+        if (!askingCompanionName && naming?.subject !== 'companion') {
+            const playerNickname = (playerSaved && playerChanges.nickname) || remembered?.notes.nickname;
+            spokenReply = addressPlayer(spokenReply, playerNickname, language);
         }
         await this._say(spokenReply);
         if (reply !== fallback) {
@@ -364,7 +376,12 @@ export class CompanionDialogue {
         const address = !operational ? `@${recipient.name}${language === 'ja' ? '、' : ', '}` : '';
         const deliver = async (reply) => {
             if (!reply) return;
-            await this._say(address + reply);
+            let nickname;
+            if (!operational) {
+                try { nickname = this.memory.get(recipient.name)?.notes.nickname; }
+                catch { console.warn('[companion] could not read player memory'); }
+            }
+            await this._say(addressPlayer(reply, nickname, language, address));
             this.lastEventAt[cooldownKey] = Date.now();
             if (!operational && !reaction) this._lastCommentaryAt = this.lastEventAt[cooldownKey];
             if (!operational) this._recentCommentary = [...this._recentCommentary.slice(-1), reply];

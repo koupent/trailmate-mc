@@ -4,6 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { test } from 'node:test';
 import { EventEmitter, once } from 'node:events';
+import { setImmediate } from 'node:timers/promises';
 import { CompanionDialogue } from '../src/companion/CompanionDialogue.js';
 import { WorldState } from '../src/companion/WorldState.js';
 import { companionMemory, createMemoryStore, normalizeMemoryNotes } from '../src/companion/memory.js';
@@ -170,9 +171,9 @@ test('keeps the companion name, each player’s memory, and verified interaction
         const { messages } = JSON.parse(options.body);
         const context = JSON.parse(messages.at(-1).content);
         requests.push({ context, history: messages.slice(0, -1) });
-        const note = context.message.includes('リク') ? '\nMEMORY {"subject":"companion","field":"nickname","note":"リク"}'
-            : context.message.includes('釣り') ? '\nMEMORY {"subject":"player","field":"釣りの場所","note":"小屋の裏の桟橋"}' : '';
-        return Response.json({ content: [{ type: 'text', text: 'うん、いいね！' + note }] });
+        const note = context.message?.includes('リク') ? '\nMEMORY {"subject":"companion","field":"nickname","note":"リク"}'
+            : context.message?.includes('釣り') ? '\nMEMORY {"subject":"player","field":"釣りの場所","note":"小屋の裏の桟橋"}' : '';
+        return Response.json({ content: [{ type: 'text', text: 'プレイヤーさん、うん、いいね！' + note }] });
     });
     const bot = Object.assign(new EventEmitter(), {
         username: 'Trailmate', health: 20, entity: { id: 1 },
@@ -196,9 +197,13 @@ test('keeps the companion name, each player’s memory, and verified interaction
     assert.equal(lines.at(-1), 'ぼくの名前はポチだよ！');
     assert.equal(store.get('Alice').notes.nickname, 'リク');
     await say('Bob', '僕の名前はソラだよ');
+    await say('Bob', '僕のことはソラって呼んで');
     await say('Bob', 'いつも小屋の裏の桟橋で釣りをするんだ');
+    assert.match(lines.at(-1), /^ソラ、/);
+    assert.doesNotMatch(lines.at(-1), /リク|プレイヤー/);
     assert.equal(requests.at(-1).history.some(message => message.content.includes('リク')), false);
     await say('Alice', '次は何しよっか');
+    assert.equal(lines.at(-1), 'リク、うん、いいね！');
     assert.equal(requests.at(-1).context.memory.nickname, 'リク');
     assert.equal(requests.at(-1).context.companionIdentity.nickname, 'ポチ');
     assert.equal(requests.at(-1).context.memory['釣りの場所'], undefined);
@@ -214,4 +219,14 @@ test('keeps the companion name, each player’s memory, and verified interaction
     assert.equal(reloaded.get('Bob').notes.name, 'ソラ');
     assert.equal(reloaded.get('Alice').notes.preferences, '石造りが好き');
     assert.equal(reloaded.get('相棒').notes.nickname, 'ポチ');
+
+    agent.companion.ctx = { worldState: world };
+    world.nearbyPlayers = [{ name: 'Alice', distance: 2 }, { name: 'Bob', distance: 3 }];
+    t.mock.method(dialogue, '_buildSnapshot', () => ({
+        ...dialogue._emptySnapshot('wait'), nearbyPlayers: world.nearbyPlayers
+    }));
+    world.observe({ id: 'bow_completed', text: 'Bowed to Bob', reaction: true, priority: 0, recipient: 'Bob' });
+    await dialogue.maybeSpeak();
+    await setImmediate();
+    assert.equal(lines.at(-1), 'ソラ、うん、いいね！');
 });
