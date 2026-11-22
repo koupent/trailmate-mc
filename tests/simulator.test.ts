@@ -13,6 +13,7 @@ import { generateArena, createSeededRng } from '../src/simulator/ArenaGenerator.
 import { pickCurriculumArenaKind } from '../src/simulator/ArenaCurriculum.js';
 import { GymRunner } from '../src/simulator/GymRunner.js';
 import { buildReviewMarkdown } from '../src/simulator/ReviewPack.js';
+import { tickCreeperFuses } from '../src/simulator/combatPhysics.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -759,7 +760,7 @@ describe('ノックバックとクリーパー着火', () => {
   });
 
   it('着火を放置すると爆発して相棒が被弾する', () => {
-    let state = createScenario('single-ranged');
+    const state = createScenario('single-ranged');
     // 近接射程外・消火距離内で着火済み → 殴れず爆発まで進む
     state.enemies = [{
       id: 1,
@@ -772,67 +773,55 @@ describe('ノックバックとクリーパー着火', () => {
       stunUntil: 0
     }];
     state.bot = { ...state.bot, x: 0, y: 1, z: 0, hp: 20 };
-    state.enemyAi = { enabled: false, speedScale: 1 };
-    state.inventory = [];
-    state.equipped = null;
-    // 最初のstepで now が進むので、着火開始を「少し前」にずらす
-    const first = stepSimulation(state);
-    state = first.state;
-    const creeper = state.enemies[0];
-    assert.ok(creeper);
-    creeper.fuseStartedAt = state.now - 1400;
-    state.bot = { ...state.bot, x: 0, y: 1, z: 0 };
-
-    let exploded = false;
-    for (let i = 0; i < 8; i += 1) {
-      // 接近してキャンセルしないよう固定
-      state.bot = { ...state.bot, x: 0, y: 1, z: 0 };
-      if (state.enemies[0]) {
-        state.enemies[0].x = 4.2;
-        state.enemies[0].z = 0;
-      }
-      const result = stepSimulation(state);
-      state = result.state;
-      if (state.transitions.some((line) => line.includes('クリーパー爆発'))) {
-        exploded = true;
-        break;
-      }
-    }
-    assert.equal(exploded, true, 'fuse完走で爆発する');
+    state.now = 1500;
+    const { explodedIds } = tickCreeperFuses(state, createBlockSet(state.blocks));
+    assert.deepEqual(explodedIds, [1], '移動せずに着火タイマーが尽きると爆発する');
     assert.ok(state.damageTaken > 0 || state.botDead, '爆発で被弾する');
   });
 
-  it('近くにいれば着火し、殴り続けても爆発する（倒し切れない場合）', () => {
+  it('着火直後は射程に戻って殴り、爆発前に離れて消火を待ち、攻撃を再開する', () => {
     let state = createScenario('single-ranged');
     state.blocks = state.blocks.filter((b) => b.y === 0);
     state.enemies = [{
       id: 1,
       kind: 'creeper',
-      x: 2.2,
+      x: 3.8,
       y: 1,
       z: 0,
       hp: 80,
-      fuseStartedAt: null,
+      fuseStartedAt: 0,
       stunUntil: 0
     }];
     state.bot = { ...state.bot, x: 0, y: 1, z: 0, hp: 40 };
     state.enemyAi = { enabled: false, speedScale: 1 };
     state.inventory = ['stone_sword'];
-    let ignited = false;
-    let exploded = false;
-    for (let i = 0; i < 40; i += 1) {
-      const result = stepSimulation(state);
+    let result = stepSimulation(state);
+    assert.equal(result.decision.movement, 'advance');
+    result = stepSimulation(result.state);
+    assert.equal(result.decision.movement, 'attack');
+    assert.equal(result.state.attacks, 1);
+    state = result.state;
+    while (state.enemies[0]?.fuseStartedAt != null && state.now < 1500) {
+      result = stepSimulation(state);
+      assert.equal(result.decision.movement, 'dodge');
+      assert.equal(result.state.attacks, 1);
       state = result.state;
-      const creeper = state.enemies[0];
-      if (creeper?.fuseStartedAt != null) ignited = true;
-      if (state.transitions.some((line) => line.includes('クリーパー爆発'))) {
-        exploded = true;
-        break;
-      }
-      if (state.ended || state.botDead) break;
     }
-    assert.equal(ignited, true, '近距離で着火する');
-    assert.equal(exploded, true, '殴ってもタイマーは進み爆発する');
+    assert.equal(state.enemies[0]?.fuseStartedAt, null, '爆発せずに消火した');
+    const resumed = runUntil(state, (next) => next.attacks > 1, 8);
+    assert.equal(resumed.state.damageTaken, 0);
+    assert.ok(!resumed.state.transitions.some((line) => line.includes('クリーパー爆発')));
+  });
+
+  it('低体力では着火直後から攻撃を中断して退避する', () => {
+    const state = createScenario('single-ranged');
+    state.blocks = state.blocks.filter((b) => b.y === 0);
+    state.bot = { ...state.bot, x: 0, y: 1, z: 0, hp: 8 };
+    state.enemies = [{ id: 1, kind: 'creeper', x: 2.5, y: 1, z: 0, hp: 20, fuseStartedAt: 0 }];
+    const result = stepSimulation(state);
+    assert.equal(result.decision.movement, 'dodge');
+    assert.equal(result.state.attacks, 0);
+    assert.ok(result.state.bot.x < state.bot.x);
   });
 
   it('着火中のクリーパーは追尾せず静止する', () => {

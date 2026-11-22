@@ -7,7 +7,7 @@
 
 import { Vec3 } from 'vec3';
 import type { Bot } from 'mineflayer';
-import { isCreeperIgnited } from '../combat/creeperTactics.js';
+import { CREEPER_FUSE_MS, isCreeperIgnited } from '../combat/creeperTactics.js';
 import {
   pickMixedMeleeCoverPoint,
   type CombatScene,
@@ -45,6 +45,7 @@ export type LiveSceneInput = {
   tick: number;
   tickMs: number;
   threats: LiveEntity[];
+  creeperFuseStarts?: WeakMap<LiveEntity, number | null>;
   owner: XZ | null;
   hasShield: boolean;
   lastDamageAt: number;
@@ -97,15 +98,20 @@ export function buildLiveCombatScene(input: LiveSceneInput): CombatScene {
   const botPoint = { x: pos.x, y: pos.y, z: pos.z, hp: Number.isFinite(bot.health) ? bot.health : 20 };
   const threats: SceneThreat[] = input.threats
     .filter((entity) => entity?.id != null && entity.position)
-    .map((entity) => ({
-      id: Number(entity.id),
-      x: entity.position.x,
-      y: entity.position.y,
-      z: entity.position.z,
-      kind: String(entity.name || 'unknown'),
-      hp: Number.isFinite(Number(entity.health)) ? Number(entity.health) : 20,
-      ignited: isCreeperIgnited(entity as { name?: string; metadata?: unknown })
-    }));
+    .map((entity) => {
+      const ignited = isCreeperIgnited(entity);
+      const startedAt = ignited ? input.creeperFuseStarts?.get(entity) : null;
+      return {
+        id: Number(entity.id),
+        x: entity.position.x,
+        y: entity.position.y,
+        z: entity.position.z,
+        kind: String(entity.name || 'unknown'),
+        hp: Number.isFinite(Number(entity.health)) ? Number(entity.health) : 20,
+        ignited,
+        fuseRemainingMs: startedAt != null ? CREEPER_FUSE_MS - (input.now - startedAt) : undefined
+      };
+    });
   const pathBlocked = (from: ScenePoint, to: XZ) => rayBlocked(
     bot,
     { x: from.x, y: from.y + STEP_CLEAR_HEIGHT, z: from.z },

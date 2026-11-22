@@ -7,6 +7,7 @@
  * - 殴ってもタイマーは消えない（倒すか離れるか）
  */
 
+import { CREEPER_DEFUSE_RANGE, CREEPER_FUSE_MS } from '../combat/creeperTactics.js';
 import {
   hasVoxelLineOfSight,
   standingY,
@@ -31,10 +32,6 @@ export type PhysicsBot = PhysicsPoint & {
 
 /** 着火開始距離（JE おおよそ 3）。 */
 export const CREEPER_IGNITE_RANGE = 3.0;
-/** 距離で自然消火（JE おおよそ 7）。 */
-export const CREEPER_DEFUSE_RANGE = 7.0;
-/** 着火から爆発までの時間（JE 1.5s）。 */
-export const CREEPER_FUSE_MS = 1500;
 /** 爆発の有効半径。 */
 export const CREEPER_BLAST_RADIUS = 4.5;
 /** 爆心の最大ダメージ。 */

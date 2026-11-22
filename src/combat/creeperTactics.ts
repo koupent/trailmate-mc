@@ -6,11 +6,15 @@
  * - 17: charged
  * - 18: ignited boolean
  *
- * 方針: 未着火は近接を維持。着火中だけ短く飛び退き、着火が消えたらすぐ攻撃に戻る。
+ * 方針: 着火直後は間合いを取り直して攻撃し、爆発が迫ったら退避する。
  */
 
 /** 着火中の短い飛び退き距離。短いほど早く攻撃に戻れる。 */
 export const CREEPER_FLEE_DISTANCE = 4;
+export const CREEPER_DEFUSE_RANGE = 7;
+export const CREEPER_FUSE_MS = 1500;
+const CREEPER_RETREAT_WINDOW_MS = 700;
+const CREEPER_RETREAT_HEALTH = 8;
 
 /** クリーパーを殴る最短間隔（ms）。着火を止めるため剣の間隔より短い。 */
 export const CREEPER_STRIKE_GAP_MS = 300;
@@ -38,14 +42,8 @@ export function isCreeperIgnited(
     return false;
 }
 
-/** 着火中で殴って止められないときだけ強制退避。 */
-export function creeperMustFlee(opts: {
-  ignited: boolean;
-  canMeleeStrike: boolean;
-  distance: number;
-  fleeDistance: number;
-}): boolean {
-  if (!opts.ignited) return false;
-  if (opts.canMeleeStrike) return false;
-  return opts.distance < opts.fleeDistance;
+/** 次の判断までに退避の時間帯に入る場合も、今の判断で先に離れる。 */
+export function creeperMustFlee(remainingMs: number | undefined, health: number, tickMs: number): boolean {
+  return remainingMs === undefined || health <= CREEPER_RETREAT_HEALTH
+    || remainingMs <= CREEPER_RETREAT_WINDOW_MS + tickMs;
 }

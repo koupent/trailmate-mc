@@ -13,7 +13,7 @@ import { createScenario, normalizeState, simCombatScene } from '../src/simulator
 import { createBlockSet } from '../src/simulator/voxel.js';
 import { buildLiveCombatScene } from '../src/reflexes/liveCombatScene.js';
 
-type Enemy = { id: number; kind: string; x: number; z: number; ignited?: boolean };
+type Enemy = { id: number; kind: string; x: number; z: number; ignited?: boolean; fuseStartedAt?: number };
 
 const PARAMS = getPresetParams('explosive-wide');
 
@@ -28,18 +28,21 @@ function simStep(enemies: Enemy[]) {
       y: 1,
       z: enemy.z,
       hp: 20,
-      fuseStartedAt: enemy.ignited ? 0 : null
+      fuseStartedAt: enemy.ignited ? enemy.fuseStartedAt ?? 0 : null
     }))
   });
   const threats = state.enemies;
   return decideCombatStep(simCombatScene(state, createBlockSet(state.blocks), threats, PARAMS), {});
 }
 
-function liveStep(enemies: Enemy[]) {
+function liveStep(enemies: Enemy[], observeIgnition = true) {
+  const creeperFuseStarts = new WeakMap<object, number>();
   const entities = enemies.map((enemy) => {
     const metadata: unknown[] = [];
     if (enemy.ignited) metadata[16] = 1;
-    return { id: enemy.id, name: enemy.kind, position: new Vec3(enemy.x, 64, enemy.z), metadata };
+    const entity = { id: enemy.id, name: enemy.kind, position: new Vec3(enemy.x, 64, enemy.z), metadata };
+    if (enemy.ignited && observeIgnition) creeperFuseStarts.set(entity, enemy.fuseStartedAt ?? 0);
+    return entity;
   });
   const bot = {
     entity: { position: new Vec3(0, 64, 0) },
@@ -52,6 +55,7 @@ function liveStep(enemies: Enemy[]) {
     tick: 0,
     tickMs: 250,
     threats: entities,
+    creeperFuseStarts,
     owner: { x: -5, z: 0 },
     hasShield: false,
     lastDamageAt: 0,
@@ -77,7 +81,8 @@ const SCENES: Array<[string, Enemy[]]> = [
     { id: 2, kind: 'skeleton', x: 0, z: -4 }
   ]],
   ['届く着火クリーパー', [{ id: 1, kind: 'creeper', x: 2.5, z: 0, ignited: true }]],
-  ['届かない着火クリーパー', [{ id: 1, kind: 'creeper', x: 3.8, z: 0, ignited: true }]]
+  ['届かない着火クリーパー', [{ id: 1, kind: 'creeper', x: 3.8, z: 0, ignited: true }]],
+  ['射程内で爆発が迫ったクリーパー', [{ id: 1, kind: 'creeper', x: 2.5, z: 0, ignited: true, fuseStartedAt: -800 }]]
 ];
 
 describe('箱庭と本番の戦闘判断の一致', () => {
@@ -97,4 +102,18 @@ describe('箱庭と本番の戦闘判断の一致', () => {
       }
     });
   }
+
+  it('本番で着火開始が不明なら射程内でも退避する', () => {
+    const decision = liveStep([{ id: 1, kind: 'creeper', x: 2.5, z: 0, ignited: true }], false);
+    assert.equal(decision.directFlee, true);
+    assert.equal(decision.strikeTarget, null);
+  });
+
+  it('開始を観測した場合は、射程内でも爆発が迫れば攻撃より退避を優先する', () => {
+    const creeper = { id: 1, kind: 'creeper', x: 2.5, z: 0, ignited: true, fuseStartedAt: -800 };
+    assert.equal(liveStep([{ ...creeper, fuseStartedAt: 0 }]).strikeTarget?.id, 1);
+    const decision = liveStep([creeper]);
+    assert.equal(decision.directFlee, true);
+    assert.equal(decision.strikeTarget, null);
+  });
 });

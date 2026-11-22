@@ -45,6 +45,7 @@ import {
   type UtilityScore,
   type UtilityWeights
 } from '../combat/CombatUtility.js';
+import { CREEPER_FUSE_MS } from '../combat/creeperTactics.js';
 import { selectControlOwner } from '../companion/ControlPriority.js';
 import {
   createDeathRecoveryState,
@@ -874,7 +875,9 @@ export function simCombatScene(
       z: enemy.z,
       kind: enemy.kind,
       hp: enemy.hp,
-      ignited: isSimCreeperIgnited(enemy)
+      ignited: isSimCreeperIgnited(enemy),
+      fuseRemainingMs: enemy.kind === 'creeper' && enemy.fuseStartedAt != null
+        ? CREEPER_FUSE_MS - (state.now - enemy.fuseStartedAt) : undefined
     })),
     owner: state.owner,
     hasShield: state.inventory.includes('shield'),

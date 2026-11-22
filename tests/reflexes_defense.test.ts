@@ -1,5 +1,6 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import { Reflexes } from '../src/reflexes/Reflexes.js';
 import { FollowMode } from '../src/companion/modes/FollowMode.js';
 import { WaitMode } from '../src/companion/modes/WaitMode.js';
@@ -120,7 +121,10 @@ function makeBot(opts: BotOpts = {}) {
 
   const controls: Record<string, boolean> = {};
   let deactivateCount = 0;
+  const events = new EventEmitter();
   const bot = {
+    on: events.on.bind(events),
+    emit: events.emit.bind(events),
     entity: botEntity,
     entities: Object.fromEntries(hostiles.map((entity) => [entity.id, entity])),
     health: opts.health ?? 20,
@@ -577,19 +581,30 @@ describe('Reflexesの戦闘判断', () => {
     assert.equal(movement._stats().destinations.length, 0);
   });
 
-  it('届く距離の着火済みcreeperは殴ってノックバックで自爆を止める', async () => {
+  it('着火を観測したcreeperにまず攻撃し、爆発が迫ると射程内でも退避する', async (t) => {
+    let now = 10_000;
+    t.mock.method(Date, 'now', () => now);
     const creeper = makeEntity('creeper', 'hostile', 2.5, 64, 0);
     creeper.metadata = [];
-    creeper.metadata[16] = 1;
+    creeper.metadata[16] = -1;
     const setup = makeBot({ hostiles: [creeper] });
     setup.track(creeper);
     const movement = makeMovement();
     const reflexes = new Reflexes(setup.bot as any, CONFIG, 7);
+    setup.bot.emit('entityUpdate', creeper);
+    creeper.metadata[16] = 1;
+    setup.bot.emit('entityUpdate', creeper);
 
     await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
 
     assert.equal(setup.bot._stats().attackTarget, creeper);
     assert.equal(movement._stats().destinations.length, 0);
+
+    now += 800;
+    setup.bot.emit('entityUpdate', creeper);
+    await reflexes.tick({ movementHeld: false, isIdleish: true, movement });
+    assert.equal(stepOf(reflexes).directFlee, true);
+    assert.equal(setup.bot._stats().attackCount, 1, '連続したメタデータ更新で着火時刻をリセットしない');
   });
 
   it('届かない着火済みcreeperからは離れる', async () => {
