@@ -87,6 +87,7 @@ function makeDialogue(entries, { chat = {}, ctx = null, language = 'ja' } = {}) 
             ...chat
         }
     });
+    dialogue._claudeBudget = null;
     dialogue._buildSnapshot = () => ({
         mode: 'wait',
         controlOwner: 'wait',

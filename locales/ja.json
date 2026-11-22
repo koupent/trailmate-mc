@@ -24,7 +24,11 @@
     "boot_ready": "準備できたよ！ いっしょに行こっか？",
     "reply_unavailable": "ごめん、今はうまく返せないみたい。あとでもう一回声かけてくれたらうれしいな。",
     "memory_saved": "覚えておくね！",
-    "companion_name_reply": "ぼくの名前は{name}だよ！"
+    "companion_name_reply": "ぼくの名前は{name}だよ！",
+    "player_name_reply": "{name}だよね！",
+    "player_nickname_reply": "{name}って呼んでるよ！",
+    "player_name_unknown": "名前はまだ聞いてないよ。なんて呼べばいい？",
+    "player_nickname_unknown": "呼び方はまだ聞いてないよ。なんて呼べばいい？"
   },
   "events": {
     "path_blocked": [

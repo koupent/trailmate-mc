@@ -23,7 +23,7 @@ import { shouldDeferToCombat } from './combatGate.js';
 import { DEFAULT_GIVE_SUPPRESS_MS } from './utils/nearbyLootConstants.js';
 import { generateClaudeLine, isWeatherGrounded } from './claudeChat.js';
 import { ClaudeChatBudget } from './ClaudeChatBudget.js';
-import { companionMemory, COMPANION_MEMORY, materialGoal, normalizeMemoryNotes, statedName } from './memory.js';
+import { askedName, companionMemory, COMPANION_MEMORY, materialGoal, normalizeMemoryNotes, statedName } from './memory.js';
 
 /** Repeat window for a capability notice with the same key. */
 export const DEFAULT_NOTICE_COOLDOWN_MS = 30000;
@@ -177,65 +177,71 @@ export class CompanionDialogue {
         const speaker = username.toLowerCase();
         const history = fraction >= 0.25 ? this._conversations.get(speaker) ?? [] : [];
         const language = this.agent.language || 'ja';
-        const fallback = tCommand(language, 'reply_unavailable');
         const plan = materialGoal(message);
         const naming = statedName(message);
-        const askingCompanionName = /^(?:あなた|君|きみ|相棒)の(?:名前|呼び名)(?:は(?:何(?:ですか|だっけ)?|なに)?|を教えて)?[?？。！!]*$/u.test(message);
+        const nameQuestion = askedName(message);
         const minecraftName = this.agent.bot?.username || this.agent.name || 'Trailmate';
         let remembered;
         let companionProfile;
         let proposal;
         try {
             remembered = this.memory.get(username);
-            if (naming?.subject === 'companion' || askingCompanionName || this._canGenerate(now)) {
-                companionProfile = this.memory.get(COMPANION_MEMORY);
-            }
+            companionProfile = this.memory.get(COMPANION_MEMORY);
         } catch { console.warn('[companion] could not read player memory'); }
-        const nickname = naming?.subject === 'companion' ? naming.name : companionProfile?.notes.nickname;
-        const reply = askingCompanionName || naming?.subject === 'companion'
-            ? tCommand(language, 'companion_name_reply', { name: nickname || minecraftName })
-            : await this._composeLine(this._buildSnapshot(), {
-                history, message, recipient: username, required: true,
-                memory: remembered?.notes,
-                companionIdentity: { minecraftName, nickname },
-                onMemory: update => { proposal = update; }
-            }, fallback);
+        const companionNickname = companionProfile?.notes.nickname;
+        const nameAnswer = nameQuestion?.subject === 'companion' ? companionNickname || minecraftName
+            : (nameQuestion?.field === 'name' && remembered?.notes.name) || remembered?.notes.nickname;
+        const generated = await this._composeLine(null, {
+            history: nameQuestion ? [] : history, message, recipient: username, required: true,
+            memory: nameQuestion ? undefined : remembered?.notes,
+            companionIdentity: nameQuestion ? undefined : { minecraftName, nickname: companionNickname },
+            nameQuestion: nameQuestion && { ...nameQuestion, answer: nameAnswer }, statedName: naming,
+            onMemory: update => { proposal = update; }
+        });
         if (this._claudeBudget?.speechFraction === 0 || this.lastPlayerChatAt !== lastPlayerChatAt
             || !this._canSendChat() || this._lastReplyAt !== now) return false;
 
         const botNote = proposal?.subject === 'companion';
-        const candidate = !naming && proposal && typeof proposal.field === 'string' && (!botNote || proposal.field === 'nickname')
+        const candidate = !naming && !nameQuestion && proposal && typeof proposal.field === 'string' && (!botNote || proposal.field === 'nickname')
             ? normalizeMemoryNotes({ [proposal.field]: proposal.note }) : null;
         const playerChanges = {
             ...(plan && { plans: plan }), ...(!botNote && candidate),
             ...(naming?.subject === 'player' && { [naming.field]: naming.name })
         };
-        const companionChanges = naming?.subject === 'companion' ? { nickname }
+        const companionChanges = naming?.subject === 'companion' ? { nickname: naming.name }
             : botNote ? candidate : null;
         const playerSaved = this._remember(username, remembered, playerChanges);
         const companionSaved = this._remember(COMPANION_MEMORY, companionProfile, companionChanges);
-        const memorySaved = playerSaved || companionSaved;
-        let spokenReply = reply;
-        if (naming?.subject === 'companion' && !companionSaved && nickname !== companionProfile?.notes.nickname) {
-            spokenReply = tCommand(language, 'companion_name_reply', { name: companionProfile?.notes.nickname || minecraftName });
-        }
-        if (memorySaved) {
-            const confirmation = tCommand(language, 'memory_saved');
-            spokenReply = reply === fallback ? confirmation : spokenReply + ' ' + confirmation;
-        }
-        if (!askingCompanionName && naming?.subject !== 'companion') {
-            const playerNickname = (playerSaved && playerChanges.nickname) || remembered?.notes.nickname;
-            spokenReply = addressPlayer(spokenReply, playerNickname, language);
-        }
+        const spokenReply = generated ?? this._fallbackReply(language, nameQuestion, naming, {
+            nameAnswer,
+            companionName: (companionSaved && companionChanges.nickname) || companionNickname || minecraftName,
+            playerNickname: (playerSaved && playerChanges.nickname) || remembered?.notes.nickname,
+            memorySaved: playerSaved || companionSaved
+        });
         await this._say(spokenReply);
-        if (reply !== fallback) {
+        if (generated || nameQuestion || naming?.subject === 'companion') {
             this._conversations.delete(speaker);
             this._conversations.set(speaker, [...history.slice(-2), { role: 'user', content: message }, {
-                role: 'assistant', content: naming?.subject === 'companion' && !companionSaved ? spokenReply : reply
+                role: 'assistant', content: spokenReply
             }]);
             if (this._conversations.size > 16) this._conversations.delete(this._conversations.keys().next().value);
         }
         return true;
+    }
+
+    _fallbackReply(language, nameQuestion, naming, { nameAnswer, companionName, playerNickname, memorySaved }) {
+        if (nameQuestion?.subject === 'companion' || naming?.subject === 'companion') {
+            const reply = tCommand(language, 'companion_name_reply', { name: companionName });
+            return memorySaved ? reply + ' ' + tCommand(language, 'memory_saved') : reply;
+        }
+        if (nameQuestion?.subject === 'player') {
+            if (nameQuestion.field === 'name') {
+                return nameAnswer ? tCommand(language, 'player_name_reply', { name: nameAnswer }) : tCommand(language, 'player_name_unknown');
+            }
+            return nameAnswer ? tCommand(language, 'player_nickname_reply', { name: nameAnswer })
+                : tCommand(language, 'player_nickname_unknown');
+        }
+        return addressPlayer(tCommand(language, memorySaved ? 'memory_saved' : 'reply_unavailable'), playerNickname, language);
     }
 
     _remember(player, previous, changes) {
@@ -271,13 +277,14 @@ export class CompanionDialogue {
         return Boolean(this._claudeBudget?.fraction && now >= this._claudeRetryAt);
     }
 
-    async _composeLine(snapshot, input, fallback) {
+    // Undefined means generation was unavailable. An empty line is deliberate silence.
+    async _composeLine(snapshot, input) {
         const now = Date.now();
         this._claudeBudget?.refresh(now);
         if (this._canGenerate(now) && input.required) {
             while (this._claudeRequest) await this._claudeRequest;
         }
-        if (!this._canGenerate(Date.now()) || this._claudeRequest || !this.enabled || this.agent.shut_up) return fallback;
+        if (!this._canGenerate(Date.now()) || this._claudeRequest || !this.enabled || this.agent.shut_up) return;
 
         snapshot ??= this._buildSnapshot();
         const language = this.agent.language || 'ja';
@@ -295,7 +302,7 @@ export class CompanionDialogue {
         const rain = this._localRain();
         return this._claudeBudget.fraction && line
             && isWeatherGrounded(line, language, rain === undefined ? snapshot.isRaining : rain, input.event)
-            ? line : fallback;
+            ? line : undefined;
     }
 
     async maybeSpeak() {
@@ -324,7 +331,8 @@ export class CompanionDialogue {
         const fraction = this._claudeBudget?.speechFraction ?? 1;
         const quietInterval = this.config.priority_min_interval_ms;
         const lastConversationAt = Math.max(this.lastChatAt, this.lastPlayerChatAt, this._lastReplyAt);
-        const useClaude = this._canGenerate(now) && this._canSendChat();
+        const useClaude = this._canGenerate(now);
+        if (useClaude && !this._canSendChat()) return;
         const minIntervalFor = (event, operational) => event.priority >= 2 ? quietInterval
             : this.config.min_interval_ms / (operational ? 1 : fraction);
         const eligible = (event) => {
@@ -374,14 +382,15 @@ export class CompanionDialogue {
             fallback: false
         });
         const address = !operational ? `@${recipient.name}${language === 'ja' ? '、' : ', '}` : '';
-        const deliver = async (reply) => {
+        let recipientNickname;
+        if (!operational) {
+            try { recipientNickname = this.memory.get(recipient.name)?.notes.nickname; }
+            catch { console.warn('[companion] could not read player memory'); }
+        }
+        const deliver = async (generated) => {
+            const reply = generated ?? message;
             if (!reply) return;
-            let nickname;
-            if (!operational) {
-                try { nickname = this.memory.get(recipient.name)?.notes.nickname; }
-                catch { console.warn('[companion] could not read player memory'); }
-            }
-            await this._say(addressPlayer(reply, nickname, language, address));
+            await this._say(generated ?? addressPlayer(reply, recipientNickname, language, address));
             this.lastEventAt[cooldownKey] = Date.now();
             if (!operational && !reaction) this._lastCommentaryAt = this.lastEventAt[cooldownKey];
             if (!operational) this._recentCommentary = [...this._recentCommentary.slice(-1), reply];
@@ -408,8 +417,9 @@ export class CompanionDialogue {
                 actionFacts: event.actionFacts,
                 actorIsAddressee: event.recipient === recipient.name || undefined,
                 recipient: recipient.name,
+                recipientNickname,
                 recentCommentary: this._recentCommentary
-            }, message).then(async (line) => {
+            }).then(async (line) => {
                 if ((casual && !this._claudeBudget.speechFraction) || !this._canSendChat()) return;
                 if (!reaction && (this.lastChatAt !== lastChatAt
                     || this.lastPlayerChatAt !== lastPlayerChatAt || this._lastReplyAt !== _lastReplyAt)) return;
@@ -433,7 +443,7 @@ export class CompanionDialogue {
             return;
         }
         if (!operational) event.handled = true;
-        await deliver(message);
+        await deliver();
     }
 
     _isCurrentObservation(event, snapshot) {
@@ -587,7 +597,7 @@ export class CompanionDialogue {
         if (!this.enabled || this.agent.shut_up) return false;
         const fallback = tCommand(this.agent.language || 'ja', key, vars);
         if (!fallback || fallback === key) return false;
-        const line = await this._composeLine(null, { event: key, eventDetail: fallback, required: true }, fallback);
+        const line = (await this._composeLine(null, { event: key, eventDetail: fallback, required: true })) ?? fallback;
         if (!this.enabled || this.agent.shut_up || !line) return false;
         await this._say(line);
         return true;
