@@ -25,12 +25,23 @@ function readPresets(kind) {
     const data = JSON.parse(localStorage.getItem(modes[kind].storage));
     if (Array.isArray(data)) {
       return data.filter((item) => typeof item?.name === 'string' && typeof item.text === 'string'
-        && !validate(kind, item.text));
+        && !validate(kind, item.text)).map(({ name, text, uses }) => ({
+          name, text, uses: Number.isSafeInteger(uses) && uses > 0 ? uses : 0
+        }));
     }
   } catch {
     // The dashboard remains usable when browser storage is unavailable.
   }
   return [];
+}
+
+function readPresetOrder(kind) {
+  try {
+    if (localStorage.getItem(modes[kind].storage + '-order') === 'frequency') return 'frequency';
+  } catch {
+    // Browser storage can be unavailable.
+  }
+  return 'manual';
 }
 
 export function bindPlayChat(api) {
@@ -47,10 +58,13 @@ export function bindPlayChat(api) {
   const presetList = byId('play-preset-list');
   const presetName = byId('play-preset-name');
   const presetText = byId('play-preset-text');
+  const presetOrder = byId('play-preset-order');
   const presets = { message: readPresets('message'), command: readPresets('command') };
+  const orders = { message: readPresetOrder('message'), command: readPresetOrder('command') };
   const drafts = { message: '', command: '' };
   let mode = 'message';
-  let editIndex = null;
+  let editedPreset = null;
+  let draggedPreset = null;
   let available = false;
   let pending = false;
   let polling = false;
@@ -110,7 +124,7 @@ export function bindPlayChat(api) {
     }
   }
 
-  async function send(text, fromInput = false) {
+  async function send(text, fromInput = false, preset = null) {
     if (!available || pending) return;
     const kind = mode;
     const error = validate(kind, text);
@@ -124,6 +138,11 @@ export function bindPlayChat(api) {
     showFeedback(kind === 'command' ? '発行中…' : '返答を待っています…');
     try {
       const data = await api('/api/chat', { method: 'POST', body: JSON.stringify({ kind, text }) });
+      if (preset && presets[kind].includes(preset)) {
+        preset.uses++;
+        savePresets(kind);
+        if (kind === mode && orders[kind] === 'frequency' && dialog.open) renderPresetList();
+      }
       if (revision !== version) return;
       if (fromInput) {
         if (mode === kind && input.value.trim() === text) input.value = '';
@@ -140,13 +159,17 @@ export function bindPlayChat(api) {
     }
   }
 
+  function orderedPresets() {
+    return orders[mode] === 'frequency' ? [...presets[mode]].sort((a, b) => b.uses - a.uses) : presets[mode];
+  }
+
   function renderPresets() {
-    quick.replaceChildren(...presets[mode].map((item) => {
+    quick.replaceChildren(...orderedPresets().map((item) => {
       const button = document.createElement('button');
       button.type = 'button';
       button.textContent = item.name + ' ↗';
       button.title = item.text;
-      button.addEventListener('click', () => void send(item.text));
+      button.addEventListener('click', () => void send(item.text, false, item));
       return button;
     }));
     updateControls();
@@ -167,32 +190,97 @@ export function bindPlayChat(api) {
     renderPresets();
   }
 
-  function savePresets() {
+  function savePresets(kind = mode) {
     try {
-      localStorage.setItem(modes[mode].storage, JSON.stringify(presets[mode]));
+      localStorage.setItem(modes[kind].storage, JSON.stringify(presets[kind]));
+      localStorage.setItem(modes[kind].storage + '-order', orders[kind]);
     } catch {
       showFeedback('このブラウザに登録内容を保存できませんでした。', true);
     }
-    renderPresets();
+    if (mode === kind) renderPresets();
   }
 
   function resetPresetForm() {
-    editIndex = null;
+    editedPreset = null;
     presetForm.reset();
     presetText.setCustomValidity('');
     presetForm.querySelector('[type="submit"]').textContent = '登録';
   }
 
+  function movePreset(item, targetIndex, focusDirection) {
+    const list = presets[mode];
+    const index = list.indexOf(item);
+    if (index < 0 || index === targetIndex || targetIndex < 0 || targetIndex >= list.length) return;
+    list.splice(index, 1);
+    list.splice(targetIndex, 0, item);
+    savePresets();
+    renderPresetList();
+    if (focusDirection) {
+      const row = presetList.children[targetIndex];
+      const button = row.querySelector(`[data-move="${focusDirection}"]:not(:disabled)`);
+      (button || row.querySelector('[data-move]:not(:disabled)'))?.focus();
+    }
+  }
+
   function renderPresetList() {
-    presetList.replaceChildren(...presets[mode].map((item, index) => {
+    const manual = orders[mode] === 'manual';
+    presetOrder.value = orders[mode];
+    const canReorder = manual && presets[mode].length > 1;
+    byId('play-preset-reorder-hint').hidden = !canReorder;
+    presetList.replaceChildren(...orderedPresets().map((item, index) => {
       const row = document.createElement('li');
       const text = document.createElement('span');
       text.textContent = `${item.name} · ${item.text}`;
+      row.append(text);
+      if (canReorder) {
+        const reorder = document.createElement('div');
+        reorder.className = 'preset-reorder';
+        for (const [direction, label, step] of [['up', '上へ移動', -1], ['down', '下へ移動', 1]]) {
+          const move = document.createElement('button');
+          move.type = 'button';
+          move.dataset.move = direction;
+          move.textContent = step < 0 ? '↑' : '↓';
+          move.setAttribute('aria-label', `${item.name}を${label}`);
+          move.disabled = !presets[mode][index + step];
+          move.addEventListener('click', () => movePreset(item, index + step, direction));
+          reorder.append(move);
+        }
+        text.draggable = true;
+        text.title = 'ドラッグして並び替え';
+        text.addEventListener('dragstart', (event) => {
+          draggedPreset = item;
+          event.dataTransfer.effectAllowed = 'move';
+          event.dataTransfer.setData('text/plain', item.name);
+        });
+        text.addEventListener('dragend', () => {
+          draggedPreset = null;
+          presetList.querySelector('.is-drop-target')?.classList.remove('is-drop-target');
+        });
+        row.addEventListener('dragover', (event) => {
+          if (!draggedPreset || draggedPreset === item) return;
+          event.preventDefault();
+          event.dataTransfer.dropEffect = 'move';
+          presetList.querySelector('.is-drop-target')?.classList.remove('is-drop-target');
+          row.classList.add('is-drop-target');
+        });
+        row.addEventListener('dragleave', (event) => {
+          if (!row.contains(event.relatedTarget)) row.classList.remove('is-drop-target');
+        });
+        row.addEventListener('drop', (event) => {
+          if (!draggedPreset) return;
+          event.preventDefault();
+          row.classList.remove('is-drop-target');
+          const itemToMove = draggedPreset;
+          draggedPreset = null;
+          movePreset(itemToMove, index);
+        });
+        row.append(reorder);
+      }
       const edit = document.createElement('button');
       edit.type = 'button';
       edit.textContent = '編集';
       edit.addEventListener('click', () => {
-        editIndex = index;
+        editedPreset = item;
         presetName.value = item.name;
         presetText.value = item.text;
         presetText.setCustomValidity('');
@@ -203,17 +291,22 @@ export function bindPlayChat(api) {
       remove.type = 'button';
       remove.textContent = '削除';
       remove.addEventListener('click', () => {
-        presets[mode].splice(index, 1);
+        presets[mode].splice(presets[mode].indexOf(item), 1);
         savePresets();
         resetPresetForm();
         renderPresetList();
         presetName.focus();
       });
-      row.append(text, edit, remove);
+      row.append(edit, remove);
       return row;
     }));
   }
 
+  presetOrder.addEventListener('change', () => {
+    orders[mode] = presetOrder.value === 'frequency' ? 'frequency' : 'manual';
+    savePresets();
+    renderPresetList();
+  });
   modeButtons.forEach((button) => button.addEventListener('click', () => selectMode(button.dataset.composeMode)));
   composer.addEventListener('submit', (event) => {
     event.preventDefault();
@@ -248,8 +341,8 @@ export function bindPlayChat(api) {
       return;
     }
     if (!name) return;
-    if (editIndex === null) presets[mode].push({ name, text });
-    else presets[mode][editIndex] = { name, text };
+    if (editedPreset === null) presets[mode].push({ name, text, uses: 0 });
+    else Object.assign(editedPreset, { name, text });
     savePresets();
     dialog.close();
   });

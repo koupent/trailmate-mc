@@ -705,8 +705,51 @@ const memoryStatus = document.getElementById('memory-status');
 const memoryEdit = document.getElementById('memory-edit');
 const memorySave = document.getElementById('memory-save');
 const memoryCancel = document.getElementById('memory-cancel');
+const memoryTab = document.getElementById('play-memory-tab');
+const memoryUnread = document.getElementById('memory-unread');
 const memoryLabels = { nickname: '呼び方', preferences: '好み', plans: '一緒にやっていること', milestones: '思い出' };
+const memorySeenKey = 'trailmate-memory-seen';
 let memoryPlayers = [];
+let memorySeen = new Map();
+try {
+  memorySeen = new Map(JSON.parse(localStorage.getItem(memorySeenKey)) || []);
+} catch {
+  // Keep the read state in this session if browser storage is unavailable.
+}
+let memoryLoading = false;
+let nextMemoryPoll = 0;
+let memoryWriteVersion = 0;
+let chooseUnreadMemory = false;
+
+function isMemoryVisible() {
+  return readyToSpawn && currentTab === 'operate' && document.visibilityState === 'visible'
+    && memoryTab.getAttribute('aria-selected') === 'true' && memoryForm.hidden;
+}
+
+function hasUnreadMemory({ player, notes, revision }) {
+  return Object.keys(notes).length > 0 && revision > (memorySeen.get(player) || 0);
+}
+
+function markMemorySeen({ player, revision }) {
+  if (memorySeen.get(player) === revision) return;
+  memorySeen.set(player, revision);
+  try {
+    localStorage.setItem(memorySeenKey, JSON.stringify([...memorySeen]));
+  } catch {
+    // The badge still works in this session.
+  }
+}
+
+function updateMemoryBadge(players = memoryPlayers) {
+  const unread = players.some(hasUnreadMemory);
+  memoryUnread.hidden = !unread;
+  memoryTab.classList.toggle('has-unread', unread);
+  for (const option of memoryPlayer.options) {
+    const player = players.find(entry => entry.player === option.value);
+    const label = player && hasUnreadMemory(player) ? option.value + '（新着）' : option.value;
+    syncText(option, label);
+  }
+}
 
 function renderMemory() {
   const entry = memoryPlayers.find(({ player }) => player === memoryPlayer.value);
@@ -719,27 +762,53 @@ function renderMemory() {
     note.textContent = entry.notes[field] || '—';
     memoryNotes.append(term, note);
   }
+  if (isMemoryVisible()) markMemorySeen(entry);
 }
 
-async function loadMemory() {
-  if (!memoryForm.hidden) return;
-  setMsg(memoryStatus, '読み込み中…');
+async function loadMemory({ background = false } = {}) {
+  if (memoryLoading || (background && Date.now() < nextMemoryPoll)) return;
+  memoryLoading = true;
+  nextMemoryPoll = Date.now() + 5000;
+  const writeVersion = memoryWriteVersion;
+  if (!background && !memoryPlayers.length && memoryForm.hidden) setMsg(memoryStatus, '読み込み中…');
   try {
     const { players } = await api('/api/memory');
-    if (!memoryForm.hidden) return;
-    const selected = memoryPlayer.value;
+    if (writeVersion !== memoryWriteVersion) return;
+    if (!memoryForm.hidden) {
+      updateMemoryBadge(players);
+      return;
+    }
+    const previousSelection = memoryPlayer.value;
+    let selected = previousSelection;
+    if (chooseUnreadMemory && isMemoryVisible()) {
+      chooseUnreadMemory = false;
+      const unread = players.filter(hasUnreadMemory);
+      if (!unread.some(({ player }) => player === selected) && unread.length) selected = unread[0].player;
+    }
+    const changed = JSON.stringify(players) !== JSON.stringify(memoryPlayers);
     memoryPlayers = players;
-    memoryPlayer.replaceChildren(...players.map(({ player }) => new Option(player, player)));
+    if (changed) memoryPlayer.replaceChildren(...players.map(({ player }) => new Option(player, player)));
     if (players.some(({ player }) => player === selected)) memoryPlayer.value = selected;
     memoryControls.hidden = players.length === 0;
-    renderMemory();
-    setMsg(memoryStatus, players.length ? '' : 'まだ保存された記憶はありません。');
+    if (!background || changed || memoryPlayer.value !== previousSelection
+      || (isMemoryVisible() && players.some(entry => entry.player === selected && hasUnreadMemory(entry)))) {
+      renderMemory();
+    }
+    updateMemoryBadge();
+    if (!background || changed || memoryStatus.textContent === '読み込み中…' || !memoryStatus.textContent) {
+      setMsg(memoryStatus, players.length ? '' : 'まだ保存された記憶はありません。');
+    }
   } catch (error) {
-    setMsg(memoryStatus, error.message, 'err');
+    if (!background || memoryStatus.textContent === '読み込み中…') setMsg(memoryStatus, error.message, 'err');
+  } finally {
+    memoryLoading = false;
   }
 }
 
-memoryPlayer.addEventListener('change', renderMemory);
+memoryPlayer.addEventListener('change', () => {
+  renderMemory();
+  updateMemoryBadge();
+});
 memoryEdit.addEventListener('click', () => {
   const entry = memoryPlayers.find(({ player }) => player === memoryPlayer.value);
   if (!entry) return;
@@ -780,8 +849,11 @@ memoryForm.addEventListener('submit', async (event) => {
   memorySave.disabled = memoryCancel.disabled = true;
   try {
     const { entry } = await api('/api/memory', { method: 'PUT', body: JSON.stringify({ player, notes, revision }) });
+    memoryWriteVersion++;
     memoryPlayers[index] = entry;
+    markMemorySeen(entry);
     renderMemory();
+    updateMemoryBadge();
     closeMemoryEditor();
     setMsg(memoryStatus, '記憶を保存しました。', 'ok');
   } catch (error) {
@@ -799,7 +871,10 @@ function selectDetail(next) {
     document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
   });
   document.getElementById('inventory-kind-count').hidden = next.id !== 'play-inventory-tab';
-  if (next.id === 'play-memory-tab') void loadMemory();
+  if (next === memoryTab) {
+    chooseUnreadMemory = true;
+    void loadMemory();
+  }
 }
 detailTabs.forEach((tab, index) => {
   tab.addEventListener('click', () => selectDetail(tab));
@@ -827,7 +902,10 @@ async function refreshStatus() {
     lastBackendMessage =
       status.diagnostics?.summary || status.backendMessage || status.error || '';
     renderStatus(status);
-    if (backendReady) void loadCommands();
+    if (backendReady) {
+      void loadCommands();
+      void loadMemory({ background: true });
+    }
   } catch (error) {
     backendReady = false;
     spawnReady = false;

@@ -88,7 +88,9 @@
                 <button id="play-inventory-tab" type="button" role="tab" aria-controls="play-inventory" aria-selected="true">持ち物</button>
                 <button id="play-fsm-tab" type="button" role="tab" aria-controls="play-fsm" aria-selected="false" tabindex="-1">状態遷移</button>
                 <button id="play-auth-tab" type="button" role="tab" aria-controls="play-auth" aria-selected="false" tabindex="-1">認証状態</button>
-                <button id="play-memory-tab" type="button" role="tab" aria-controls="play-memory" aria-selected="false" tabindex="-1">記憶</button>
+                <button id="play-memory-tab" type="button" role="tab" aria-controls="play-memory" aria-selected="false" tabindex="-1">
+                  記憶 <span id="memory-unread" class="memory-unread" hidden>新着</span>
+                </button>
                 <span id="inventory-kind-count"></span>
               </div>
               <div id="play-inventory" role="tabpanel" aria-labelledby="play-inventory-tab" class="play-detail" tabindex="0">
@@ -130,6 +132,13 @@
           </div>
           <dialog id="play-preset-dialog" aria-labelledby="play-preset-title">
             <h2 id="play-preset-title"></h2>
+            <label class="preset-order">表示順
+              <select id="play-preset-order">
+                <option value="manual">手動順</option>
+                <option value="frequency">よく使う順</option>
+              </select>
+            </label>
+            <p id="play-preset-reorder-hint" class="muted" hidden>ドラッグまたは ↑↓ で移動</p>
             <ul id="play-preset-list"></ul>
             <form id="play-preset-form">
               <label>ボタン名 <input id="play-preset-name" maxlength="24" required></label>
