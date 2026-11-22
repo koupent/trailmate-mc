@@ -51,7 +51,7 @@ import {
   classifyEncounterSituation,
   type EncounterSituation
 } from './EncounterSituation.js';
-import { CREEPER_FLEE_DISTANCE, creeperMustFlee } from './creeperTactics.js';
+import { CREEPER_DEFUSE_RANGE, CREEPER_FLEE_DISTANCE, creeperMustFlee } from './creeperTactics.js';
 import {
   ARC_NARROW_ENOUGH_SPAN_DEG,
   combatDistance,
@@ -75,6 +75,8 @@ export type SceneThreat = ScenePoint & {
   hp: number;
   /** 着火中のクリーパー。 */
   ignited: boolean;
+  /** 着火開始を観測できた場合の残り時間。 */
+  fuseRemainingMs?: number;
 };
 
 /** 判断に必要な観測と、地形への問い合わせ。 */
@@ -274,8 +276,11 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
   const bot = scene.bot;
   const threats = scene.threats.filter((enemy) => enemy.hp > 0);
   const multiLive = threats.length > 1;
-  const creeper = threats.find((enemy) => enemy.kind === 'creeper') ?? null;
-  const ignitedCreeper = creeper && creeper.ignited ? creeper : null;
+  const ignitedCreeper = threats.find((enemy) => enemy.kind === 'creeper' && enemy.ignited) ?? null;
+  const retreatFrom = threats.find((enemy) => enemy.kind === 'creeper' && enemy.ignited
+    && combatDistance(bot, enemy) < CREEPER_DEFUSE_RANGE
+    && creeperMustFlee(enemy.fuseRemainingMs, bot.hp, scene.tickMs));
+  const creeper = retreatFrom ?? ignitedCreeper ?? threats.find((enemy) => enemy.kind === 'creeper') ?? null;
   const params = scene.params;
 
   // ── 1. 主対象を選ぶ（sticky + urgency マージン。遠距離専用 sticky は使わない）
@@ -291,7 +296,7 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
     stickyId: memory.focusEnemyId,
     now: scene.now,
     stickyMs: FOCUS_STICKY_MS,
-    hardOverrideId: ignitedCreeper?.id ?? scene.priorityThreatId ?? null
+    hardOverrideId: retreatFrom?.id ?? ignitedCreeper?.id ?? scene.priorityThreatId ?? null
   });
   memory.focusEnemyId = focusPick.focusEnemyId;
   memory.focusUntil = focusPick.focusUntil;
@@ -450,29 +455,9 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
   const holdingCover = Boolean(meleeAlly && rangedThreat && (memory.coverAnchor || inRangedCover));
   const situation = classifyEncounterSituation(threats);
   const soleCreeper = Boolean(creeper) && !multiLive;
-  const creeperStrikeLos = Boolean(
-    creeper
-    && (
-      combatDistance(bot, creeper) < ENTITY_OVERLAP_RANGE
-      || scene.hasLineOfSight(bot, creeper)
-    )
-  );
-  const canStrikeCreeper = Boolean(
-    creeper
-    && combatDistance(bot, creeper) <= MELEE_RANGE
-    && Math.abs(bot.y - creeper.y) <= MELEE_HEIGHT_SLACK
-    && creeperStrikeLos
-    && !scene.stunned
-  );
+  const canStrikeCreeper = creeper != null && canStrike(creeper);
 
-  // ── 3. 着火中かつ殴れないときだけ強制退避。
-  // 未着火は「近い敵」として殴りに行く（混成で逃げ回って矢死するのを防ぐ）。
-  const explosiveImmediateDanger = creeperMustFlee({
-    ignited: Boolean(ignitedCreeper),
-    canMeleeStrike: canStrikeCreeper,
-    distance: creeperDist,
-    fleeDistance: Math.max(CREEPER_FLEE_DISTANCE, creeperDangerRange + 0.4)
-  });
+  const explosiveImmediateDanger = Boolean(retreatFrom);
   const intent = decideCombatIntent({
     distanceToPrimary: primaryDistance,
     meleeAttackRange: MELEE_RANGE,
@@ -510,7 +495,7 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
     && hasStrikeLos
     && (
       intent.attack
-      || Boolean(ignitedCreeper && primary.id === ignitedCreeper.id)
+      || (!explosiveImmediateDanger && Boolean(ignitedCreeper && primary.id === ignitedCreeper.id))
     );
   // CORE(threat-arc-narrowing): 本当の接触近接。
   // ただし扇ラッチ中は位置取りを打ち切らず、移動しながら殴る（下の positioning 分岐）。
@@ -776,12 +761,11 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
   ) {
     moveKind = canMeleeAttack ? 'attack' : 'advance';
   }
-  // 着火中で届くなら殴ってノックバック優先（自爆キャンセル）
-  if (ignitedCreeper && canStrikeCreeper) {
+  if (ignitedCreeper && canStrikeCreeper && !explosiveImmediateDanger) {
     moveKind = 'attack';
   }
   // 単独クリーパーは退避し続けず接近して処理する
-  if (soleCreeper && !explosiveImmediateDanger && !creeper!.ignited) {
+  if (soleCreeper && !explosiveImmediateDanger) {
     if (canMeleeAttack) moveKind = 'attack';
     else if (moveKind === 'dodge' || moveKind === 'hold' || moveKind === 'positioning') moveKind = 'advance';
   }
@@ -855,7 +839,15 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
   })();
   const finishMeleeFirst = (forceMixedMeleeFinish || forceExplosiveCrowdCommit) && meleeAlly;
 
-  if (moveKind === 'attack' || (overlapping && canMeleeAttack)) {
+  if (retreatFrom) {
+    moveKind = movement = 'dodge';
+    directFlee = true;
+    setDestination(scene.creeperFleePoint(retreatFrom, CREEPER_FLEE_DISTANCE));
+  } else if (soleCreeper && ignitedCreeper && creeperDist >= CREEPER_DEFUSE_RANGE
+    && creeperMustFlee(ignitedCreeper.fuseRemainingMs, bot.hp, scene.tickMs)) {
+    // 別のプレイヤーの近くで着火が続いていても、危険距離へ戻らない。
+    moveKind = 'hold';
+  } else if (moveKind === 'attack' || (overlapping && canMeleeAttack)) {
     if (!(canMeleeAttack || overlapping)) {
       // 攻撃種別でも射程外なら接近に落とす
       movement = 'advance';
@@ -863,7 +855,8 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
       setDestination(scene.approachPoint(approachTarget, flankFor(approachTarget)));
     } else {
       movement = 'attack';
-      const attackTarget = (finishMeleeFirst && canStrike(meleeAlly!)) ? meleeAlly! : primary;
+      const attackTarget = primary.ignited ? primary
+        : (finishMeleeFirst && canStrike(meleeAlly!)) ? meleeAlly! : primary;
       strike(attackTarget);
       // めり込み中は攻撃しつつ軽く離す（同座標スタック解消）
       if (overlapping) {
@@ -928,13 +921,6 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
     if (!chosen && (selection.rangedExposedCount ?? 0) > 0 && arc) {
       chosen = pointAt(bot, arc.openRad, 2.5);
     }
-    if (creeper && chosen && explosiveImmediateDanger) {
-      const nextDist = Math.hypot(chosen.x - creeper.x, chosen.z - creeper.z);
-      if (nextDist + 0.15 < creeperDist || nextDist < creeperSoft) {
-        chosen = scene.creeperFleePoint(creeper, 2.6);
-        directFlee = true;
-      }
-    }
     if (attackFanSafe && !directFlee && !spanStillWide) {
       memory.positioningGoal = { x: attackFanSafe.x, z: attackFanSafe.z };
     }
@@ -967,10 +953,7 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
     // CORE: 扇ラッチ中も移動を止めず殴る。
     if (inRangeStrikeTarget) strike(inRangeStrikeTarget);
   } else if (moveKind === 'dodge') {
-    if (creeper && explosiveImmediateDanger) {
-      setDestination(scene.creeperFleePoint(creeper, 2.8));
-      directFlee = true;
-    } else if (rangedMoveGoal) {
+    if (rangedMoveGoal) {
       setDestination(rangedMoveGoal);
     } else if (mixedCoverPoint && meleeAlly) {
       setDestination(mixedCoverPoint);
@@ -1005,11 +988,6 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
       setDestination(pointAt(bot, side, 0.9));
       movement = 'advance';
     }
-    if (creeper && explosiveImmediateDanger && moveKind === 'advance' && !forceCommit) {
-      setDestination(scene.creeperFleePoint(creeper, 2.6));
-      movement = 'dodge';
-      directFlee = true;
-    }
   } else {
     // 敵へ直線接近。肉壁カバー中は固定錨へだけ寄せる。
     const approachPrimary = finishMeleeFirst ? meleeAlly! : primary;
@@ -1036,13 +1014,10 @@ export function decideCombatStep(scene: CombatScene, memory: CombatMemory): Comb
       )
         ? scene.approachKeepingCreeperDistance(approachPrimary, creeper, creeperSoft, flank)
         : scene.approachPoint(approachPrimary, flank);
-      if (creeper && explosiveImmediateDanger && !forceCommit && !soleCreeper) {
-        const nextDist = Math.hypot(approach.x - creeper.x, approach.z - creeper.z);
-        if (nextDist + 0.2 < creeperDist || nextDist < creeperDangerRange) {
-          approach = scene.creeperFleePoint(creeper, 2.6);
-          directFlee = true;
-          movement = 'dodge';
-        }
+      if (approachPrimary === creeper && creeper.ignited && creeperDist > MELEE_RANGE
+        && scene.hasLineOfSight(bot, creeper)) {
+        const edge = pointAt(bot, threatBearingRad(bot, approachPrimary), creeperDist - (MELEE_RANGE - 0.3));
+        if (!scene.pathBlocked(bot, edge)) approach = edge;
       }
       setDestination(approach);
       if (!directFlee) movement = 'advance';

@@ -171,6 +171,7 @@ export class Reflexes {
   private ownerThreatLocked = false;
   /** 共通判断がtickをまたいで保つ状態。 */
   private combatMemory: CombatMemory = {};
+  private readonly creeperFuseStarts = new WeakMap<object, number | null>();
   private combatTick = 0;
   /** このtickの判断。 */
   private step: CombatStep | null = null;
@@ -220,6 +221,11 @@ export class Reflexes {
       exploreDamageAbort: learning.explore_damage_abort
     });
     (bot as any).on?.('health', () => this.onHealthChanged());
+    (bot as any).on?.('entityUpdate', (entity: any) => {
+      if (entity?.name !== 'creeper') return;
+      if (!isCreeperIgnited(entity)) this.creeperFuseStarts.set(entity, null);
+      else if (this.creeperFuseStarts.get(entity) === null) this.creeperFuseStarts.set(entity, Date.now());
+    });
     (bot as any).on?.('attackedTarget', (target: any) => {
       this.episodeTracker.recordHit();
       this.traceOutcome('attack_attempt', target ?? this.currentTarget, {
@@ -564,7 +570,7 @@ export class Reflexes {
       action('敵と状況を見て判断する（CombatStep）', () => this.decideStep()),
       selector('判断した行動', [
         sequence('着火したクリーパーから離れる', [
-          condition('殴って止められない着火・めり込み', () => step().directFlee),
+          condition('爆発が迫っている・めり込み', () => step().directFlee),
           action('まっすぐ離れる', () => this.moveTowardStep())
         ]),
         sequence('危険な攻撃範囲から抜ける', [
@@ -606,6 +612,7 @@ export class Reflexes {
       tick: ++this.combatTick,
       tickMs: COMBAT_TICK_MS,
       threats: observations.map(({ entity }) => entity),
+      creeperFuseStarts: this.creeperFuseStarts,
       owner: ownerPos ? { x: ownerPos.x, z: ownerPos.z } : null,
       hasShield: this.hasShieldEquipped(),
       lastDamageAt: this.lastDamageAt,
