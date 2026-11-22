@@ -51,6 +51,16 @@ export function statedName(message: string) {
   if (personal) return { subject: 'player', field: 'name', name: personal[1] };
 }
 
+export function askedName(message: string) {
+  const question = /^(あなた|君|きみ|相棒|私|僕|俺|わたし|ぼく|おれ)の(名前|呼び名|呼び方)(?:は(?:何(?:ですか|だっけ)?|なに)?|を教えて)?[?？。！!]*$/u.exec(message);
+  if (!question) return;
+  const [, subject, field] = question;
+  return {
+    subject: /^(?:あなた|君|きみ|相棒)$/u.test(subject) ? 'companion' : 'player',
+    field: field === '名前' ? 'name' : 'nickname'
+  };
+}
+
 export function createMemoryStore(file: string) {
   function read(): Record<string, Memory> {
     try {

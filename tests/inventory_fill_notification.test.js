@@ -58,6 +58,7 @@ function makeDialogue(snapshot, chat = {}) {
             ...chat
         }
     });
+    dialogue._claudeBudget = null;
     dialogue._buildSnapshot = () => snapshot.current;
     return { dialogue, messages };
 }

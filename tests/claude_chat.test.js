@@ -218,7 +218,7 @@ test('Claude addresses nearby players on changes and scales with the local budge
     assert.equal(commentaryContext.event, 'night');
     assert.equal(commentaryContext.nearbyPlayerCount, 2);
     assert.doesNotMatch(requests[2].messages[0].content, /Alice|Bob/);
-    assert.match(lines[3], /^@Alice、暗くなって/);
+    assert.match(lines[3], /^暗くなって/);
 
     now += 230000;
     snapshot = { ...snapshot, isRaining: true };
@@ -241,10 +241,11 @@ test('Claude addresses nearby players on changes and scales with the local budge
     const newBehavior = JSON.parse(requests[4].messages[0].content);
     assert.equal(newBehavior.event, 'new_behavior_completed');
     assert.equal(newBehavior.focus.description, 'Finished tidying.');
+    assert.equal(newBehavior.focus.actorIsAddressee, true);
     assert.deepEqual(newBehavior.focus.actionFacts, [{ actor: 'companion', action: 'tidied up' }]);
     assert.equal(newBehavior.behavior, undefined);
     assert.doesNotMatch(requests[4].messages[0].content, /Bob/);
-    assert.match(lines[4], /^@Bob、/);
+    assert.equal(lines[4], '暗くなってきたね。足元に気をつけて。');
 
     now += 224000;
     snapshot = { ...snapshot, activity: {
@@ -272,7 +273,7 @@ test('Claude addresses nearby players on changes and scales with the local budge
     await dialogue.maybeSpeak();
     await setImmediate();
     assert.deepEqual(acknowledgements, ['wait', 'eye_contact']);
-    assert.match(lines[6], /^@Bob、.*目が合.*お辞儀/);
+    assert.equal(lines[6], '目が合ったから、ぺこっとお辞儀したよ！');
 
     now += 230000;
     const attack = worldState.observe({
@@ -297,7 +298,7 @@ test('Claude addresses nearby players on changes and scales with the local budge
     await dialogue.maybeSpeak();
     await setImmediate();
     assert.equal(requests.length, 7);
-    assert.match(lines.at(-1), /^@Bob、/);
+    assert.equal(lines.at(-1), '暗くなってきたね。足元に気をつけて。');
     assert.equal(attack.handled, true);
 
     now += 230000;
@@ -343,7 +344,7 @@ test('describes a blocked path once during repeated failures and falls back afte
         await setImmediate();
         now += 1000;
     }
-    assert.deepEqual(lines, ['@Alice、ちょっと狭いね、ここで待ってるよ！']);
+    assert.deepEqual(lines, ['ちょっと狭いね、ここで待ってるよ！']);
     assert.equal(contexts.length, 1);
     assert.equal(contexts[0].event, 'path_blocked');
     assert.match(contexts[0].focus.description, /safe way past nearby players/);
@@ -402,7 +403,7 @@ test('delivers a completed reaction once even when it starts behind a player rep
     await dialogue.maybeSpeak();
     assert.deepEqual(contexts.map(context => context.event), [undefined, 'eye_contact']);
     assert.equal(contexts[1].focus.required, true);
-    assert.deepEqual(lines, ['おはよ！', '@Alice、ぺこっ！目が合ったね。']);
+    assert.deepEqual(lines, ['おはよ！', 'ぺこっ！目が合ったね。']);
 });
 
 test('keeps a nearby situation change past the quiet period after a player message', async (t) => {
@@ -446,7 +447,7 @@ test('keeps a nearby situation change past the quiet period after a player messa
     await dialogue.maybeSpeak();
     await setImmediate();
     assert.deepEqual(contexts.map(context => context.event), [undefined, 'night']);
-    assert.deepEqual(lines, ['うん、ここにいるよ！', '@Alice、すっかり暗くなったね。足元に気をつけよ！']);
+    assert.deepEqual(lines, ['うん、ここにいるよ！', 'すっかり暗くなったね。足元に気をつけよ！']);
     now += 1000;
     await dialogue.maybeSpeak();
     assert.equal(contexts.length, 2, 'the earlier rain and already handled night do not trigger repeats');
