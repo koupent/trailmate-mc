@@ -46,7 +46,7 @@ auth-method: NONE
 
 ### オンラインモードのサーバー
 
-正規のMinecraft Java版を所有するMicrosoftアカウントが必要です。初心者向けの詳しい登録操作は、ルートの [README](../../README.md#microsoftアカウントの登録) を参照してください。
+正規のMinecraft Java版を所有するMicrosoftアカウントが必要です。詳しい登録操作は [詳細ガイド](../../docs/guide.md#microsoftアカウントの登録) を参照してください。
 
 最初の1件を登録すると、そのアカウントは番号 `0` として保存されます。exampleは最初から次の設定なので、通常は編集不要です。
 

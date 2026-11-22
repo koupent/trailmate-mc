@@ -92,6 +92,7 @@ jobs:
           cp -r dashboard/Dockerfile dashboard/package.json dashboard/*.mjs dashboard/public "$STAGE/dashboard/"
           cp services/viaproxy/viaproxy.yml.example services/viaproxy/README.md "$STAGE/services/viaproxy/"
           cp locales/*.json "$STAGE/locales/"
+          cp -r docs "$STAGE/"
           # Pin images to this release tag (pull instead of long local builds).
           sed -i "s|ghcr.io/koupent/trailmate-mc:latest|${{ env.TRAILMATE_IMAGE }}:${{ steps.version.outputs.tag }}|g" "$STAGE/docker-compose.yml"
           sed -i "s|ghcr.io/koupent/trailmate-dashboard:latest|${{ env.DASHBOARD_IMAGE }}:${{ steps.version.outputs.tag }}|g" "$STAGE/docker-compose.yml"
